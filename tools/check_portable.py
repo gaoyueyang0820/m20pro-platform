@@ -32,6 +32,7 @@ GROUPS={
                   'test_localization_recovery'],
     'sensing':['test_sensor_cache','test_sensor_reader','test_latest_observation','test_sensing_equivalence'],
     'maps':['test_map_change_policy','test_map_fusion','test_map_update_v3','test_map_catalog',
+            'test_map_learning.MapLearningTests.test_recorder_quality_and_duplicate_stamp_checks',
             'test_mapping_save_outcomes.SyntheticSavedObservationTests'],
     'lifecycle':['test_mapping_request_identity','test_operations_lifecycle','test_delivery_boundary'],
     'native':['test_native_sensing'],

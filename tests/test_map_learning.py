@@ -73,7 +73,9 @@ class MapLearningTests(unittest.TestCase):
         self.assertTrue(a.ingest(packet(120,.5)));bad=packet(130,1);bad['quality']=[.5,.3]
         with self.assertRaisesRegex(ValueError,'质量'):a.ingest(bad)
         self.assertEqual(a.row['frames'],2)
-        restored=RefinementAgent(service,lambda:None);self.assertEqual(restored.row['frames'],2);self.assertFalse(restored.row['enabled']);a.close();restored.close()
+        restored=RefinementAgent(service,lambda:None);self.assertEqual(restored.row['frames'],2);self.assertFalse(restored.row['enabled'])
+        persisted=json.loads(restored.file.read_text());self.assertFalse(persisted['enabled']);self.assertEqual(persisted['state'],'off');self.assertEqual(persisted['frames'],2)
+        a.close();restored.close()
     def test_complete_old_map_is_retained_while_confirmed_new_area_expands_grid(self):
         from map_fusion import read_pcd
         far=np.array([[-3.8,-3.8,1.2,77.]],dtype=np.float32)

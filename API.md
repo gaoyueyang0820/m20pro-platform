@@ -80,6 +80,7 @@ POST /api/maps/library/rename {name,display_name} -> job_id，修改显示名，
 POST /api/maps/library/delete {name}          -> job_id，移入可恢复回收站，禁止删除活动图
 GET  /api/maps/library/trash                  -> {maps:[{id,name,display_name,deleted_at,reason}]}
 POST /api/maps/library/restore {id}           -> job_id，不覆盖同编号地图，不自动启用
+POST /api/maps/library/purge {id,confirmed_name} -> job_id，逐张永久删除已回收地图；名称必须匹配，不可恢复
 POST /api/maps/library/sync {name,grid_id}     栅格及真实编号同步到编辑器
 POST /api/maps/package/export {name}          -> job_id，结果含文件与 format
 POST /api/maps/package/import {id,name}       -> job_id，不覆盖/自动激活

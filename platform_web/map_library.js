@@ -1,6 +1,6 @@
 'use strict';
 
-let mapEditMode=false,mapEditBusy=false,mapSearch='',mapEditScope=null,mapTrashScope=null;
+let mapEditMode=false,mapEditBusy=false,mapSearch='',mapEditScope=null,mapTrashScope=null,mapTrashRows=[];
 const mapScope=()=>S.mode+'|'+(S.ip||'');
 const mapLabel=m=>m.display_name||m.name;
 function visibleLibraryMaps(){
@@ -33,20 +33,23 @@ paintMapLibrary=function(){
 };
 
 ui['map-library-edit']=()=>{mapEditMode=!mapEditMode;paintMapLibrary();};
-document.addEventListener('input',e=>{if(e.target.id==='map-library-search'){mapSearch=e.target.value;paintMapLibrary();}});
+document.addEventListener('input',e=>{
+ if(e.target.id==='map-library-search'){mapSearch=e.target.value;paintMapLibrary();}
+ if(e.target.id==='map-purge-confirm-text'){const b=$('[data-ui="map-purge-confirm"]');if(b)b.disabled=e.target.value.trim()!=='删除';}
+});
 
 async function editLibrary(action,payload,scope){
  if(scope!==mapScope())throw Error('连接已变化，请重新选择地图');
  if(mapEditBusy)return;
  mapEditBusy=true;paintMapLibrary();
  try{
-  const result=await job('/api/maps/library/'+action,payload,action==='rename'?'重命名地图':action==='restore'?'恢复地图':'删除地图');
+  const result=await job('/api/maps/library/'+action,payload,action==='rename'?'重命名地图':action==='restore'?'恢复地图':action==='purge'?'彻底删除地图文件':'删除地图');
   if(scope!==mapScope())return;
   const changedPreview=action==='delete'&&selectedRemote===payload.name;
   if(changedPreview){selectedRemote=null;cloudViewGeneration++;cloudData=null;cloudSource=null;}
   $('#modal').close();await loadMapLibrary();await fetchState();
   if(changedPreview&&selectedRemote&&page==='maps')await previewCloud('map',selectedRemote);
-  toast(action==='rename'?'名称已保存':action==='restore'?'地图已恢复，未自动启用':'已移入回收站，可随时恢复');
+  toast(action==='rename'?'名称已保存':action==='restore'?'地图已恢复，未自动启用':action==='purge'?'地图文件已彻底删除':'已移入回收站，可随时恢复');
   return result;
  }finally{mapEditBusy=false;paintMapLibrary();}
 }
@@ -66,15 +69,27 @@ function editMapDialog(name,action){
 
 ui['map-library-trash']=async()=>{
  const scope=mapScope(),result=await api('/api/maps/library/trash');if(scope!==mapScope())return;
- mapTrashScope=scope;
- modal('地图回收站',`<p class="help">恢复后回到地图列表，不会自动启用。回收站中的地图仍占用存储空间。</p><div class="map-trash-list">${result.maps.map(m=>`<div class="map-trash-row"><span><strong>${esc(mapLabel(m))}</strong><small>${esc(m.name)}</small></span><button class="btn small" data-map-restore="${esc(m.id)}">恢复</button></div>`).join('')||'<p>回收站为空</p>'}</div>`);
+ mapTrashScope=scope;mapTrashRows=result.maps;
+ const purge=mapLibrary.permanent_delete_supported&&mapLibrary.desktop_permanent_delete_supported;
+ modal('地图回收站',`<p class="help">恢复后不会自动启用。回收站仍占用存储空间；彻底删除文件后不可恢复。</p><div class="map-trash-list">${result.maps.map(m=>`<div class="map-trash-row"><span><strong>${esc(mapLabel(m))}</strong><small>${esc(m.name)}</small></span><div class="button-row"><button class="btn small" data-map-restore="${esc(m.id)}">恢复</button>${purge?`<button class="btn small danger" data-map-purge="${esc(m.id)}">彻底删除</button>`:''}</div></div>`).join('')||'<p>回收站为空</p>'}</div>`);
 };
+function purgeMapDialog(id){
+ const map=mapTrashRows.find(m=>m.id===id),scope=mapTrashScope;
+ if(!map||scope!==mapScope())throw Error('回收站状态已变化，请重新打开');
+ modal('彻底删除地图文件',`<p>永久删除 <strong>${esc(mapLabel(map))}</strong>？</p><p class="help">编号：${esc(map.name)}</p><p>这份地图的点云、栅格和所包含的记录将被移除，无法从回收站恢复。</p><label class="field">请输入“删除”确认<input id="map-purge-confirm-text" autocomplete="off" placeholder="删除"></label>`,[{label:'永久删除文件',ui:'map-purge-confirm',style:'danger'}]);
+ $('[data-ui="map-purge-confirm"]').disabled=true;
+ ui['map-purge-confirm']=()=>{
+  if($('#map-purge-confirm-text').value.trim()!=='删除')throw Error('请输入“删除”确认');
+  return editLibrary('purge',{id,confirmed_name:map.name},scope);
+ };
+}
 document.addEventListener('click',async e=>{
  const b=e.target.closest('button');if(!b||b.disabled)return;
  try{
   if(b.dataset.mapRename)editMapDialog(b.dataset.mapRename,'rename');
   else if(b.dataset.mapDelete)editMapDialog(b.dataset.mapDelete,'delete');
   else if(b.dataset.mapRestore)await editLibrary('restore',{id:b.dataset.mapRestore},mapTrashScope);
+  else if(b.dataset.mapPurge)purgeMapDialog(b.dataset.mapPurge);
  }catch(error){toast(error.message,true);}
 });
 

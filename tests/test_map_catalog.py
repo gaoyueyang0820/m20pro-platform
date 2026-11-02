@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 import tempfile
+import subprocess
 import unittest
 from unittest.mock import patch
 import sys
@@ -70,6 +71,29 @@ class MapCatalogTests(unittest.TestCase):
         with patch('bridge.mapping_job.read_job',side_effect=lambda kind:records[kind]),patch('bridge.mapping_job.unowned_processes',return_value=[]):
             result=root_actions.execute(dict(action='catalog-delete',name='new'),self.maps,self.root/'data')
         self.assertTrue(result['recoverable'])
+
+    def test_helper_business_error_is_not_reported_as_permission_failure(self):
+        service=MapService(self.maps,self.root/'data')
+        result=subprocess.CompletedProcess([],1,json.dumps(dict(ok=False,err='请先结束行走地图更新，再编辑地图')),'')
+        with patch('bridge.map_service.subprocess.run',return_value=result):
+            with self.assertRaises(ValueError) as error:service.privileged('catalog-delete',dict(name='new'))
+        self.assertEqual(str(error.exception),'请先结束行走地图更新，再编辑地图')
+
+    def test_purge_requires_exact_confirmation_and_preserves_external_link_targets(self):
+        external=self.root/'external';external.write_text('keep')
+        (self.maps/'new/external-link').symlink_to(external)
+        deleted=self.catalog.execute('delete',dict(name='new'));key=deleted['trash_id']
+        with self.assertRaises(ValueError):self.catalog.execute('purge',dict(id=key,confirmed_name='wrong'))
+        self.assertTrue((self.catalog.trash/key/'map/full_cloud.pcd').is_file())
+        result=self.catalog.execute('purge',dict(id=key,confirmed_name='new'))
+        self.assertTrue(result['permanently_deleted']);self.assertFalse((self.catalog.trash/key).exists());self.assertEqual(external.read_text(),'keep')
+
+    def test_purge_still_blocks_busy_state_and_active_references(self):
+        deleted=self.catalog.execute('delete',dict(name='new'));key=deleted['trash_id']
+        busy=MapCatalog(self.maps,lambda:(_ for _ in ()).throw(ValueError('busy')))
+        with self.assertRaisesRegex(ValueError,'busy'):busy.execute('purge',dict(id=key,confirmed_name='new'))
+        (self.maps/'old/linked-map').symlink_to(self.catalog.trash/key/'map/full_cloud.pcd')
+        with self.assertRaisesRegex(ValueError,'引用'):self.catalog.execute('purge',dict(id=key,confirmed_name='new'))
 
 
 if __name__=='__main__':unittest.main()

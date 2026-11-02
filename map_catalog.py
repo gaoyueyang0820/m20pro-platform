@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import threading
 import time
 import uuid
@@ -101,6 +102,20 @@ class MapCatalog:
                 labels=self.labels();labels[name]=label.strip();atomic_json(self.meta,labels)
                 return dict(ok=True,name=name,display_name=labels[name])
             if action=='delete':return self.archive(req.get('name'))
+            if action=='purge':
+                key=req.get('id','')
+                if not re.fullmatch('[a-f0-9]{32}',key):raise ValueError('回收记录无效')
+                if self.trash.is_symlink():raise ValueError('回收站路径异常')
+                source=self.trash/key
+                if source.is_symlink():raise ValueError('回收记录路径异常')
+                meta=read_json(source/'meta.json',{});name=map_name(meta.get('name'))
+                if req.get('confirmed_name')!=name:raise ValueError('请明确确认要彻底删除的地图')
+                folder=source/'map'
+                if not folder.is_dir() or folder.is_symlink():raise ValueError('地图已恢复或回收记录无效')
+                self.ensure_unused(folder)
+                # rmtree removes links themselves, never their external targets.
+                shutil.rmtree(source)
+                return dict(ok=True,name=name,permanently_deleted=True)
             if action=='restore':
                 self.busy();key=req.get('id','')
                 if not re.fullmatch('[a-f0-9]{32}',key):raise ValueError('回收记录无效')

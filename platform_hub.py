@@ -355,7 +355,7 @@ class Hub:
         if path=='/api/connections':return dict(ok=True,connections=self.connections.public())
         if path=='/api/operations':return dict(ok=True,jobs=self.operations.get(query.get('id',[None])[0]))
         if path=='/api/files':return dict(ok=True,files=self.files.list())
-        if path=='/api/maps/library':return dict(self.remote_maps('/maps/list'),desktop_management_version=1)
+        if path=='/api/maps/library':return dict(self.remote_maps('/maps/list'),desktop_management_version=1,desktop_permanent_delete_supported=True)
         if path=='/api/maps/library/trash':return self.remote_maps('/maps/trash')
         if path=='/api/nos/status':
             return dict(self.demo_maps.library(),services=dict(localization='demo',planner='demo')) if self.app.demo else self.proxy('nos','/status',timeout=12)
@@ -642,7 +642,7 @@ class Hub:
         if path=='/api/maps/package/export':return self.operations.submit('map-export',lambda progress:self.export_map(req.get('name'),progress))
         if path=='/api/maps/package/import':return self.mutate('map-import',lambda progress:self.import_package(req.get('id'),req.get('name'),progress))
         if path=='/api/maps/details':return self.remote_maps('/maps/details',req)
-        if path in ['/api/maps/library/rename','/api/maps/library/delete','/api/maps/library/restore']:
+        if path in ['/api/maps/library/rename','/api/maps/library/delete','/api/maps/library/restore','/api/maps/library/purge']:
             action=path.rsplit('/',1)[-1]
             def edit(progress):
                 if self.app.mapping or self.remote_maps('/maps/build/status').get('in_progress'):raise ValueError('正在采集或保存地图，请完成后再编辑')

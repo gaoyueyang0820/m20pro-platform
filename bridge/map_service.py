@@ -62,7 +62,7 @@ class MapService:
                                    cloud_bytes=cloud.stat().st_size if cloud.is_file() else 0,
                                    modified=p.stat().st_mtime,source='demo' if self.demo else 'nos'))
         usage=shutil.disk_usage(self.maps if self.maps.exists() else self.data)
-        return dict(ok=True,maps=result,active=active.name if active.is_dir() else None,management_version=1,trash_count=len(catalog.trash_list()),
+        return dict(ok=True,maps=result,active=active.name if active.is_dir() else None,management_version=1,permanent_delete_supported=True,trash_count=len(catalog.trash_list()),
                     disk=dict(total=usage.total,free=usage.free),demo=self.demo)
 
     def grid(self,name='active',grid_id=0):
@@ -90,17 +90,20 @@ class MapService:
         argv=['sudo','-n','/usr/bin/python3',str(helper)]
         try:r=subprocess.run(argv,input=json.dumps(payload),capture_output=True,text=True,timeout=180)
         except subprocess.TimeoutExpired:raise ValueError('地图管理操作超时，请核对日志')
-        if r.returncode:raise ValueError('地图目录权限不足或系统操作失败，请检查首次部署结果：'+(r.stderr or r.stdout)[-1000:])
         try:result=json.loads(r.stdout)
-        except ValueError:raise ValueError('地图管理助手返回格式异常')
+        except ValueError:
+            if r.returncode:raise ValueError('地图管理助手执行失败，请核对服务权限：'+(r.stderr or r.stdout)[-1000:])
+            raise ValueError('地图管理助手返回格式异常')
+        if not isinstance(result,dict):raise ValueError('地图管理助手返回格式异常')
         if not result.get('ok'):raise ValueError(result.get('err','地图管理失败'))
+        if r.returncode:raise ValueError('地图管理助手异常退出，请查看服务日志')
         return result
 
     def dispatch(self,path,req):
         req=req or {}
         if path=='/maps/list':return self.library()
         if path=='/maps/trash':return dict(ok=True,maps=MapCatalog(self.maps).trash_list())
-        if path in ['/maps/rename','/maps/delete','/maps/restore','/maps/cleanup-previous']:
+        if path in ['/maps/rename','/maps/delete','/maps/restore','/maps/purge','/maps/cleanup-previous']:
             action=path.rsplit('/',1)[-1]
             if self.demo:
                 def busy():

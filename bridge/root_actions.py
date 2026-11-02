@@ -23,7 +23,7 @@ def run(argv):
 
 def _execute(req,maps,data):
     action=req.get('action')
-    if action in ['catalog-rename','catalog-delete','catalog-restore','catalog-cleanup-previous']:
+    if action in ['catalog-rename','catalog-delete','catalog-restore','catalog-purge','catalog-cleanup-previous']:
         def busy():
             try:from .mapping_job import read_job,mapping_phase,unowned_processes
             except ImportError:from mapping_job import read_job,mapping_phase,unowned_processes
