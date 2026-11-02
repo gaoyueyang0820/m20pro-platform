@@ -35,6 +35,7 @@ GROUPS={
             'test_mapping_save_outcomes.SyntheticSavedObservationTests'],
     'lifecycle':['test_mapping_request_identity','test_operations_lifecycle','test_delivery_boundary'],
     'native':['test_native_sensing'],
+    'connections':['test_connection_roaming'],
     'ui':[],
 }
 POSIX_GROUPS={'maps','lifecycle','native'}
@@ -47,7 +48,7 @@ EXCLUDE_TESTS={
         'Calls the host process inventory without a test-local proc fixture; outside portable effect scope.',
 }
 JS_TESTS=['test_autonomy_ui.cjs','test_navigation_ui.cjs','test_cloud_ui.cjs','test_camera_player.cjs',
-          'test_model_check_ui.cjs','test_navigation_status.cjs','test_pose_display.cjs']
+          'test_model_check_ui.cjs','test_navigation_status.cjs','test_pose_display.cjs','test_connection_roaming_ui.cjs']
 NATIVE_PROOFS=[
     'test_native_sensing.NativeSensingTests.test_random_frames_require_native_hit_and_exact_all_field_equality',
     'test_native_sensing.NativeSensingTests.test_full_100k_150k_300k_inputs_are_native_not_hidden_fallback',
