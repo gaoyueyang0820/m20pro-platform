@@ -25,6 +25,7 @@ from urllib.parse import urlparse,parse_qs,quote
 from urllib.request import Request, urlopen
 
 import m20_console as original
+import greeting
 from platform_core import ROOT, JOINTS, LEGS, NEUTRAL, ERRORS, RobotLink, Store, Training, number, integer, rpc, explain_error, leg_target, age_of
 from platform_hub import Hub
 from shared_access import SharedAccess, lan_addresses
@@ -86,6 +87,8 @@ class Platform:
     def __init__(self, store=None):
         self.lock = threading.RLock()
         self.instance_id=uuid.uuid4().hex
+        self._greet_lock=threading.Lock(); self._greet_busy=False
+        self._greet_demo=None  # (结束时刻, 'nod'/'bob', 开始时刻)：演示模式的合成问候姿态
         from pose_monitor import PoseMonitor
         self.pose_monitor=PoseMonitor()
         self.store = store or Store()
@@ -322,11 +325,163 @@ class Platform:
                     if f is not None: self.lights['Front'] = f
                     if b is not None: self.lights['Back'] = b
             else:
+                if action in ('greet',) or action.startswith('greet_'):
+                    return self.greet(**self._greet_args(action))
                 raise ValueError('未知指令')
             result = dict(ok=True, delivery='sent' if self.link else 'simulated',
                           message='已发送，实际执行以状态回报为准' if self.link else '演示操作完成')
         self.add_log('command', action)
         return result
+
+    @staticmethod
+    def _greet_args(action):
+        """greet / greet_<style> / greet_nod / greet_bob → greet() 关键字参数。"""
+        suffix = action[6:]
+        if suffix in ('nod', 'bob'):
+            return dict(style='breathe', motion=suffix)
+        if suffix and suffix in greeting.LIGHT_STYLES:
+            return dict(style=suffix)
+        if suffix:
+            raise ValueError('未知打招呼动作：' + action)
+        return dict(style='breathe')
+
+    def greet(self, style='breathe', motion=None):
+        """一键打招呼：灯语（可靠）+ 可选原地点头/起伏（实验动作，前置自检）。
+
+        序列在后台线程执行；动作类期间持有 drive_lock，使 20Hz 保活环暂停，
+        避免 Pitch/Z 序列与保活零轴帧互相覆盖。任何异常都会恢复默认灯效并归零。
+        """
+        if style not in greeting.LIGHT_STYLES:
+            raise ValueError('未知灯语预设')
+        if motion and self.nav['status'] in ['running', 'cancelling']:
+            raise ValueError('导航任务进行中，不能执行动作类问候')
+        if self.demo:
+            # 演示环境没有真实关节反馈：合成一段姿态变化让界面可预览，
+            # 明确标注为模拟，不产生任何 UDP 运动指令。
+            label = {'nod': '点头', 'bob': '起伏'}.get(motion, '')
+            if motion:
+                with self._greet_lock:
+                    if self._greet_busy:
+                        raise ValueError('上一次打招呼还未结束，请稍候')
+                    self._greet_busy = True
+                period = greeting.NOD_PERIOD_S if motion == 'nod' else greeting.BOB_PERIOD_S
+                duration = period * 2
+                self._greet_demo = (time.time() + duration, motion, time.time())
+
+                def demo_worker():
+                    try:
+                        time.sleep(duration)
+                        self.add_log('greet', '演示问候结束：%s + 原地%s（模拟）' % (style, label))
+                    finally:
+                        self._greet_demo = None
+                        self._greet_busy = False
+                threading.Thread(target=demo_worker, daemon=True).start()
+                self.add_log('greet', '灯语问好 + 原地%s（演示模拟）:%s' % (label, style))
+                return dict(ok=True, delivery='simulated',
+                            message='演示模式：灯语 4 秒 + 原地%s已模拟（姿态为合成数据，非实机动作）' % label)
+            self.add_log('greet', '灯语问好（演示）:' + style)
+            return dict(ok=True, delivery='simulated', message='演示模式：灯语问好（%s）已模拟' % style)
+        if not self.link:
+            raise ValueError('机器人未连接：请在连接中心完成 AOS 连接并确认状态反馈后再问候')
+        link = self.link
+        # 前置检查必须在返回“进行中”之前完成：否则界面报成功、实际被静默拒绝。
+        basic_record = link.record(1002, 6)
+        motion_record = link.record(1002, 4)
+        # 动作前记录步态/使用模式：轴指令会切换运动模式，结束后要恢复。
+        locomotion_before = greeting.locomotion_snapshot(basic_record.get('items', {}))
+        if motion:
+            ok, message = greeting.precheck(basic_record.get('items', {}), motion_record.get('items', {}))
+            if not ok:
+                self.add_log('greet', '前置检查未通过：' + message)
+                raise ValueError('无法执行动作类问候：' + message)
+        elif age_of(basic_record) > 3:
+            self.add_log('greet', '基础状态超过 3 秒未更新，灯语仍会尝试下发')
+        with self._greet_lock:
+            if self._greet_busy:
+                raise ValueError('上一次打招呼还未结束，请稍候')
+            self._greet_busy = True
+
+        def cleanup():
+            try:
+                link.command(greeting.LIGHT_TYPE, greeting.LIGHT_CMD, greeting.light_off_items(), 'greet-cleanup')
+                for items in greeting.zero_plan(0.2):
+                    link.command(greeting.AXIS_TYPE, greeting.AXIS_CMD, items, 'greet-cleanup')
+            except Exception:
+                pass
+
+        def restore(snapshot, tag='greet-restore'):
+            """把步态/使用模式发回打招呼前的值，并轮询确认（轴指令会切换运动模式）。"""
+            commands = greeting.restore_commands(snapshot)
+            if not commands:
+                return
+            for type_, cmd, items, label in commands:
+                link.command(type_, cmd, items, label)
+                time.sleep(0.5)
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                basic = link.record(1002, 6).get('items', {})
+                status = basic.get('BasicStatus') or basic
+                if status.get('Gait') == snapshot.get('gait'):
+                    self.add_log('greet', '已恢复原运行状态：步态 0x%04X' % snapshot['gait'])
+                    return
+                time.sleep(0.2)
+            basic = link.record(1002, 6).get('items', {})
+            status = basic.get('BasicStatus') or basic
+            self.add_log('greet', '步态恢复未确认（当前 0x%04X，期望 0x%04X），请手动切回' % (
+                status.get('Gait') or 0, snapshot.get('gait') or 0))
+
+        def worker():
+            try:
+                light = greeting.light_on_items(style)
+                link.command(greeting.LIGHT_TYPE, greeting.LIGHT_CMD, light, 'greet-light')
+                deadline = time.monotonic() + 4
+                while time.monotonic() < deadline:
+                    time.sleep(1)
+                    link.command(greeting.LIGHT_TYPE, greeting.LIGHT_CMD, light, 'greet-light')
+                if motion:
+                    # 灯语 4 秒期间状态可能变化：动作前再核对一次。
+                    ok2, message2 = greeting.precheck(link.record(1002, 6).get('items', {}),
+                                                      link.record(1002, 4).get('items', {}))
+                    if not ok2:
+                        self.add_log('greet', '动作已取消（状态变化）：' + message2)
+                        link.command(greeting.LIGHT_TYPE, greeting.LIGHT_CMD, greeting.light_off_items(), 'greet-light-off')
+                        return
+                    frames = greeting.nod_plan() if motion == 'nod' else greeting.bob_plan()
+                    period = 1.0 / greeting.AXIS_HZ
+                    with link.drive_lock:
+                        began = time.monotonic()
+                        for k, items in enumerate(frames):
+                            delay = began + k * period - time.monotonic()
+                            if delay > 0:
+                                time.sleep(delay)
+                            link.command(greeting.AXIS_TYPE, greeting.AXIS_CMD, items, 'greet-motion')
+                        for items in greeting.zero_plan():
+                            link.command(greeting.AXIS_TYPE, greeting.AXIS_CMD, items, 'greet-motion')
+                            time.sleep(period)
+                link.command(greeting.LIGHT_TYPE, greeting.LIGHT_CMD, greeting.light_off_items(), 'greet-light-off')
+                # 轴指令会把机器人切到标准运动模式（实机 Gait 由 0x3002 变 0x1003），
+                # 导致之后无法按原方式行走，因此动作结束后必须恢复原步态/使用模式。
+                if motion:
+                    restore(locomotion_before)
+                self.add_log('greet', '打招呼完成:%s%s' % (style, '+' + motion if motion else ''))
+            except Exception as exc:
+                cleanup()
+                if motion:
+                    try:
+                        restore(locomotion_before)
+                    except Exception:
+                        pass
+                self.add_log('greet', '打招呼异常：' + str(exc))
+            finally:
+                self._greet_busy = False
+        threading.Thread(target=worker, daemon=True).start()
+        message = '打招呼进行中：灯语 4 秒，随后自动恢复默认灯效'
+        if motion:
+            amplitude = greeting.NOD_AMPLITUDE if motion == 'nod' else greeting.BOB_AMPLITUDE
+            seconds = (greeting.NOD_PERIOD_S if motion == 'nod' else greeting.BOB_PERIOD_S) * 2
+            message = '打招呼进行中：灯语 4 秒 + 原地%s 2 次（幅度 %d%%，约 %.1f 秒，全程无位移）' % (
+                '点头' if motion == 'nod' else '起伏', round(amplitude * 100), seconds)
+        return dict(ok=True, delivery='sent', message=message)
 
     def set_velocity(self, req, autonomous=False, valid_until=None):
         if not autonomous:
@@ -1161,6 +1316,20 @@ class Platform:
                          GPS=dict(FixQuality=4,NumSatellites=24,Latitude=30.2741,Longitude=120.1551,HDOP=.8),
                          DevEnable=dict(Lidar=dict(Front=1,Back=1),Video=dict(Front=1,Back=1),GPS=1))
                 motion=dict(Roll=.01*math.sin(t),Pitch=.008*math.cos(t),Yaw=self.pose['Yaw'],LinearX=self.velocity[0],LinearY=self.velocity[1],OmegaZ=self.velocity[2],Height=.56)
+                # 演示模式的打招呼：用合成姿态变化让界面可预览，不含任何实机指令。
+                demo_greet=self._greet_demo
+                if demo_greet:
+                    until,mode,began=demo_greet
+                    if now<until:
+                        elapsed=now-began
+                        if mode=='nod':
+                            # 预览幅度 ±0.3 rad（约 17°），周期与实机序列一致
+                            motion['Pitch']+=.3*math.sin(2*math.pi*elapsed/greeting.NOD_PERIOD_S)
+                        else:
+                            # 预览幅度 ±0.10 m，周期与实机序列一致
+                            motion['Height']+=.10*math.sin(2*math.pi*elapsed/greeting.BOB_PERIOD_S)
+                    else:
+                        self._greet_demo=None
                 joints=[dict(j,position=self.positions[i],target=self.target[i],velocity=self.wheels[i//4] if i%4==3 else 0.,
                              torque=0.,temperature=38+i%5+math.sin(t/7),fresh=True,source='demo') for i,j in enumerate(JOINTS)]
                 sdk=dict(self.sdk,connected=True,backend='demo',fresh=True,vendor_running=self.hub.demo_policy.get('vendor_running',False))
