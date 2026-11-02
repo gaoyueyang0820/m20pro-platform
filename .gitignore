@@ -33,3 +33,13 @@ native/*.o
 tests/fixtures/runtime_replay/*.json
 调试交接/
 screenshots/
+
+.dev/
+*.zip
+*.tar.gz
+*.pid
+下次调试入口.md
+release-manifest.json
+
+.artifacts/
+/验证结果.json

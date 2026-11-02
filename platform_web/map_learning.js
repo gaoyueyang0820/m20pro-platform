@@ -31,7 +31,7 @@ let goalPlanRequest=null,goalReplanning=false;
 function goalKey(){if(page!=='navigation'||navIntent!=='goal'||points.length!==1)return '';return [mapId,points[0].x,points[0].y,$('#goal-yaw-mode')?.value,$('#goal-yaw')?.value,pointNavigationEngine].join('|');}
 function validGoalPlan(){return !!(goalKey()&&goalPlan&&goalKey()===goalPlanKey&&performance.now()-goalPlan.received<55000);}
 function invalidateGoalPlan(){
- goalPlanGeneration++;goalPlan=null;goalPlanKey='';goalPlanError='';$('#goal-plan-preview')?.remove();
+ goalPlanGeneration++;goalPlan=null;goalPlanKey='';goalPlanError='';$('#goal-plan-preview')?.remove();$('#goal-recovery-preview')?.remove();
  const request=goalPlanRequest;goalPlanRequest=null;goalPlanBusy=false;
  if(request){clearTimeout(request.timer);request.controller.abort();}
 }
@@ -59,7 +59,8 @@ function paintGoalPlan(){
  const b=$('[data-ui="go-goal"]');if(b){const disabled=!!reason;if(b.disabled!==disabled)b.disabled=disabled;b.title=reason||'沿预览路线前往目标';}
  const replan=$('[data-ui="goal-replan"]');if(replan){replan.disabled=!key||goalReplanning||goalSubmitting;replan.title=!key?'请先选择目标':goalReplanning?'正在重新规划':'重新计算当前目标的路线';}
  const message=!key?'点选已知空地，自动预览路线':goalPlanBusy?'正在检查通路与转弯空间…':goalPlanError||(valid?goalPlan.length_m+' 米 · '+Math.max(0,goalPlan.points.length-1)+' 个参考折点 · 到达朝向 '+(goalPlan.goal.yaw*180/Math.PI).toFixed(0)+'°':'等待规划');
- text('goal-plan-status',message+(valid&&S.mode==='live'?' · '+goalPlan.obstacle_note:''));
+ const recovery=valid&&goalPlan.recovery?.required?` · 起点先平移退让 ${Math.round(goalPlan.recovery.recovery_distance_m*100)} 厘米再前往目标`:'';
+ text('goal-plan-status',message+recovery+(valid&&S.mode==='live'?' · '+goalPlan.obstacle_note:''));
  const feedback=$('#nav-feedback');if(feedback&&S.nav.warning&&!feedback.querySelector('.nav-progress-warning')){const note=document.createElement('p');note.className='help nav-progress-warning';note.textContent=S.nav.warning;feedback.append(note);}
 }
 ui['goal-replan']=async()=>{
@@ -82,9 +83,10 @@ ui['go-goal']=async()=>{
  goalSubmitting=true;paintGoalPlan();
  try{const r=await api('/api/nav/goal',{map_id:mapId,plan_id:goalPlan.plan_id,engine:pointNavigationEngine});await fetchState();toast(r.message);}finally{goalSubmitting=false;paintGoalPlan();}
 };
-const plannedDraw=drawMap;drawMap=function(){plannedDraw();$('#goal-plan-preview')?.remove();if(page!=='navigation'||navIntent!=='goal')return;const m=selectedMap(),svg=$('#nav-map');if(!m||!svg)return;
+const plannedDraw=drawMap;drawMap=function(){plannedDraw();$('#goal-plan-preview')?.remove();$('#goal-recovery-preview')?.remove();if(page!=='navigation'||navIntent!=='goal')return;const m=selectedMap(),svg=$('#nav-map');if(!m||!svg)return;
  const p=S?.nav?.engine==='platform'&&S.nav.status==='running'?S.nav.plan:goalKey()&&goalKey()===goalPlanKey?goalPlan:null;if(!p?.path?.length)return;
  const line=document.createElementNS('http://www.w3.org/2000/svg','polyline');line.id='goal-plan-preview';line.setAttribute('points',p.path.map(v=>[(v.x-m.origin[0])/m.resolution,m.height-(v.y-m.origin[1])/m.resolution].join(',')).join(' '));line.setAttribute('fill','none');line.setAttribute('stroke','#2d9675');line.setAttribute('stroke-width','3');line.setAttribute('stroke-linejoin','round');line.setAttribute('pointer-events','none');svg.append(line);
+ if(p.recovery?.required&&p.recovery.prefix?.length){const prefix=document.createElementNS('http://www.w3.org/2000/svg','polyline');prefix.id='goal-recovery-preview';prefix.setAttribute('points',p.recovery.prefix.map(v=>[(v.x-m.origin[0])/m.resolution,m.height-(v.y-m.origin[1])/m.resolution].join(',')).join(' '));prefix.setAttribute('fill','none');prefix.setAttribute('stroke','#c78b26');prefix.setAttribute('stroke-width','4');prefix.setAttribute('stroke-dasharray','5 3');prefix.setAttribute('pointer-events','none');svg.append(prefix);}
 };
 document.addEventListener('change',e=>{if(['goal-yaw','goal-yaw-mode'].includes(e.target.id)){if($('#goal-yaw-field'))$('#goal-yaw-field').hidden=$('#goal-yaw-mode').value!=='manual';invalidateGoalPlan();paintGoalPlan();drawMap();}});
 setInterval(()=>{if(document.hidden||goalReplanning)return;const key=goalKey();if(key&&!goalPlanBusy&&(key!==goalPlanKey||goalPlan&&performance.now()-goalPlan.received>55000)&&!['running','cancelling'].includes(S?.nav?.status))refreshGoalPlan();},300);

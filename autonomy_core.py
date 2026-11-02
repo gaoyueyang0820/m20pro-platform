@@ -112,6 +112,10 @@ class Explorer:
         self.prior=None;self.target_kind='observe'
         self.visited = set(); self.distance = 0.; self.replans = 0
         self.recovery=None;self.recovery_attempts=0;self.motion_hint='等待规划';self.recovery_limit=.4
+        self.recovery_episode=0;self.recovery_total_attempts=0;self.recovery_resets=0
+        self.recovery_episode_anchor=None;self.recovery_history=set();self.recovery_new_cells=set()
+        self.recovery_measured_distance=0.;self.recovery_last_translation=None
+        self.recovery_reset_reason=None;self.recovery_block_reason=None;self.actual_visited=set()
         self.plan_state='idle'
         self.distance_anchor=None
         self._current_yaw_rate=0.
@@ -140,9 +144,11 @@ class Explorer:
         if scan.get('_speed_mps',1.)<.08:self.distance_anchor=(x,y)
         elif math.dist((x,y),self.distance_anchor)>=.06:
             self.distance+=math.dist((x,y),self.distance_anchor);self.distance_anchor=(x,y)
+        self._update_recovery_episode(scan)
         self.last_pose = (x,y,yaw)
         self.frontiers.observe_pose(self.last_pose)
         self.visited.add(cell(x,y))
+        self.actual_visited.add(cell(x,y))
         self.last_stamp=scan.get('stamp')
         c,s = math.cos(yaw), math.sin(yaw)
         def world(p):
@@ -223,7 +229,42 @@ class Explorer:
         A changed local obstacle set or a finite cooldown reopens the region.
         """
         self.frontiers.blocked(self.goal,self.last_stamp if self.last_stamp is not None else time.monotonic(),self.obstacles,reason)
-        self.path=[];self.goal=None;self.recovery=None;self.recovery_attempts=0
+        self.path=[];self.goal=None;self.recovery=None
+
+    def _update_recovery_episode(self,scan):
+        """Earn a new escape budget by observed translation into NEW space.
+
+        Path bookkeeping/goal changes do not prove motion: command() marks
+        nearby path cells visited before the body centre actually reaches them.
+        actual_visited is therefore maintained only by pose observations.
+        """
+        anchor=self.recovery_episode_anchor
+        if anchor is None or not self.recovery_attempts:return
+        pose=scan['pose'];stamp=scan.get('stamp');speed=scan.get('_speed_mps')
+        known=isinstance(speed,(int,float)) and not isinstance(speed,bool) and math.isfinite(speed) and speed>=0
+        has_velocity='_velocity_body' in scan;velocity=scan.get('_velocity_body')
+        if has_velocity:
+            known=known and isinstance(velocity,(list,tuple)) and len(velocity)==2 and all(isinstance(v,(int,float)) and math.isfinite(v) for v in velocity)
+        timed=isinstance(stamp,(int,float)) and math.isfinite(stamp) and isinstance(self.last_stamp,(int,float)) and stamp>self.last_stamp
+        if known and timed and self.last_pose and speed>=.08:
+            dt=stamp-self.last_stamp;step=math.dist(pose[:2],self.last_pose[:2])
+            measured=not has_velocity or math.hypot(*velocity)>=.08
+            # Pose drift or a sub-jump-sized localization correction cannot
+            # buy a budget inconsistent with the measured translation speed.
+            if measured and .005<=step<=min(.8,2*speed*dt+.08):
+                self.recovery_measured_distance+=step
+                self.recovery_last_translation=(tuple(pose[:2]),stamp)
+                key=cell(*pose[:2])
+                if key not in self.recovery_history:self.recovery_new_cells.add(key)
+        last=self.recovery_last_translation
+        recent=(known and timed and last is not None and 0<=stamp-last[1]<=.7
+                and math.dist(pose[:2],last[0])<=.12)
+        if (self.recovery is None and recent and math.dist(pose[:2],anchor)>=.6
+                and self.recovery_measured_distance>=.6 and len(self.recovery_new_cells)>=3
+                and cell(*pose[:2]) not in self.recovery_history):
+            self.recovery_attempts=0;self.recovery_resets+=1;self.recovery_episode_anchor=None
+            self.recovery_reset_reason='已实测平移至少0.6米并进入新区域，恢复下一处受阻的退让次数'
+            self.recovery_block_reason=None
 
     def command(self,yaw_rate=0.,observation_age=0.):
         x,y,yaw = self.last_pose
@@ -272,7 +313,16 @@ class Explorer:
             scored.append((score,f,side))
         return sorted(scored,reverse=True)
 
-    def _recovery_available(self):return self.recovery is not None or bool(self._escape_candidates())
+    def _no_recovery(self):
+        self.recovery_block_reason='attempts_exhausted' if self.recovery_attempts>=3 else 'no_verified_corridor'
+        self.motion_hint=('本处退让已尝试3次，需实际走出到新区域后再试' if self.recovery_attempts>=3
+                          else '当前扫描没有已确认的退让通路')
+
+    def _recovery_available(self):
+        if self.recovery is not None:return True
+        possible=bool(self._escape_candidates())
+        if not possible:self._no_recovery()
+        return possible
 
     def _motion_ready(self,f,side):
         velocity=self.current_scan.get('_velocity_body')
@@ -287,8 +337,13 @@ class Explorer:
     def _recover_axes(self):
         if self.recovery is None:
             options=self._escape_candidates()
-            if not options:self.motion_hint='没有已确认的退让通路';return 0.,0.,0.
+            if not options:self._no_recovery();return 0.,0.,0.
+            if self.recovery_attempts==0:
+                self.recovery_episode+=1;self.recovery_episode_anchor=tuple(self.last_pose[:2])
+                self.recovery_history=set(self.actual_visited);self.recovery_new_cells=set()
+                self.recovery_measured_distance=0.;self.recovery_last_translation=None;self.recovery_reset_reason=None
             _,f,side=options[0];self.recovery_attempts+=1
+            self.recovery_total_attempts+=1;self.recovery_block_reason=None
             self.recovery=dict(forward=f,side=side,origin=self.last_pose[:2],stamp=self.current_scan.get('stamp',time.monotonic()))
         move=self.recovery;elapsed=self.current_scan.get('stamp',time.monotonic())-move['stamp']
         travelled=math.dist(self.last_pose[:2],move['origin'])
@@ -315,7 +370,6 @@ class Explorer:
         f,yaw=self.command(yaw_rate,observation_age)
         if not self.path:
             if self.goal in self.visited:
-                self.recovery_attempts=0
                 if self.plan()=='planned':f,yaw=self.command(yaw_rate,observation_age)
             if not self.path:return self._recover_axes() if self.plan_state=='recovering' else (0.,0.,0.)
         if abs(yaw_rate)>.25:
@@ -337,7 +391,10 @@ class Explorer:
     def view(self):
         return dict(floor=list(self.free),obstacles=list(self.obstacles),path=self.path,
                     pose=self.last_pose,origin=self.origin,resolution=RESOLUTION,
-                    area=round(len(self.free)*RESOLUTION**2,1),distance=round(self.distance,2),net_displacement=round(math.dist(self.last_pose[:2],self.origin),2) if self.last_pose and self.origin else 0,replans=self.replans,target_kind=self.target_kind,motion_hint=self.motion_hint,recovery_attempts=self.recovery_attempts,frontier_metrics=dict(self.frontier_metrics))
+                    area=round(len(self.free)*RESOLUTION**2,1),distance=round(self.distance,2),net_displacement=round(math.dist(self.last_pose[:2],self.origin),2) if self.last_pose and self.origin else 0,replans=self.replans,target_kind=self.target_kind,motion_hint=self.motion_hint,recovery_attempts=self.recovery_attempts,frontier_metrics=dict(self.frontier_metrics),
+                    recovery_episode=dict(number=self.recovery_episode,total_attempts=self.recovery_total_attempts,resets=self.recovery_resets,
+                        anchor=self.recovery_episode_anchor,measured_distance=round(self.recovery_measured_distance,2),new_cells=len(self.recovery_new_cells),
+                        block_reason=self.recovery_block_reason,reset_reason=self.recovery_reset_reason))
 
 
 class PriorMap:

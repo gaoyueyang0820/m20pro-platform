@@ -14,6 +14,7 @@ import uuid
 from local_trajectory import TrajectoryFollower, wrap
 from navigation_planner import GridPlanner
 from platform_core import age_of
+from start_recovery_runtime import plan_with_recovery, TranslationRecovery
 
 
 def simulated_scan(planner,pose,stamp=None):
@@ -155,6 +156,7 @@ class PointNavigator:
         if app.demo:
             pose=[app.pose[k] for k in ['PosX','PosY','Yaw']]
             result=simulated_scan(self.planner,pose);result['_velocity_body']=app.velocity[:2];result['_speed_mps']=math.hypot(*app.velocity[:2])
+            result.update(protocol=1,frame_id='base_link',pose_frame_id='map',pose_stamp=result['stamp'],resolution=.2,_valid_until=time.monotonic()+.65)
             return result,app.velocity[2]
         result=app.autonomy.scan_now(False)
         rec=app.link.record(1002,4);v=rec.get('items',{}).get('MotionStatus',{})
@@ -183,9 +185,12 @@ class PointNavigator:
             raw=Path(plan['source']).read_bytes()
             if hashlib.sha256(raw).hexdigest()!=plan['fingerprint']:raise ValueError('地图已更新，请重新规划')
             planner=GridPlanner(raw,map_['resolution'],map_['origin'],map_.get('negate',0),map_.get('free_thresh',.196),map_.get('occupied_thresh',.65),enable_live_surface=not app.demo)
-            follower=TrajectoryFollower();follower.set_path(plan['result'].get('dense_path') or plan['result']['path'])
+            preview_recovery=plan['result'].get('recovery',{})
+            initial_path=preview_recovery.get('global_plan',plan['result'])
+            follower=TrajectoryFollower();follower.set_path(initial_path.get('dense_path') or initial_path['path'])
             with app.lock:self.check(token);self.planner=planner;self.follower=follower
             goal=plan['result']['goal'];last_replan=0.;blocked_at=None;sensor_lost=None;initial=None
+            recovery=None;start_checked=False;start_wait=time.monotonic()
             from autonomy_runtime import MotionProgress
             progress=MotionProgress();dynamic={};last_stamp=None
             while not app.done:
@@ -199,13 +204,56 @@ class PointNavigator:
                 self.check(token);sensor_lost=None
                 if scan.get('stamp')==last_stamp:time.sleep(.025);continue
                 last_stamp=scan.get('stamp');pose=scan['pose'];distance=math.hypot(goal['x']-pose[0],goal['y']-pose[1]);initial=initial or max(.01,distance)
-                if not app.demo:
+                if app.demo:
+                    projected=scan;localization=dict(normal=True,confidence=1.,pose=list(pose),age=0.,epoch='demo')
+                    standing=app.basic.get('MotionState')==17 and app.basic.get('HES')==0
+                    surface=dict(state='demo',temporary_free_cells=0)
+                else:
                     projected,localization=app.navigation_surface(map_['id'],scan)
                     surface=planner.update_live_surface(projected,localization)
+                    basic_record=app.link.record(1002,6);basic=basic_record.get('items',{}).get('BasicStatus',{})
+                    standing=age_of(basic_record)<.5 and basic.get('MotionState')==17 and basic.get('HES')==0 and not basic.get('Sleep')
                     self._update(token,live_surface=surface)
                 motion_supported=math.hypot(*scan.get('_velocity_body',[0.,0.]))>.08
                 progress_detail=progress.update(pose,(goal['x'],goal['y']),0.,now,motion_supported)
                 if progress.stalled(now):raise ValueError('持续没有实际进展，当前目标暂停')
+                if not start_checked:
+                    # A preview seed is never a motion plan. Recompute recovery
+                    # from the NEW scan and current working map while stopped.
+                    if preview_recovery.get('required') or not planner.pose_fits(*pose):
+                        self._drive(token,[0,0,0],scan)
+                        self._update(token,phase='preparing_recovery',execution_state='preparing',message='正在按当前扫描核对起点退让空间')
+                        try:fresh=plan_with_recovery(planner,pose,[goal['x'],goal['y']],goal['yaw'],projected,localization,standing)
+                        except ValueError as exc:
+                            detail=getattr(exc,'recovery',{})
+                            if (detail.get('classification')=='map_surface_disagreement' and now-start_wait<2.5
+                                    and surface.get('state') in ['waiting_evidence','projection_unconfirmed']):
+                                self._update(token,message='等待独立地面帧核对起点旧图冲突',execution_state='waiting_progress')
+                                time.sleep(.04);continue
+                            raise
+                        self.check(token)
+                        if fresh.get('recovery',{}).get('required'):
+                            recovery=TranslationRecovery(fresh['recovery'],now=time.monotonic())
+                            self._update(token,plan=fresh,recovery=dict(state='settling',preview_recomputed=True),phase='recovering_start',message='起点仅余量不足，准备连续平移退让')
+                        else:
+                            follower.set_path(fresh.get('dense_path') or fresh['path']);self._update(token,plan=fresh)
+                    start_checked=True
+                if recovery is not None:
+                    result=recovery.command(planner,projected,localization,yaw_rate,standing=standing)
+                    self.check(token)
+                    limited=dict(scan,_valid_until=min(scan.get('_valid_until',time.monotonic()),result['valid_until']))
+                    self._drive(token,result['axes'],limited)
+                    self._update(token,phase='recovering_start',execution_state=('moving' if motion_supported else 'awaiting_progress') if any(result['axes']) else 'waiting_progress',
+                                 message=result['reason'],recovery=result,controller=result,progress_detail=progress_detail)
+                    if result['state']=='failed':raise ValueError(result['reason'])
+                    if result['state']=='complete':
+                        # Handoff is based on observed position and stillness;
+                        # do not teleport to the preview's recovered endpoint.
+                        self._drive(token,[0,0,0],scan)
+                        new=planner.plan(pose,[goal['x'],goal['y']],goal['yaw'],budget=1.2)
+                        self.check(token);follower.set_path(new.get('dense_path') or new['path']);recovery=None
+                        self._update(token,plan=new,phase='tracking',message='起点恢复已停稳，已从实际位置接续原目标',recovery=dict(result,state='completed'))
+                    time.sleep(.04);continue
                 result=follower.command(scan,yaw_rate,goal['yaw'],allowed_pose=planner.pose_fits)
                 self.check(token)
                 if result['state']=='arrived':
@@ -219,18 +267,20 @@ class PointNavigator:
                                     message=result['reason'],controller=result,progress=max(0,min(.99,1-distance/initial)),distance_remaining=round(distance,2),progress_detail=progress_detail)
                 if blocked_at and now-blocked_at>.6 and now-last_replan>1.5:
                     self._drive(token,[0,0,0],scan);last_replan=now
-                    # Live floor clears only previously observed dynamic cells;
-                    # immutable static walls and unknown map cells remain intact.
                     c,s=math.cos(pose[2]),math.sin(pose[2])
                     def world(p):return (round((pose[0]+c*p[0]*.2-s*p[1]*.2)/.2),round((pose[1]+s*p[0]*.2+c*p[1]*.2)/.2))
                     for p in scan['floor']:dynamic.pop(world(p),None)
                     for p in scan['obstacles']:dynamic[world(p)]=now
                     dynamic={p:t for p,t in dynamic.items() if now-t<15}
                     planner.update_obstacles([(p[0]*.2,p[1]*.2) for p in dynamic],robot_pose=pose)
-                    try:new=planner.plan(pose,[goal['x'],goal['y']],goal['yaw'],budget=1.2)
+                    try:new=plan_with_recovery(planner,pose,[goal['x'],goal['y']],goal['yaw'],projected,localization,standing,budget=1.2)
                     except ValueError as exc:
                         self._update(token,message='通路暂时被占用，等待或绕行：'+str(exc));continue
-                    self.check(token);follower.set_path(new.get('dense_path') or new['path'])
+                    self.check(token)
+                    if new.get('recovery',{}).get('required'):
+                        recovery=TranslationRecovery(new['recovery'],now=time.monotonic())
+                        self._update(token,phase='recovering_start',recovery=dict(state='settling',preview_recomputed=True))
+                    else:follower.set_path(new.get('dense_path') or new['path'])
                     with app.lock:
                         if self.current(token):self.nav.update(plan=new,replans=self.nav['replans']+1,message='已根据当前障碍重规划')
                 time.sleep(.04)

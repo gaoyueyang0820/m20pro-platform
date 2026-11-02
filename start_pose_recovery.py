@@ -64,7 +64,19 @@ class _Geometry:
         bound=radius+math.hypot(CLEARANCE_HALF_LENGTH,CLEARANCE_HALF_WIDTH)+.2
         x,y=start[:2];left,top=planner.cell(x-bound,y+bound);right,bottom=planner.cell(x+bound,y-bound)
         self.bounds=(planner.origin[0],planner.origin[1],planner.origin[0]+planner.w*planner.res,planner.origin[1]+planner.h*planner.res)
-        self.map_boxes=self._boxes(planner.free,left,right,top,bottom)
+        working=planner.free
+        self.refined_live_raster_cells=0
+        layer=getattr(planner,'live_surface',None)
+        if self.precise and layer is not None and layer.last_stamp==scan.get('stamp'):
+            # Use exact CURRENT obstacle boxes for physical recovery, instead
+            # of interpreting their conservative raster cover as a new solid
+            # wall. Static occupied/unknown and independent overlays remain.
+            working=planner.free.copy()
+            for ix,iy in layer.blocked_cells:
+                if planner.base_free[iy,ix] and (ix,iy) not in planner.overlay:
+                    if not working[iy,ix]:self.refined_live_raster_cells+=1
+                    working[iy,ix]=True
+        self.map_boxes=self._boxes(working,left,right,top,bottom)
         self.base_boxes=self._boxes(planner.base_free,left,right,top,bottom)
 
     def _boxes(self,free,left,right,top,bottom):
@@ -175,6 +187,7 @@ def recover_start(planner,start,goal,yaw=None,scan=None,localization=None,standi
         result['support_seed']=dict(pose=list(scan['pose']),resolution=geometry.res,stamp=scan['stamp'],
             floor=[list(q) for q in sorted(geometry.floor) if math.hypot(*q)*geometry.res<=max_distance+.8],
             policy='only carry previously measured ground into the current body blind patch')
+        result['live_obstacle_raster_refined_cells']=geometry.refined_live_raster_cells
         map_gap=geometry.map_gap(start);live_gap=geometry.local_gap(start)
         result['initial_clearance_lower_bound_m']=round(min(map_gap,live_gap),4)
         if live_gap<-1e-8:

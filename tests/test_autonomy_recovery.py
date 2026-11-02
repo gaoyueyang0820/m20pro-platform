@@ -14,6 +14,16 @@ def scan(pose=(0.,0.,0.),obstacles=(),stamp=1.,floor=None):
                 obstacles=[list(p) for p in obstacles],stamp=stamp)
 
 class RecoveryTests(unittest.TestCase):
+    def exhaust_episode(self,e):
+        pose=e.last_pose or (0.,0.,0.);start=(e.last_stamp or 0)+1
+        for attempt in range(3):
+            e.ingest(dict(scan(pose,obstacles=[(3,0)],stamp=start+attempt*4),_speed_mps=0.,_velocity_body=[0.,0.]))
+            e.path=[cell(pose[0]+.5,pose[1]),cell(pose[0]+1.2,pose[1])];e.goal=e.path[-1];e.plan_state='planned'
+            self.assertNotEqual(e.command_axes(),(0.,0.,0.))
+            e.ingest(dict(scan(pose,obstacles=[(3,0)],stamp=start+attempt*4+3.1),_speed_mps=0.,_velocity_body=[0.,0.]))
+            self.assertEqual(e.command_axes(),(0.,0.,0.))
+        return start+12
+
     def test_reverse_and_lateral_sweeps_check_the_correct_direction(self):
         s=scan(obstacles=[(-3,0)])
         self.assertTrue(clearance(s,.25,0)[0]);self.assertFalse(clearance(s,-.25,0)[0])
@@ -103,5 +113,74 @@ class RecoveryTests(unittest.TestCase):
             x+=(c*f-sn*side)*.2;y+=(sn*f+c*side)*.2;yaw+=turn*.2;previous_turn=turn
             if x>.9:break
         self.assertTrue(seen_side);self.assertTrue(seen_forward);self.assertGreater(x,.9)
+
+    def test_new_observed_translation_rearms_next_obstacle_without_goal_reached(self):
+        e=Explorer(4);self.exhaust_episode(e);self.assertEqual(e.recovery_attempts,3)
+        stamp=e.last_stamp
+        # This is measured movement from an external trajectory follower; it
+        # deliberately never calls the old goal-arrived command_axes branch.
+        for i in range(1,9):
+            e.ingest(dict(scan((i*.1,0,0),stamp=stamp+i*.5),_speed_mps=.2,_velocity_body=[.2,0.]))
+        self.assertEqual(e.recovery_attempts,0);self.assertEqual(e.recovery_resets,1)
+        self.assertGreaterEqual(e.recovery_measured_distance,.6)
+        e.ingest(dict(scan((.8,0,0),obstacles=[(3,0)],stamp=stamp+5),_speed_mps=0.,_velocity_body=[0.,0.]))
+        e.path=[cell(1.3,0),cell(2.,0)];e.goal=e.path[-1];e.plan_state='planned'
+        self.assertNotEqual(e.command_axes(),(0.,0.,0.))
+        self.assertEqual(e.recovery_attempts,1);self.assertEqual(e.recovery_episode,2)
+        self.assertEqual(e.recovery_total_attempts,4)
+
+    def test_stationary_drift_and_missing_feedback_cannot_rearm_episode(self):
+        for speed,velocity in [(.03,[.03,0]),(.2,None)]:
+            e=Explorer(4);self.exhaust_episode(e);stamp=e.last_stamp
+            for i in range(1,16):
+                e.ingest(dict(scan((i*.05,0,0),stamp=stamp+i*.2),_speed_mps=speed,_velocity_body=velocity))
+            self.assertEqual(e.recovery_attempts,3);self.assertEqual(e.recovery_resets,0)
+
+    def test_back_and_forth_in_previously_visited_space_does_not_rearm(self):
+        e=Explorer(4);stamp=1.
+        positions=[i*.1 for i in range(9)]+[i*.1 for i in range(7,-9,-1)]+[i*.1 for i in range(-7,1)]
+        for x in positions:
+            e.ingest(dict(scan((x,0,0),stamp=stamp),_speed_mps=.25,_velocity_body=[.25,0.]));stamp+=.5
+        self.exhaust_episode(e);stamp=e.last_stamp
+        for x in positions*3:
+            stamp+=.5;e.ingest(dict(scan((x,0,0),stamp=stamp),_speed_mps=.25,_velocity_body=[.25,0.]))
+        self.assertEqual(e.recovery_attempts,3);self.assertEqual(e.recovery_resets,0)
+
+    def test_goal_changes_and_blocked_replanning_do_not_reset_attempt_budget(self):
+        e=Explorer(4);self.exhaust_episode(e)
+        for i in range(5):
+            e.goal=(i,0);e.visited.add(e.goal);e.path=[]
+            e.command_axes();self.assertEqual(e.recovery_attempts,3)
+            e.note_blocked('same obstruction, different goal');self.assertEqual(e.recovery_attempts,3)
+
+    def test_exhaustion_and_no_corridor_have_different_explanations(self):
+        e=Explorer(4);self.exhaust_episode(e);e._recover_axes()
+        self.assertEqual(e.recovery_block_reason,'attempts_exhausted');self.assertIn('3次',e.motion_hint)
+        blocked=Explorer(4);blocked.ingest(scan(obstacles=[(3,0),(-3,0),(0,3),(0,-3)]));blocked._recover_axes()
+        self.assertEqual(blocked.recovery_block_reason,'no_verified_corridor');self.assertNotIn('3次',blocked.motion_hint)
+
+    def test_closed_loop_two_obstacles_get_separate_recovery_episodes(self):
+        e=Explorer(4);x=y=yaw=0.;previous=(0.,0.,0.);obstacles=[(.6,0.)];second_added=False
+        episodes=set();translated_after_first=False
+        for i in range(220):
+            if not second_added and x>.95 and e.recovery_resets>=1:
+                # A second obstruction is introduced in the new region, then
+                # stays fixed. Reusing the old region cannot earn this budget.
+                obstacles.append((x+.6*math.cos(yaw),y+.6*math.sin(yaw)));second_added=True
+            c,sn=math.cos(yaw),math.sin(yaw)
+            body=[cell(c*(ox-x)+sn*(oy-y),-sn*(ox-x)+c*(oy-y)) for ox,oy in obstacles]
+            data=dict(scan((x,y,yaw),obstacles=body,stamp=1+i*.2),_speed_mps=math.hypot(*previous[:2]),_velocity_body=list(previous[:2]))
+            e.ingest(data)
+            if not e.path:e.path=[cell(3.3,0)];e.goal=e.path[-1];e.plan_state='planned'
+            f,side,turn=e.command_axes(yaw_rate=previous[2])
+            self.assertTrue(clearance(data,f,turn,side=side)[0])
+            if e.recovery is not None:episodes.add(e.recovery_episode)
+            x+=(c*f-sn*side)*.2;y+=(sn*f+c*side)*.2;yaw+=turn*.2;previous=(f,side,turn)
+            if x>2.6:translated_after_first=True;break
+        self.assertTrue(second_added)
+        self.assertTrue(translated_after_first,(x,y,e.view()['recovery_episode'],e.motion_hint))
+        self.assertGreaterEqual(len(episodes),2)
+        self.assertGreaterEqual(e.recovery_resets,1)
+        self.assertLessEqual(e.recovery_attempts,3)
 
 if __name__=='__main__':unittest.main()

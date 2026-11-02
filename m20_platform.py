@@ -554,6 +554,7 @@ class Platform:
                     if abs(math.atan2(math.sin(pyaw-start[2]),math.cos(pyaw-start[2])))<.1:body_pose=start
             except (ValueError,KeyError,TypeError):obstacle_note='当前无可用的实时障碍快照；按地图规划，行走中由机器人实时避障'
         planner=GridPlanner(raw,map_['resolution'],map_['origin'],map_.get('negate',0),map_.get('free_thresh',.196),map_.get('occupied_thresh',.65),obstacles,robot_pose=body_pose,enable_live_surface=not self.demo and engine=='platform')
+        latest_surface=None
         if not self.demo and engine=='platform':
             deadline=time.monotonic()+2.5;seen=set();last_error=None
             for _ in range(8):
@@ -562,13 +563,23 @@ class Platform:
                     if generation!=self._plan_generation or self.link is not planning_link:raise ValueError('连接已改变，请重新规划')
                 try:
                     scan,loc=self.navigation_surface(map_['id']);report=planner.update_live_surface(scan,loc)
-                    if report.get('accepted'):seen.add(scan.get('stamp'))
+                    if report.get('accepted'):
+                        seen.add(scan.get('stamp'));latest_surface=(scan,loc)
                     if len(seen)>=3 and report.get('state')!='waiting_evidence':break
                 except ValueError as exc:last_error=str(exc)
                 time.sleep(.04)
             surface=planner.live_surface_status()
             obstacle_note=('已结合实时通行层：临时更新 %s 个旧占据格；原图不改动'%surface.get('occupied_overrides',0)) if surface.get('occupied_overrides') else (last_error or surface.get('reason','按旧图规划，行走中检查现场通路'))
-        result=planner.plan(start,[x,y],yaw)
+        if latest_surface:start=list(latest_surface[0]['pose'])
+        try:result=planner.plan(start,[x,y],yaw)
+        except ValueError as exc:
+            if engine!='platform' or not latest_surface:raise
+            from start_recovery_runtime import plan_with_recovery
+            scan,loc=latest_surface
+            if '_valid_until' in scan:scan['age']=max(0.,.65+time.monotonic()-scan['_valid_until'])
+            record=planning_link.record(1002,6);basic=record.get('items',{}).get('BasicStatus',{})
+            standing=age_of(record)<2 and basic.get('MotionState')==17 and basic.get('HES')==0 and not basic.get('Sleep')
+            result=plan_with_recovery(planner,start,[x,y],yaw,scan,loc,standing,standard_error=exc)
         if result.get('self_projection_ignored'):obstacle_note='已排除机身内部的新增投影；原图墙体和前方障碍保留，机器人实时避障保持开启'
         result.update(live_obstacles=len(obstacles),obstacle_note=obstacle_note,
                       execution='platform_trajectory' if engine=='platform' else 'native_single_goal',guide_points_preview_only=engine!='platform',live_surface=planner.live_surface_status())

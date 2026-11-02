@@ -6,8 +6,8 @@
 |---|---|---|
 | [m-explore / explore_lite](https://github.com/hrnr/m-explore/tree/712bdd41027b645c9c876a4c0071478f090825ea) | `712bdd41027b645c9c876a4c0071478f090825ea`，2.1.4，BSD-3-Clause | 边界聚类、收益与路径代价权衡、保持有效目标；额外加入遮挡信息收益和已扫区域新视角评分。详见 [exploration_sources.md](exploration_sources.md)。 |
 | [Nav2 MPPI](https://github.com/ros-navigation/navigation2/blob/c633de75b9663e54dbe48d8177b1a2cd11cfd986/nav2_mppi_controller/README.md) 与 [PathFollowCritic](https://github.com/ros-navigation/navigation2/blob/c633de75b9663e54dbe48d8177b1a2cd11cfd986/nav2_mppi_controller/src/critics/path_follow_critic.cpp) | `c633de75b9663e54dbe48d8177b1a2cd11cfd986`，Apache-2.0 | 候选轨迹前向预测、路径推进/偏离/障碍/控制变化评分、每帧滚动决策。平台使用确定性采样与两段转向/制动，**不是 MPPI 移植**，没有采用其随机优化、插件或调好参数。 |
-| [Nav2 全局规划](https://github.com/ros-navigation/navigation2/tree/c633de75b9663e54dbe48d8177b1a2cd11cfd986/nav2_smac_planner) | 同上，Apache-2.0 | 障碍距离启发、完整机身与旋转空间、路径简化。平台保持原有栅格格式与 Python 实现，详见 [单点规划升级](../data/reviews/autonomy-v3-20261101/单点规划升级.md)。 |
-| Removert、ERASOR、KISS-ICP | 各固定 SHA、许可与研究范围见 [地图算法来源](../data/reviews/autonomy-v3-20261101/sources-map.md) | 遮挡/看穿的区分、局部稳健对应及独立结构验证。没有复制 CC BY-NC-SA 或 GPL 代码。 |
+| [Nav2 全局规划](https://github.com/ros-navigation/navigation2/tree/c633de75b9663e54dbe48d8177b1a2cd11cfd986/nav2_smac_planner) | 同上，Apache-2.0 | 障碍距离启发、完整机身与旋转空间、路径简化。平台保持原有栅格格式与 Python 实现，详见 [单点规划升级](../docs/architecture.md)。 |
+| Removert、ERASOR、KISS-ICP | 各固定 SHA、许可与研究范围见 [地图算法来源](map_algorithm_sources.md) | 遮挡/看穿的区分、局部稳健对应及独立结构验证。没有复制 CC BY-NC-SA 或 GPL 代码。 |
 
 ## 训练判断
 

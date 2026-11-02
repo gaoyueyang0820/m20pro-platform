@@ -553,6 +553,8 @@ class Autonomy:
                         if trajectory_detail['state']=='arrived':
                             explorer.visited.add(explorer.goal);explorer.path=[];last_plan=0
                             forward=side=yaw=0.;trajectory_verified=True
+                        elif trajectory_detail['state']=='braking':
+                            forward=side=yaw=0.;trajectory_verified=True;explorer.motion_hint=trajectory_detail['reason']
                         elif trajectory_detail['state']=='tracking':
                             forward,side,yaw=trajectory_detail['axes'];trajectory_verified=True;explorer.motion_hint=trajectory_detail['reason']
                         elif new_scan:forward,side,yaw=explorer.command_axes(yaw_rate,scan.get('age',0))
