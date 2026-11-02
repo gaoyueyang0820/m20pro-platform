@@ -110,6 +110,10 @@ class GridPlanner:
         return dict(report,enabled=True,grid_revision=self.grid_revision)
 
     def _expire_live_surface(self):
+        # Planning is a read-only snapshot, not permission to move. A search
+        # may outlast one scan; execution queries resume expiration immediately
+        # after plan() returns and must obtain fresh observations again.
+        if self._planning_revision is not None:return
         if self.live_surface and self.live_surface.expire():self._rebuild_layers()
 
     def live_surface_status(self):
@@ -311,7 +315,10 @@ class GridPlanner:
     def plan(self,start,goal,yaw=None,budget=3.):
         self._expire_live_surface();self._planning_revision=self.grid_revision
         self._deadline=time.monotonic()+max(0,float(budget));self._potential_expanded=0
-        try:return self._plan(start,goal,yaw,budget)
+        try:
+            result=self._plan(start,goal,yaw,budget)
+            result['requires_live_revalidation']=self.live_surface is not None
+            return result
         finally:self._deadline=None;self._planning_revision=None
 
     def _plan(self,start,goal,yaw,budget):

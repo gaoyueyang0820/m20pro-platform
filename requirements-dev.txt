@@ -1,0 +1,4 @@
+# Portable checks only: no ROS, model runtime, robot SDK or private dependency.
+numpy==1.26.4; python_version < "3.10"
+numpy==2.2.6; python_version >= "3.10"
+opencv-python-headless==4.11.0.86

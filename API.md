@@ -224,3 +224,23 @@ SDK `/status` 增加 environment：ready、stage、message、workspace、input�
 状态 `nav.engine=platform`，包括 `controller`（候选数、选中轨迹、归一化 axes、计算耗时）、`replans`、`distance_remaining` 与 `progress_detail`。完成要求到达且取得新鲜实际停稳反馈，不使用原厂旧目标 ACK。`dense_path` 中 yaw 是机身朝向，侧移/倒退时不必等于路径切线。
 
 自主感知扩展 `geometry_version=2`、`obstacle_bounds`（每个障碍格内实测点 XY 边界，按 obstacles 顺序）、`measured_floor`（含混合格中的实际地面观测）。旧字段保留。地图候选始终由用户手动启用。
+
+## 实时通行、起点恢复与显示定位
+
+`POST /api/nav/plan` 接受 `engine: "platform" | "native"`。平台模式用连续新鲜地面观测和定位读回来构建临时通行层；原厂模式保留原厂执行语义。执行器改变后必须重新预览，不能把平台临时通路交给原厂当作同一路径证明。
+
+规划结果可包含 `recovery`：`required`、`mode`、`prefix`、`recovery_distance_m`、`constraints`。预览只是计算结果；平台在执行前重新核对扫描，先完成独立、有限的平移退让与实际停稳，再从实际位置接回原目标。无法安全自动执行的近墙旋转、多段变向或真实机身冲突会给出原因。
+
+`requires_live_revalidation` 表示参考路径使用了规划快照。较长的纯计算不会反复被单帧有效期打断，但执行阶段仍须重新获得有效通路；预览本身不续传感器或运动租约。
+
+`GET /api/status` 新增：
+
+- `server_instance`：本次后台实例标识，用于核对本机和共享网址是否访问同一后台。
+- `pose_view.display_pose`：仅用于地图标记的显示位置；可能为空。
+- `pose_view.health`：定位未就绪、过期、小噪声平滑、漂移或跳变状态。
+- `pose`：未平滑的原始控制定位，仍供原有控制和诊断使用。
+- `autonomy.observation_pump`：接收、发布、重复、乱序、过期及迟到响应计数。缓存保持原始截止时间，重复帧不能延长有效期。
+
+字段中的单调时钟期限只属于生成它的进程，不得跨电脑直接比较或当作新的运动授权。
+
+地图保存结果区分 `observations_saved`、`fusion_status=awaiting_evidence`、`candidate_created` 和 `result_maps`。只保存原始观测时不得显示为融合候选已可导航；原图版本始终由操作者启用。

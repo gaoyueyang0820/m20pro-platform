@@ -11,6 +11,18 @@ import live_traversability
 
 
 class LiveTraversabilityTests(unittest.TestCase):
+    def test_readonly_planning_snapshot_does_not_extend_execution_permission(self):
+        old=planner(door_world(),True);truth=planner(door_world(True));clock=[500.]
+        with patch.object(live_traversability.time,'monotonic',side_effect=lambda:clock[0]):
+            for i in range(3):
+                clock[0]=500+i*.2;scan,loc=packet(truth,stamp=100+i*.2);scan['age']=.5
+                old.update_live_surface(scan,loc)
+            solve=old._plan
+            def slow(*args):clock[0]+=.3;return solve(*args)
+            with patch.object(old,'_plan',side_effect=slow):result=old.plan([2.8,4.,0.],[5.2,4.],0.)
+            self.assertTrue(result['ok']);self.assertTrue(result['requires_live_revalidation'])
+            self.assertFalse(old.pose_fits(4.,4.,0.),'a completed preview cannot renew an expired execution layer')
+
     def test_default_is_off_and_does_not_change_existing_free_map(self):
         old=planner(door_world());truth=planner(door_world(True));scan,loc=packet(truth)
         result=old.update_live_surface(scan,loc,now=100.08)

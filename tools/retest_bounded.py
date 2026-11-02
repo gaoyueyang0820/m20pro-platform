@@ -20,7 +20,15 @@ def call(path,data=None,timeout=3):
     except HTTPError as exc:raise RuntimeError(exc.read().decode())
 
 def main():
+    import argparse
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--live',action='store_true',help='Run the supervised 2 m / 60 s real-robot test after field confirmation')
+    args=parser.parse_args()
+    if not args.live:
+        print(json.dumps(dict(mode='offline',robot_requests_sent=0,message='现场确认后显式使用 --live 才会开始实机短程测试',limits=dict(radius_m=2,duration_s=60)),ensure_ascii=False))
+        return
     stamp=time.strftime('%Y%m%d-%H%M%S');out=ROOT/'data/network'/('bounded-'+stamp+'.json')
+    out.parent.mkdir(parents=True,exist_ok=True)
     result=dict(started_at=stamp,limits=dict(radius_m=2,duration_s=60),rows=[])
     state=call('/api/status');build=call('/api/maps/build/status',timeout=6)
     assert state['mode']=='live' and state['online'] and not state['autonomy']['active']

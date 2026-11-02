@@ -1,0 +1,77 @@
+name: Portable checks (selected offline scope)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: portable-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  posix-native-and-portable:
+    name: Portable + native / ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ['3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install public development dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Install and build browser assets
+        run: |
+          npm ci
+          npm run build
+      - name: Explicit temporary C++ build and guarded portable checks
+        run: python tools/check_portable.py --report .artifacts/portable/report.json
+      - name: Publish scope and skip report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: portable-${{ matrix.os }}-py${{ matrix.python }}
+          path: |
+            .artifacts/portable/report.json
+            .artifacts/portable/logs/*.txt
+          if-no-files-found: warn
+
+  windows-python-node-subset:
+    name: Windows Python + Node subset (no native/POSIX claim)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install public development dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Guarded pure Python and Node subset
+        run: python tools/check_portable.py --groups algorithms,navigation,sensing,ui --report .artifacts/portable/report.json
+      - name: Publish partial-scope report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: portable-windows-python-node-subset
+          path: |
+            .artifacts/portable/report.json
+            .artifacts/portable/logs/*.txt
+          if-no-files-found: warn
