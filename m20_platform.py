@@ -30,7 +30,7 @@ import greeting
 from greeting_runtime import GreetingSession
 from platform_core import ROOT, JOINTS, LEGS, NEUTRAL, ERRORS, RobotLink, Store, Training, number, integer, rpc, explain_error, leg_target, age_of
 from platform_hub import Hub
-from shared_access import SharedAccess, lan_addresses
+from shared_access import SharedAccess, lan_addresses, shared_listener
 from camera_streams import Cameras
 from autonomy_runtime import Autonomy
 from vision_models import ModelChecks, catalog as vision_catalog, default_path
@@ -1694,12 +1694,9 @@ def main():
     APP=Platform(store)
     if args.share:
         try:
-            ACCESS=SharedAccess(APP.store.path.parent,args.share,args.token)
-            addresses=lan_addresses(ACCESS.network)
-            if not addresses:raise ValueError('本机尚未连接指定共享网段，请连接对应 Wi-Fi 后重试')
+            ACCESS,args.bind,share_notice=shared_listener(APP.store.path.parent,args.share,args.http,args.token)
         except ValueError as exc:ap.error(str(exc))
-        ACCESS.urls=['http://%s:%s/'%(address,args.http) for address in addresses]
-        args.bind='0.0.0.0'
+        if share_notice:APP.add_log('network',share_notice);print(share_notice)
     if args.ip and not args.demo: APP.connect(dict(mode='live',ip=args.ip,port=args.port))
     elif not args.demo and APP.hub.connections.value.get('auto_connect'):
         saved=APP.hub.connections.value

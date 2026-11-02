@@ -35,9 +35,9 @@ GROUPS={
     'sensing':['test_sensor_cache','test_sensor_reader','test_latest_observation','test_sensing_equivalence','test_manual_turn_scan_frames','test_live_surface_precision'],
     'maps':['test_map_change_policy','test_map_fusion','test_map_update_v3',
             'test_mapping_save_outcomes.SyntheticSavedObservationTests'],
-    'lifecycle':['test_mapping_request_identity','test_operations_lifecycle','test_delivery_boundary','test_navigation_preview_identity','test_greeting_runtime'],
+    'lifecycle':['test_mapping_request_identity','test_operations_lifecycle','test_delivery_boundary','test_navigation_preview_identity','test_greeting_runtime','test_shared_listener.SharedStartupTests'],
     'native':['test_native_sensing'],
-    'connections':['test_connection_roaming'],
+    'connections':['test_connection_roaming','test_shared_listener.SharedListenerTests'],
     'ui':[],
 }
 POSIX_GROUPS={'maps','lifecycle','native'}

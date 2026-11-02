@@ -51,3 +51,13 @@ class SharedAccess:
         return dict(ok=True,enabled=True,subnet=str(self.network),urls=self.urls,
                     local=self.local(peer),authenticated=True,authentication_required=False,
                     controlling=True,owner=None,stopping=False)
+
+
+def shared_listener(data,subnet,port,password=None):
+    """Keep localhost usable after leaving the explicitly configured LAN."""
+    access=SharedAccess(data,subnet,password)
+    addresses=lan_addresses(access.network)
+    if not addresses:
+        return None,'127.0.0.1','当前网络不在配置的共享网段内，已仅启动本机入口；共享网段配置保留'
+    access.urls=['http://%s:%s/'%(address,port) for address in addresses]
+    return access,'0.0.0.0',None
