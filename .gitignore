@@ -1,0 +1,35 @@
+# Local robot profiles, maps, captures and credentials
+/data/*
+!/data/network/
+/data/network/*
+!/data/network/camera-codec-fixture.mp4
+.env
+.env.*
+*.env
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+bridge/calibration.local.json
+*.local.json
+.venv/
+venv/
+# Dependencies, caches and machine-specific build products
+node_modules/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store
+._*
+dist/
+*.log
+native/*.so
+native/*.dylib
+native/*.dll
+native/*.o
+# Real-site evidence is maintained separately
+tests/fixtures/runtime_replay/*.json
+调试交接/
+screenshots/

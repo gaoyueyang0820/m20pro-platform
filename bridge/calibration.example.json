@@ -1,0 +1,120 @@
+{
+  "verified": false,
+  "sdk_mode_verified": false,
+  "frame": "urdf_radians",
+  "note": "示例值，需核对本机零偏、跨周、方向和限位后另存配置，不可直接启用。",
+  "joints": [
+    {
+      "name": "fl_hipx_joint",
+      "direction": 1,
+      "offset_rad": -0.4363323129985824,
+      "minimum": -0.436,
+      "maximum": 0.611
+    },
+    {
+      "name": "fl_hipy_joint",
+      "direction": 1,
+      "offset_rad": -2.2863813201125716,
+      "minimum": -2.583,
+      "maximum": 2.286
+    },
+    {
+      "name": "fl_knee_joint",
+      "direction": -1,
+      "offset_rad": 2.792526803190927,
+      "minimum": -2.792,
+      "maximum": 2.809
+    },
+    {
+      "name": "fl_wheel_joint",
+      "direction": 1,
+      "offset_rad": 0.0,
+      "minimum": -3.14159,
+      "maximum": 3.14159
+    },
+    {
+      "name": "fr_hipx_joint",
+      "direction": 1,
+      "offset_rad": 0.4363323129985824,
+      "minimum": -0.611,
+      "maximum": 0.436
+    },
+    {
+      "name": "fr_hipy_joint",
+      "direction": -1,
+      "offset_rad": -2.2863813201125716,
+      "minimum": -2.583,
+      "maximum": 2.286
+    },
+    {
+      "name": "fr_knee_joint",
+      "direction": 1,
+      "offset_rad": 2.792526803190927,
+      "minimum": -2.792,
+      "maximum": 2.809
+    },
+    {
+      "name": "fr_wheel_joint",
+      "direction": -1,
+      "offset_rad": 0.0,
+      "minimum": -3.14159,
+      "maximum": 3.14159
+    },
+    {
+      "name": "hl_hipx_joint",
+      "direction": -1,
+      "offset_rad": -0.4363323129985824,
+      "minimum": -0.436,
+      "maximum": 0.611
+    },
+    {
+      "name": "hl_hipy_joint",
+      "direction": 1,
+      "offset_rad": 2.2863813201125716,
+      "minimum": -2.286,
+      "maximum": 2.583
+    },
+    {
+      "name": "hl_knee_joint",
+      "direction": -1,
+      "offset_rad": -2.792526803190927,
+      "minimum": -2.809,
+      "maximum": 2.792
+    },
+    {
+      "name": "hl_wheel_joint",
+      "direction": 1,
+      "offset_rad": 0.0,
+      "minimum": -3.14159,
+      "maximum": 3.14159
+    },
+    {
+      "name": "hr_hipx_joint",
+      "direction": -1,
+      "offset_rad": 0.4363323129985824,
+      "minimum": -0.611,
+      "maximum": 0.436
+    },
+    {
+      "name": "hr_hipy_joint",
+      "direction": -1,
+      "offset_rad": 2.2863813201125716,
+      "minimum": -2.286,
+      "maximum": 2.583
+    },
+    {
+      "name": "hr_knee_joint",
+      "direction": 1,
+      "offset_rad": -2.792526803190927,
+      "minimum": -2.809,
+      "maximum": 2.792
+    },
+    {
+      "name": "hr_wheel_joint",
+      "direction": -1,
+      "offset_rad": 0.0,
+      "minimum": -3.14159,
+      "maximum": 3.14159
+    }
+  ]
+}

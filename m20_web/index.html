@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lynx M20 Pro 控制台</title>
+<style>
+  :root {
+    --bg:#0f1216; --panel:#171c22; --line:#29323c; --fg:#e6edf3;
+    --dim:#8b98a5; --acc:#3d8bfd; --ok:#2ea043; --warn:#d29922; --bad:#f85149;
+  }
+  * { box-sizing:border-box; }
+  html, body { height:100%; }
+  body { margin:0; background:var(--bg); color:var(--fg); overflow:hidden;
+         font:14px/1.5 "Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+         display:flex; flex-direction:column; }
+  header { flex:0 0 auto; display:flex; align-items:center; gap:12px; flex-wrap:nowrap;
+           padding:8px 16px; background:var(--panel); border-bottom:1px solid var(--line); }
+  header h1 { font-size:15px; margin:0; font-weight:600; white-space:nowrap; }
+  .dot { width:10px; height:10px; border-radius:50%; background:var(--dim); display:inline-block; }
+  .dot.on { background:var(--ok); box-shadow:0 0 8px var(--ok); }
+  .dot.off { background:var(--bad); }
+  .muted { color:var(--dim); }
+  .grow { flex:1; }
+  input[type=text] { background:#0b0e12; color:var(--fg); border:1px solid var(--line);
+           border-radius:6px; padding:6px 8px; font:inherit; }
+  button { background:#232c36; color:var(--fg); border:1px solid var(--line); border-radius:8px;
+           padding:9px 12px; font:600 14px inherit; cursor:pointer; transition:.12s; }
+  button:hover:not(:disabled) { background:#2c3844; border-color:#3a4756; }
+  button:active:not(:disabled) { transform:translateY(1px); }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  button.red { background:#3a1517; border-color:#5c2024; color:#ffb4b4; }
+  button.red:hover:not(:disabled){ background:#4a1a1d; }
+  /* 使用模式选中态：当前模式的按钮高亮 */
+  button.active { background:var(--acc); border-color:#6aa9ff; color:#fff;
+                  box-shadow:0 0 0 1px rgba(61,139,253,.55), 0 0 12px rgba(61,139,253,.35); }
+  button.active:hover:not(:disabled) { background:#4f97ff; border-color:#7ab6ff; }
+  /* 顶栏常驻软急停：做得更醒目 */
+  #hdr_estop { padding:9px 16px; }
+
+  /* 主区：填满剩余高度，彻底消除页面滚动 */
+  main { flex:1 1 auto; min-height:0; display:grid; gap:12px; padding:12px 16px;
+         grid-template-columns:290px minmax(360px,1fr) 330px;
+         align-items:stretch; overflow:hidden; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px;
+          padding:12px; display:flex; flex-direction:column; min-height:0; }
+  /* 卡片内部自滚动区（列内滚动，不动整页） */
+  .scroll { flex:1 1 auto; min-height:0; overflow-y:auto; }
+  .card h2 { font-size:13px; margin:0 0 10px; color:var(--dim); font-weight:600;
+             letter-spacing:.04em; text-transform:uppercase; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .grid2 button { width:100%; }
+  .safety { background:#2a2410; border:1px solid #4a3f16; color:#e8d08a;
+            border-radius:8px; padding:8px 12px; font-size:13px; margin-bottom:12px; }
+  .note { font-size:12px; margin-top:6px; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:600; }
+  .badge.ok { background:#12301b; color:#4ade80; border:1px solid #1f5232; }
+  .badge.no { background:#2a2410; color:#e8d08a; border:1px solid #4a3f16; }
+
+  /* ---- 视频舞台：主画面铺满，后摄做 PiP 小窗 ---- */
+  .stage { position:relative; flex:1 1 auto; min-height:220px; background:#000;
+           border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  .fig { margin:0; position:absolute; overflow:hidden; }
+  .fig img { display:block; width:100%; height:100%; object-fit:contain; background:#000; }
+  .fig figcaption { position:absolute; left:8px; bottom:6px; font-size:11px; color:#cfd8e3;
+                    text-shadow:0 1px 3px #000; }
+  .fig.main { inset:0; }
+  .fig.pip { inset:auto 8px 8px auto; width:30%; aspect-ratio:16/9; z-index:2;
+             border:1px solid var(--line); border-radius:6px; box-shadow:0 3px 12px rgba(0,0,0,.65); }
+  .fig.pip img { object-fit:cover; }
+  .fig.pip figcaption { display:none; }
+  #vhead { position:absolute; left:8px; top:8px; z-index:3; display:flex; align-items:center; gap:6px; }
+  #vhead button { padding:3px 9px; font-size:12px; }
+
+  /* ---- 遥控行走（贴在视频下方，同屏可见） ---- */
+  .ctrl { flex:0 0 auto; }
+  .padwrap { display:flex; gap:14px; align-items:center; }
+  #pad { position:relative; width:168px; height:168px; flex:0 0 auto; border-radius:12px; touch-action:none;
+         background:radial-gradient(circle at 50% 50%,#1d242c,#12171c); border:1px solid var(--line); }
+  #pad::before,#pad::after { content:""; position:absolute; background:var(--line); }
+  #pad::before { left:50%; top:8px; bottom:8px; width:1px; }
+  #pad::after { top:50%; left:8px; right:8px; height:1px; }
+  #knob { position:absolute; width:52px; height:52px; margin:-26px 0 0 -26px; left:50%; top:50%;
+          border-radius:50%; background:var(--acc); box-shadow:0 4px 16px rgba(61,139,253,.5); }
+  .sliders { display:flex; flex-direction:column; gap:8px; flex:1 1 auto; min-width:0; }
+  .sliders label { font-size:12px; color:var(--dim); display:block; margin-bottom:2px; }
+  .sliders input[type=range] { width:100%; }
+  .cmdv { font-family:Consolas,monospace; font-size:13px; color:#9fd0ff; }
+
+  /* ---- 状态列 ---- */
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  td { padding:4px; border-bottom:1px solid var(--line); vertical-align:top; }
+  td.k { color:var(--dim); white-space:nowrap; width:1%; }
+  td.v { font-family:Consolas,monospace; word-break:break-all; }
+  #log { height:150px; overflow:auto; font-family:Consolas,monospace; font-size:12px; }
+  #log div { padding:2px 0; border-bottom:1px dashed #202832; }
+  #log .tx { color:#7cc4ff; } #log .rx { color:#7ee0a0; } #log .err { color:#ff8f8f; }
+  .kv { display:flex; justify-content:space-between; gap:8px; padding:4px 0; }
+  .kv span:last-child { font-family:Consolas,monospace; }
+
+  #toast { position:fixed; left:50%; bottom:28px; transform:translateX(-50%) translateY(20px);
+           background:#3a2f14; border:1px solid #6b551d; color:#ffe08a; padding:10px 16px;
+           border-radius:10px; opacity:0; transition:.25s; pointer-events:none; z-index:99;
+           max-width:80vw; text-align:center; }
+  #toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+
+  /* 窄屏 / 笔记本小屏：退回纵向堆叠，允许页面滚动 */
+  @media (max-width:1100px), (max-height:620px) {
+    html, body { height:auto; }
+    body { display:block; overflow:auto; }
+    header { flex-wrap:wrap; }
+    main { display:flex; flex-direction:column; overflow:visible; height:auto; }
+    #colvid { order:-1; }              /* 窄屏下画面排到最前，不用往下翻 */
+    .card { margin-bottom:12px; }
+    .scroll { overflow:visible; flex:none; }
+    .stage { height:36vh; min-height:190px; }   /* 让画面和摇杆都挤进首屏 */
+    #pad { width:144px; height:144px; }
+    #knob { width:44px; height:44px; margin:-22px 0 0 -22px; }
+  }
+  /* 极窄（IDE 面板宽度）：键盘提示太挤，先收起 */
+  @media (max-width:600px) { .hint { display:none; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Lynx M20 Pro 控制台</h1>
+  <span><span id="dot" class="dot"></span> <span id="conn" class="muted">连接中…</span></span>
+  <button id="hdr_estop" class="red" data-cmd="estop">软急停</button>
+  <span class="grow"></span>
+  <label class="muted">机器人 IP
+    <input type="text" id="ip" style="width:140px" value="10.21.31.103">
+  </label>
+  <button id="apply">应用</button>
+</header>
+
+<main>
+  <!-- 左：姿态 / 模式 / 步态 / 链路（列内滚动） -->
+  <section class="card">
+    <div class="scroll">
+      <div class="safety">操作前确认：狗在平地或吊架，物理急停放手边。先看顶栏"在线"再动作。</div>
+      <h2>姿态</h2>
+      <div class="grid2">
+        <button data-cmd="stand">站起</button>
+        <button data-cmd="lie">趴下</button>
+      </div>
+      <h2 style="margin-top:16px">使用模式</h2>
+      <div class="grid2">
+        <button data-cmd="mode_normal">常规模式</button>
+        <button data-cmd="mode_nav">导航模式</button>
+        <button data-cmd="mode_aux" style="grid-column:1/-1">辅助模式（避障辅助）</button>
+      </div>
+      <div class="muted note">
+        辅助模式：轴指令照常下发，底层自动叠加避障修正（障碍过近会自停）。<br>
+        勿在低于 1m 的天花板下使用，急停优先于避障。
+      </div>
+      <h2 style="margin-top:16px">朝向</h2>
+      <div class="grid2">
+        <button data-cmd="dir_forward">朝前</button>
+        <button data-cmd="dir_backward">朝后</button>
+      </div>
+      <div class="muted note">
+        当前朝向：<b id="curDir">正向（头前）→</b><br>
+        点击"反向"后推摇杆"前"，会让尾部朝前进方向走。通过翻转速度指令 X 轴实现。
+      </div>
+      <h2 style="margin-top:16px">照明</h2>
+      <div class="grid2">
+        <button data-cmd="light_front_on">前灯开</button>
+        <button data-cmd="light_front_off">前灯关</button>
+        <button data-cmd="light_back_on">后灯开</button>
+        <button data-cmd="light_back_off">后灯关</button>
+      </div>
+      <button data-cmd="light_all_off" style="margin-top:6px;width:100%">全部关闭</button>
+      <h2 style="margin-top:16px">步态</h2>
+      <div class="grid2">
+        <button data-cmd="gait_basic">基础（标准）</button>
+        <button data-cmd="gait_platform">高台（标准）</button>
+        <button data-cmd="gait_stair">楼梯（敏捷）</button>
+      </div>
+      <div class="muted note">
+        步态枚举为复合位：基础=0x1001 高台=0x1002 楼梯=0x3003。
+      </div>
+      <h2 style="margin-top:16px">链路</h2>
+      <div class="grid2">
+        <button data-cmd="heartbeat">发心跳</button>
+        <button class="red" data-cmd="stop">停止行走</button>
+      </div>
+
+      <h2 style="margin-top:16px">安全监测</h2>
+      <div class="kv"><span class="muted">状态</span><span id="ppeState" class="badge no">未启动</span></div>
+      <div class="kv"><span class="muted">镜头</span>
+        <select id="ppeCam">
+          <option value="front">前广角</option>
+          <option value="rear">后广角</option>
+        </select>
+      </div>
+      <div class="kv"><span class="muted">最近检测</span><span id="ppeLast" class="muted">-</span></div>
+      <div class="kv"><span class="muted">推理耗时</span><span id="ppeMs" class="muted">-</span></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px">
+        <button id="ppeStart">开始检测</button>
+        <button id="ppeStop" class="red" disabled>停止检测</button>
+      </div>
+      <div class="muted note" style="margin-top:8px">
+        检测规则：发现 Person 但 <b>2 秒内未见 Hardhat</b> 即触发告警；10 秒冷却。
+        告警事件见右侧"安全告警"列表。
+      </div>
+      <div id="ppeErr" class="muted" style="color:#ff8f8f;font-size:12px;margin-top:6px"></div>
+    </div>
+  </section>
+
+  <!-- 中：实时画面 + 遥控行走（同屏，不用翻） -->
+  <section class="card" id="colvid">
+    <div class="stage">
+      <figure id="figF" class="fig main">
+        <img id="vfront" alt="前广角">
+        <figcaption>前广角 rtsp://机器人IP:8554/video1</figcaption>
+      </figure>
+      <figure id="figR" class="fig pip">
+        <img id="vrear" alt="后广角">
+        <figcaption>后广角 rtsp://机器人IP:8554/video2</figcaption>
+      </figure>
+      <div id="vhead">
+        <span id="vstat" class="badge no">未连接</span>
+        <button id="vswap">切换前后</button>
+        <button id="vidreconnect">重连</button>
+      </div>
+    </div>
+
+    <div class="ctrl">
+      <h2 style="margin:12px 0 8px">遥控行走 <span id="vbadge" class="badge ok">已启用</span></h2>
+      <div class="padwrap">
+        <div id="pad"><div id="knob"></div></div>
+        <div class="sliders">
+          <div><label>转向 yaw <span id="yawv">0.00</span></label>
+            <input type="range" id="yaw" min="-1" max="1" step="0.05" value="0"></div>
+          <div><label>速度倍率 <span id="spdv">0.30</span></label>
+            <input type="range" id="spd" min="0.1" max="1" step="0.05" value="0.3"></div>
+          <div class="muted hint" style="font-size:12px">
+            键盘 W/S 前后 · A/D 左右 · Q/E 转向 · 空格 停<br>
+            摇杆拖住=走，松手=停（后端 20Hz 保活，失联 0.5s 自动归零）<br>
+            常规 / 辅助模式可用；导航模式不支持轴指令。
+          </div>
+          <div>实际下发 <span class="cmdv" id="cmdv">X=0.00 Y=0.00 Yaw=0.00</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 右：状态 & 日志（列内滚动） -->
+  <section class="card">
+    <div class="scroll">
+      <h2>实时状态</h2>
+      <div class="kv"><span class="muted">机器人</span><span id="st_ip">-</span></div>
+      <div class="kv"><span class="muted">最后上报</span><span id="st_age">-</span></div>
+      <table id="state">
+        <tr><td class="k">等待</td><td class="v muted">需心跳在线</td></tr>
+      </table>
+      <h2 style="margin-top:14px">原始上报（按 Command）</h2>
+      <table id="snaps"><tr><td class="muted">等待机器人回报…</td></tr></table>
+      <h2 style="margin-top:14px">安全告警</h2>
+      <div id="ppeEvents" style="min-height:40px;font-family:Consolas,monospace;font-size:12px">
+        <div class="muted">启动检测后，违规事件会显示在这里。</div>
+      </div>
+      <h2 style="margin-top:14px">指令日志</h2>
+      <div id="log"></div>
+    </div>
+  </section>
+</main>
+
+<div id="toast"></div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const ipEl = $("#ip");
+
+let toastTimer = null;
+function toast(msg) {
+  const t = $("#toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove("show"), 3200);
+}
+
+async function post(path, body) {
+  try {
+    const r = await fetch(path, { method:"POST", headers:{"Content-Type":"application/json"},
+                                 body: JSON.stringify(body) });
+    const ct = (r.headers.get("content-type") || "").toLowerCase();
+    if (!ct.includes("application/json")) {
+      const text = await r.text();
+      return { ok:false, err:"HTTP " + r.status + "（服务可能是旧版本，请重启 m20_console.py）" };
+    }
+    return await r.json();
+  } catch (e) { return { ok:false, err:String(e) }; }
+}
+
+/* ---- 姿态选中态（同模式/步态逻辑） ----
+   MotionState 枚举：0=空闲 1=站 2=软急停 3=阻尼 4=坐/趴 6=标准
+   "站起" 按钮高亮当 MotionState ∈ {1, 6}
+   "趴下" 按钮高亮当 MotionState ∈ {0, 4} */
+const MOTION_STAND_SET = new Set([1, 6]);
+const MOTION_LIE_SET   = new Set([0, 4]);
+const motionBtns = document.querySelectorAll('button[data-cmd="stand"], button[data-cmd="lie"]');
+let motionSel;                    // 用户点击选的姿态："stand"|"lie"|undefined
+function paintMotion() {
+  let use;
+  if (curOnline && curMotion !== null) {
+    if (MOTION_STAND_SET.has(curMotion)) use = "stand";
+    else if (MOTION_LIE_SET.has(curMotion)) use = "lie";
+    else use = null;               // 急停/阻尼等状态不高亮任何按钮
+  } else if (motionSel !== undefined) {
+    use = motionSel;
+  } else {
+    use = null;
+  }
+  motionBtns.forEach(b => b.classList.toggle("active", b.dataset.cmd === use));
+}
+
+/* ---- 朝向选中态 ----
+   reverse=false → 正向(头前) → dir_forward 高亮
+   reverse=true  → 反向(尾前) → dir_backward 高亮 */
+const dirBtns = document.querySelectorAll('button[data-cmd^="dir_"]');
+function paintDir() {
+  dirBtns.forEach(b => {
+    b.classList.toggle("active",
+      (b.dataset.cmd === "dir_forward" && !curReverse) ||
+      (b.dataset.cmd === "dir_backward" && curReverse));
+  });
+}
+
+/* ---- 选中态通用驱动链 ----
+   点击先乐观高亮 → 机器人回报更新以回报为准 → 离线时保持本次点击的乐观状态 */
+
+/* ---- 使用模式选中态 ----
+   点击先"乐观"高亮，给即时反馈；机器人**在线且回报了模式**时以回报为准（切失败会自动弹回）。
+   离线时以本次点击为准；还没点过时，沿用最后一次已知的模式。 */
+const MODE_CMD = {0:"mode_normal", 1:"mode_nav", 2:"mode_aux"};
+const MODE_VAL = {mode_normal:0, mode_nav:1, mode_aux:2};
+const modeBtns = document.querySelectorAll('button[data-cmd^="mode_"]');
+let modeSel;                      // 用户点击选的模式；undefined = 还没点过
+function paintMode() {
+  let use;
+  if (curOnline && curMode !== null) use = curMode;     // 有新鲜权威回报 → 以机器人为准
+  else if (modeSel !== undefined)    use = modeSel;      // 离线 → 以本次点击为准
+  else                               use = curMode;      // 没点过 → 显示最后已知模式
+  const want = MODE_CMD[use];
+  modeBtns.forEach(b => b.classList.toggle("active", b.dataset.cmd === want));
+}
+
+/* ---- 步态选中态（同模式逻辑） ----
+   GaitParam 是复合位枚举，不是简单值：基础=0x1001 高台=0x1002 楼梯=0x3003 */
+const GAIT_VAL = {gait_basic:0x1001, gait_platform:0x1002, gait_stair:0x3003};
+const GAIT_CMD = {0x1001:"gait_basic", 0x1002:"gait_platform", 0x3003:"gait_stair"};
+const gaitBtns = document.querySelectorAll('button[data-cmd^="gait_"]');
+let gaitSel;                      // 用户点击选的步态值；undefined = 还没点过
+function paintGait() {
+  let use;
+  if (curOnline && curGait !== null) use = curGait;     // 有新鲜权威回报
+  else if (gaitSel !== undefined)    use = gaitSel;
+  else                               use = curGait;
+  const want = GAIT_CMD[use];
+  gaitBtns.forEach(b => b.classList.toggle("active", b.dataset.cmd === want));
+}
+
+/* ---- 姿态 / 模式 / 步态 / 急停按钮 ---- */
+document.querySelectorAll("button[data-cmd]").forEach(b => {
+  b.onclick = async () => {
+    const a = b.dataset.cmd;
+    // ---- 乐观高亮（点击立即反馈，后端/机器人回报后再修正） ----
+    const mv = MODE_VAL[a];
+    if (mv !== undefined) { modeSel = mv; paintMode(); }
+
+    const gv = GAIT_VAL[a];
+    if (gv !== undefined) { gaitSel = gv; paintGait(); }
+
+    if (a === "stand")  { motionSel = "stand"; paintMotion(); }
+    if (a === "lie")    { motionSel = "lie";   paintMotion(); }
+
+    if (a === "dir_forward") { curReverse = false; paintDir(); applyVideoLayout(false); }
+    if (a === "dir_backward"){ curReverse = true;  paintDir(); applyVideoLayout(true);  }
+
+    await post("/api/cmd", { action: a });
+  };
+});
+
+/* ---- IP 应用 ---- */
+$("#apply").onclick = async () => {
+  const r = await post("/api/config", { ip: ipEl.value.trim() });
+  if (r.ip) ipEl.value = r.ip;
+};
+
+/* ---- 状态字段翻译（手册 V0.0.4-0） ---- */
+const MAP = {
+  MotionState: {0:"空闲",1:"站立",2:"软急停",3:"上电阻尼",4:"坐/趴",6:"标准"},
+  Gait: {0x1001:"基础(标准)", 0x1002:"高台(标准)", 0x3002:"平地(敏捷)", 0x3003:"楼梯(敏捷)"},
+  Charge: {0:"空闲",1:"进入充电桩",2:"充电中",3:"退出充电桩",4:"机器人错误",5:"在桩未充电"},
+  ControlUsageMode: {0:"常规",1:"导航",2:"辅助"},
+  Direction: {0:"朝前",1:"朝后"},
+  HES: {0:"未触发",1:"已触发"},
+  Sleep: {true:"是",false:"否"}
+};
+function tr(key, val) {
+  const m = MAP[key];
+  if (m && m[val] !== undefined) return val + " (" + m[val] + ")";
+  return String(val);
+}
+
+/* 避障状态（BasicStatus.OOA，与 /OOA_STATUS 的 state 一致） */
+const OOAMAP = {0:"未启动",1:"已启动/空闲",2:"已启动/无障碍物",3:"避障中"};
+
+/* ---- 状态流（SSE） ---- */
+let curMotion = null;      // 机器人当前姿态（MotionState，null=未知）
+let curMode = null;        // 机器人当前使用模式（0=常规 1=导航 2=辅助，null=未知）
+let curGait = null;        // 机器人当前步态（复合位，见 GAIT_CMD）
+let curReverse = false;    // 控制台当前朝向翻转状态（false=正向头前 true=反向尾前）
+let curOnline = false;     // 机器人是否在线（决定选中态以谁为准）
+let modeWarned = false;
+let vidOn = false;         // 图像流是否已拉起
+const es = new EventSource("/api/stream");
+es.onmessage = (e) => {
+  const d = JSON.parse(e.data);
+  $("#dot").className = "dot " + (d.online ? "on" : "off");
+  $("#conn").textContent = d.online ? "在线" : "离线（无回报）";
+  $("#st_ip").textContent = d.ip + ":" + d.port;
+  $("#st_age").textContent = d.rx_age == null ? "从未收到" : d.rx_age + " s 前";
+  if (ipEl.value !== d.ip) ipEl.value = d.ip;
+  if (d.online && !vidOn) { vidOn = true; startVideo(); }   // 一在线就自动拉视频
+
+  const b = d.basic || {}, m = d.motion || {};
+  curMotion = (b.MotionState === undefined ? null : b.MotionState);
+  curMode = (b.ControlUsageMode === undefined ? null : b.ControlUsageMode);
+  curGait = (b.Gait === undefined ? null : b.Gait);
+  curReverse = !!d.reverse;
+  curOnline = !!d.online;
+  if (curMode === 0 || curMode === 2) modeWarned = false;   // 常规/辅助都支持轴指令
+  paintMotion();
+  paintMode();
+  paintGait();
+  paintDir();
+  applyVideoLayout(curReverse);
+  const hasState = Object.keys(b).length || Object.keys(m).length;
+  const rows = [];
+  if (b.MotionState !== undefined) rows.push(["姿态", tr("MotionState", b.MotionState)]);
+  if (b.Gait !== undefined)        rows.push(["步态", tr("Gait", b.Gait)]);
+  if (b.ControlUsageMode !== undefined) rows.push(["使用模式", tr("ControlUsageMode", b.ControlUsageMode)]);
+  if (b.OOA !== undefined)         rows.push(["避障状态", b.OOA + " (" + (OOAMAP[b.OOA] || "未知") + ")"]);
+  if (b.Charge !== undefined)      rows.push(["充电", tr("Charge", b.Charge)]);
+  if (b.HES !== undefined)         rows.push(["硬急停", tr("HES", b.HES)]);
+  if (b.Direction !== undefined)   rows.push(["机器人方向", tr("Direction", b.Direction)]);
+  // curDir 显示控制台的朝向翻转状态（后端实现，不是机器人 Direction 字段）
+  const rev = !!d.reverse;
+  $("#curDir").textContent = rev ? "← 反向（尾前）" : "正向（头前）→";
+  if (m.Roll !== undefined)        rows.push(["Roll/Pitch/Yaw", [m.Roll,m.Pitch,m.Yaw].map(x=>(+x).toFixed(2)).join(" / ")]);
+  if (m.LinearX !== undefined)     rows.push(["速度 LinearX/Y", (+m.LinearX).toFixed(2)+" / "+(+m.LinearY).toFixed(2)]);
+  if (m.OmegaZ !== undefined)      rows.push(["角速度 OmegaZ", (+m.OmegaZ).toFixed(2)]);
+  if (m.Height !== undefined)      rows.push(["高度", (+m.Height).toFixed(2)]);
+  $("#state").innerHTML = hasState
+    ? rows.map(r => '<tr><td class="k">'+r[0]+'</td><td class="v">'+r[1]+'</td></tr>').join("")
+    : '<tr><td class="k">等待</td><td class="v muted">需心跳在线</td></tr>';
+
+  const sn = $("#snaps");
+  const keys = Object.keys(d.snapshots || {});
+  sn.innerHTML = keys.length
+    ? keys.map(k => '<tr><td class="k">cmd '+k+'</td><td class="v">'+JSON.stringify(d.snapshots[k])+'</td></tr>').join("")
+    : '<tr><td class="muted">等待机器人回报…</td></tr>';
+
+  const v = d.cmd_vel || {f:0,s:0,y:0};
+  $("#cmdv").textContent = "X="+(+v.f).toFixed(2)+" Y="+(+v.s).toFixed(2)+" Yaw="+(+v.y).toFixed(2);
+
+  const lg = $("#log");
+  lg.innerHTML = (d.log || []).map(x =>
+    '<div class="'+x.kind+'">'+x.t+'  '+x.text+'</div>').join("");
+  lg.scrollTop = lg.scrollHeight;
+};
+es.onerror = () => { $("#conn").textContent = "控制台断开，刷新页面重连"; };
+
+/* ---- 实时图像：后端把 RTSP 转成 MJPEG，<img> 直接显示 ---- */
+function startVideo() {
+  const t = Date.now();                 // 加时间戳强制重连
+  // PPE 检测中：把 PPE 监控的那一路换成 /video/ppe（带检测框），另一路保持原始流
+  let frontSrc = "/video/front?t=" + t;
+  let rearSrc  = "/video/rear?t="  + t;
+  if (window.ppeOn && window.ppeCam) {
+    if (window.ppeCam === "front") frontSrc = "/video/ppe?t=" + t;
+    else rearSrc = "/video/ppe?t=" + t;
+  }
+  $("#vfront").src = frontSrc;
+  $("#vrear").src  = rearSrc;
+  $("#vstat").className = "badge ok";
+  $("#vstat").textContent = window.ppeOn ? ("拉流中 · PPE 监控 " + (window.ppeCam === "front" ? "前" : "后")) : "拉流中";
+}
+$("#vidreconnect").onclick = startVideo;
+
+/* ---- 视频舞台：根据朝向自动分配大小屏 ----
+   reverse=false → 正向(头前) → figF(前摄)=main(大屏) figR(后摄)=pip(小窗)
+   reverse=true  → 反向(尾前) → figF(前摄)=pip  figR(后摄)=main
+   vswap 按钮能随时手动切换，手动切换不被朝向自动覆盖（直到下次刷新或手动切回朝向）。
+   实现方式：每次 applyVideoLayout 都会覆盖 class，但 vswap 点击是立即生效的，
+   SSE 每 ~4Hz 再来时又会按朝向重排——如果用户想保持手动，让他用 vswap 后别碰朝向按钮。 */
+let _videoManualSwap = false;   // 标记用户刚手动点过 vswap
+function applyVideoLayout(reverse) {
+  if (_videoManualSwap) { _videoManualSwap = false; return; }  // 手动 vswap 后跳过这一轮
+  const f = $("#figF"), r = $("#figR");
+  if (!reverse) {
+    // 正向：前摄大屏，后摄小窗
+    f.classList.add("main"); f.classList.remove("pip");
+    r.classList.add("pip");  r.classList.remove("main");
+  } else {
+    // 反向：后摄大屏，前摄小窗
+    f.classList.add("pip");  f.classList.remove("main");
+    r.classList.add("main"); r.classList.remove("pip");
+  }
+}
+/* 前后画面手动互换：立即生效 + 标记手动，跳过下一轮 SSE 的朝向自动覆盖 */
+$("#vswap").onclick = () => {
+  const f = $("#figF"), r = $("#figR");
+  const fMain = f.classList.contains("main");
+  f.classList.toggle("main", !fMain); f.classList.toggle("pip", fMain);
+  r.classList.toggle("main", fMain);  r.classList.toggle("pip", !fMain);
+  _videoManualSwap = true;   // 告诉下一轮 applyVideoLayout 跳过
+};
+
+$("#vidreconnect").onclick = startVideo;
+
+/* ---- 摇杆 ---- */
+const pad = $("#pad"), knob = $("#knob");
+let joy = { x:0, y:0, active:false };
+function setKnob(dx, dy) {
+  const r = pad.clientWidth / 2, lim = r - 26;
+  const m2 = Math.hypot(dx, dy);
+  if (m2 > lim) { dx = dx / m2 * lim; dy = dy / m2 * lim; }
+  knob.style.left = (r + dx) + "px";
+  knob.style.top = (r + dy) + "px";
+  joy.x = dx / lim; joy.y = dy / lim;
+}
+function padFromEvent(ev) {
+  const rect = pad.getBoundingClientRect();
+  setKnob(ev.clientX - rect.left - rect.width / 2, ev.clientY - rect.top - rect.height / 2);
+}
+pad.addEventListener("pointerdown", (e) => {
+  pad.setPointerCapture(e.pointerId); joy.active = true; padFromEvent(e);
+});
+pad.addEventListener("pointermove", (e) => { if (joy.active) padFromEvent(e); });
+const endPad = () => { joy.active = false; joy.x = joy.y = 0; setKnob(0, 0); };
+pad.addEventListener("pointerup", endPad);
+pad.addEventListener("pointercancel", endPad);
+
+/* ---- 键盘 ---- */
+const keys = new Set();
+addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT") return;
+  keys.add(e.key.toLowerCase());
+  if (e.key === " ") { e.preventDefault(); keys.clear(); post("/api/cmd", { action:"stop" }); }
+});
+addEventListener("keyup", (e) => keys.delete(e.key.toLowerCase()));
+
+/* ---- 100ms 上报速度（后端 20Hz 保活 + 0.5s 失联归零） ---- */
+const yaw = $("#yaw"), spd = $("#spd");
+yaw.oninput = () => $("#yawv").textContent = (+yaw.value).toFixed(2);
+spd.oninput = () => $("#spdv").textContent = (+spd.value).toFixed(2);
+
+let lastNonzero = false;
+setInterval(async () => {
+  let f = 0, s = 0, y = (+yaw.value) * (+spd.value);
+  if (joy.active) { f = -joy.y * (+spd.value); s = joy.x * (+spd.value); }
+  if (keys.has("w")) f += (+spd.value);
+  if (keys.has("s")) f -= (+spd.value);
+  if (keys.has("a")) s -= (+spd.value);
+  if (keys.has("d")) s += (+spd.value);
+  if (keys.has("q")) y -= 1;
+  if (keys.has("e")) y += 1;
+  const nz = (Math.abs(f) > 0.001 || Math.abs(s) > 0.001 || Math.abs(y) > 0.001);
+  if (nz && curMode === 1 && !modeWarned) {
+    modeWarned = true;
+    toast("导航模式（Mode=1）不支持轴指令，请先切到『常规模式』或『辅助模式』。");
+  }
+  if (nz || lastNonzero) {
+    await post("/api/velocity", { forward:f, side:s, yaw:y });
+    lastNonzero = nz;
+  }
+}, 100);
+
+/* ==================== PPE 安全检测 ==================== */
+let ppeOn = false;
+let _ppeTimer = null;
+let _ppeLastEnabled = null;   // 上一次 enabled 状态，用于检测变化时重拉视频
+
+async function ppeRefresh() {
+  try {
+    const r = await fetch("/api/ppe/status");
+    const s = await r.json();
+    const wasEnabled = window.ppeOn;
+    ppeOn = !!s.enabled;
+    window.ppeOn = ppeOn;
+    window.ppeCam = s.camera || null;
+    // 状态徽标
+    const st = $("#ppeState");
+    if (s.enabled) {
+      st.className = "badge ok";
+      st.textContent = "运行中 · " + (s.camera === "front" ? "前广角" : "后广角");
+    } else {
+      st.className = "badge no";
+      st.textContent = "未启动";
+    }
+    // 同步按钮态
+    $("#ppeStart").disabled = s.enabled;
+    $("#ppeStop").disabled = !s.enabled;
+    $("#ppeCam").disabled = s.enabled;
+    // 最近检测
+    if (s.last_frame_age != null) {
+      $("#ppeLast").textContent = s.last_frame_age + "s 前 · 检出 " + s.det_count;
+    } else {
+      $("#ppeLast").textContent = "-";
+    }
+    $("#ppeMs").textContent = s.last_infer_ms != null ? (s.last_infer_ms + " ms") : "-";
+    // 错误
+    $("#ppeErr").textContent = s.error || "";
+    // 告警事件
+    const evBox = $("#ppeEvents");
+    if (!s.events || !s.events.length) {
+      evBox.innerHTML = '<div class="muted">' + (s.enabled ? "暂无违规。" : "启动检测后，违规事件会显示在这里。") + '</div>';
+    } else {
+      evBox.innerHTML = s.events.map(e =>
+        '<div style="padding:4px 6px;border-bottom:1px dashed #202832;color:#ffb4b4">'
+        + '🚨 <b>' + e.t + '</b> ' + e.cn
+        + ' <span class="muted">(' + (e.camera === "front" ? "前" : "后")
+        + '摄 · 持续 ' + e.duration_s + 's · conf=' + e.confidence + ')</span></div>'
+      ).join("");
+    }
+    // 状态翻转 → 重拉视频（把带框的流切进大屏）
+    if (wasEnabled !== ppeOn && vidOn) startVideo();
+  } catch (e) {
+    $("#ppeErr").textContent = "status 拉取失败: " + e;
+  }
+}
+
+$("#ppeStart").onclick = async () => {
+  $("#ppeErr").textContent = "";
+  const cam = $("#ppeCam").value;
+  const r = await post("/api/ppe/start", { camera: cam });
+  if (!r.ok) {
+    $("#ppeErr").textContent = r.err || r.msg || "启动失败";
+    toast("PPE 启动失败：" + (r.err || r.msg || "未知错误"));
+    return;
+  }
+  toast("PPE 检测已启动（" + (cam === "front" ? "前广角" : "后广角") + "）");
+  // 启动后立刻拉一次视频（带框流），即使机器人还没在线也要先显示 PPE 画面
+  window.ppeOn = true;
+  window.ppeCam = cam;
+  if (!vidOn) vidOn = true;
+  startVideo();
+  ppeRefresh();
+};
+
+$("#ppeStop").onclick = async () => {
+  const r = await post("/api/ppe/stop", {});
+  if (!r.ok) toast("停止失败");
+  else toast("PPE 检测已停止");
+  ppeRefresh();
+};
+
+// 每 1s 拉一次 PPE 状态
+_ppeTimer = setInterval(ppeRefresh, 1000);
+ppeRefresh();
+</script>
+</body>
+</html>

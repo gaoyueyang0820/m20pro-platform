@@ -1,0 +1,41 @@
+{
+  "source": "data/reviews/live-20261102/fusion-probe.json",
+  "source_sha256": "96c6428570dfc9ac077fb04498b05fc91f316c18ae7134026be9f86572e1b324",
+  "source_map": "m20-session-db78dc04653f4e99876415517e68152d-20261102-093123",
+  "poses_text": "1793583086.600027800 -0.000181394 -0.003751466 0.001945436 0.000030235 -0.000178781 0.000230855 0.999999957\n",
+  "evidence": {
+    "state": "deferred",
+    "reason": "fewer_than_three_keyframes",
+    "frames": 1
+  },
+  "confirmed_cells_count": 0,
+  "alignment": {
+    "metrics": {
+      "structural_overlap": 0.7604562737642585,
+      "rmse_m": 0.09428417892499487,
+      "effective_frames": 1,
+      "known_free_conflict_ratio": 0.18200408997955012,
+      "correction_m": 0.16510173694955485,
+      "correction_yaw_rad": 0.007005403697419491,
+      "temporal_change_confirmed": false,
+      "confirmed_conflict_fraction": 0.0
+    },
+    "decision": {
+      "allowed": false,
+      "status": "unconfirmed_environment_change",
+      "reason": "旧空地出现明显结构冲突，需多时段多视角确认",
+      "requires_review": true,
+      "threshold_status": "initial_defaults_require_site_validation"
+    },
+    "frames": [
+      {
+        "frame": 0,
+        "points": 526,
+        "structural_overlap": 0.7604562737642585,
+        "retained_old_overlap": 0.1480836236933798,
+        "rmse_m": 0.09428417892499487
+      }
+    ]
+  },
+  "map_written": false
+}

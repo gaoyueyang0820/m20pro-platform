@@ -1,0 +1,63 @@
+{
+  "models": [
+    {
+      "id": "person",
+      "file": "yolo11n.pt",
+      "url": "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.pt",
+      "expected_size": 5613764,
+      "source": "https://docs.ultralytics.com/models/yolo11/",
+      "license": "AGPL-3.0",
+      "version": "ultralytics/assets v8.3.0",
+      "sha256": "0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1",
+      "bytes": 5613764,
+      "classes": [
+        "person (COCO class 0)",
+        "79 other COCO classes"
+      ]
+    },
+    {
+      "id": "ppe",
+      "file": "ppe.pt",
+      "url": "https://raw.githubusercontent.com/Ansarimajid/Construction-PPE-Detection/2dedf6e6f3850a6a1e52fc295556c6f82a026979/Model/ppe.pt",
+      "expected_size": 24555554,
+      "git_blob": "3e0f2eec11a5f957e71b420c915796e7d23b5540",
+      "source": "https://github.com/Ansarimajid/Construction-PPE-Detection",
+      "license": "MIT repository declaration; Ultralytics backend AGPL-3.0",
+      "version": "2dedf6e6f3850a6a1e52fc295556c6f82a026979",
+      "sha256": "5c981fd81432236cd6c88fa336697370f110383a62cc967f7759debf3c2b147e",
+      "bytes": 24555554,
+      "classes": [
+        "Hardhat",
+        "Mask",
+        "NO-Hardhat",
+        "NO-Mask",
+        "NO-Safety Vest",
+        "Person",
+        "Safety Cone",
+        "Safety Vest",
+        "machinery",
+        "vehicle"
+      ]
+    },
+    {
+      "id": "counting",
+      "file": "yolo12n.pt",
+      "sha256": "419ff3dca37d69bacc93a50fa0c186a1c6f9fe62fae0f108b0872829689e9ca6",
+      "bytes": 5595063,
+      "source": "https://docs.ultralytics.com/models/yolo12/",
+      "origin": "User-supplied yolo12n.pt; checkpoint has no release or license metadata",
+      "license": "Not specified in supplied checkpoint; Ultralytics runtime uses AGPL-3.0",
+      "classes": [
+        "person (COCO class 0)",
+        "79 other COCO classes"
+      ],
+      "role": "people counting; detection and track IDs, not identity recognition"
+    }
+  ],
+  "sample": {
+    "file": "samples/persons.jpg",
+    "source": "Ultralytics 8.4.190 bundled assets/bus.jpg",
+    "sha256": "c02019c4979c191eb739ddd944445ef408dad5679acab6fd520ef9d434bfbc63",
+    "purpose": "Local inference smoke check, not a validation dataset"
+  }
+}
