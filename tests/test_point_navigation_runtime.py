@@ -58,8 +58,8 @@ class PointNavigationRuntimeTests(unittest.TestCase):
         map_=a.import_map(dict(name='runtime-test',pgm=base64.b64encode(raw).decode(),resolution=.1,origin=[0,0,0]))['map']
         map_.update(robot_map_name='runtime-test',verified_for_robot=True,robot_ip='127.0.0.1')
         a.demo=False;a.link=RecordedLink();self.ready();a.hub.sdk_mode=dict(state='normal')
-        a.proxy=lambda *args,**kwargs:dict(active='runtime-test',phase='idle',in_progress=False)
-        a.hub.remote_maps=lambda *args,**kwargs:dict(active='runtime-test',phase='idle',in_progress=False)
+        a.proxy=lambda *args,**kwargs:dict(active='runtime-test',maps=[dict(name='runtime-test',grids=[0])],phase='idle',in_progress=False)
+        a.hub.remote_maps=lambda *args,**kwargs:dict(active='runtime-test',maps=[dict(name='runtime-test',grids=[0])],phase='idle',in_progress=False)
         self.map=map_;self.scans=0
         def scan(mapping=False):
             self.scans+=1

@@ -25,6 +25,7 @@ from urllib.parse import urlparse,parse_qs,quote
 from urllib.request import Request, urlopen
 
 import m20_console as original
+from navigation_validation import NavigationEvidenceError, validate_map_identity, error_summary
 from platform_core import ROOT, JOINTS, LEGS, NEUTRAL, ERRORS, RobotLink, Store, Training, number, integer, rpc, explain_error, leg_target, age_of
 from platform_hub import Hub
 from shared_access import SharedAccess, lan_addresses
@@ -561,6 +562,15 @@ class Platform:
             self.live_ready()
             if not self.demo and (self.pose.get('Location')!=0 or not self.link or age_of(self.link.record(1007,2))>2):raise ValueError('请先完成地图定位，并等待新鲜定位反馈')
             start=[number(self.pose.get(k)) for k in ['PosX','PosY','Yaw']]
+            planning_context=self.hub.context()
+        def verify_map():
+            if planning_demo:return None
+            library=self.hub.remote_maps('/maps/list',context=planning_context,timeout=3)
+            with self.lock:
+                if generation!=self._plan_generation or self.link is not planning_link or self.demo!=planning_demo:
+                    raise ValueError('连接已改变，请重新规划')
+            return validate_map_identity(map_,library)
+        map_identity=verify_map()
         source=self.store.path.parent/'maps'/(map_['id']+'.pgm')
         if map_.get('demo') and map_['id']=='demo':source=self.hub.demo_maps.maps/'demo-yard/occ_grid.pgm'
         if not source.is_file():
@@ -602,13 +612,40 @@ class Platform:
         if latest_surface:start=list(latest_surface[0]['pose'])
         try:result=planner.plan(start,[x,y],yaw,goal_tolerance=.65)
         except ValueError as exc:
-            if engine!='platform' or not latest_surface:raise
+            if not planning_demo:verify_map()
+            if engine!='platform' or planning_demo:raise
+            if not latest_surface:
+                raise NavigationEvidenceError('没有足够的新鲜同步观测核对起点：'+(last_error or obstacle_note),
+                    classification='observation_unavailable',reason_code='observation_unavailable',
+                    recommended_action='revalidate_observation') from exc
             from start_recovery_runtime import plan_with_recovery
             scan,loc=latest_surface
             if '_valid_until' in scan:scan['age']=max(0.,.65+time.monotonic()-scan['_valid_until'])
             record=planning_link.record(1002,6);basic=record.get('items',{}).get('BasicStatus',{})
             standing=age_of(record)<2 and basic.get('MotionState')==17 and basic.get('HES')==0 and not basic.get('Sleep')
-            result=plan_with_recovery(planner,start,[x,y],yaw,scan,loc,standing,standard_error=exc)
+            try:result=plan_with_recovery(planner,start,[x,y],yaw,scan,loc,standing,standard_error=exc)
+            except ValueError as recovery_error:
+                recovery=getattr(recovery_error,'recovery',{})
+                if recovery.get('reason_code') not in ['live_evidence_expired','insufficient_ground_votes']:raise
+                # One bounded read-only recheck, never an indefinite retry and
+                # never a permission to move using old projected evidence.
+                verify_map();until=time.monotonic()+1.2;newer=scan.get('stamp');refreshed=False
+                for _ in range(4):
+                    if time.monotonic()>=until:break
+                    with self.lock:
+                        if generation!=self._plan_generation or self.link is not planning_link:raise ValueError('连接已改变，请重新规划')
+                    next_scan,next_loc=self.navigation_surface(map_['id'])
+                    if newer is not None and next_scan.get('stamp',-1)<=newer:continue
+                    update=planner.update_live_surface(next_scan,next_loc)
+                    if not update.get('accepted'):continue
+                    scan,loc=next_scan,next_loc;start=list(scan['pose']);newer=scan.get('stamp');refreshed=True
+                if not refreshed:raise recovery_error
+                record=planning_link.record(1002,6);basic=record.get('items',{}).get('BasicStatus',{})
+                standing=age_of(record)<2 and basic.get('MotionState')==17 and basic.get('HES')==0 and not basic.get('Sleep')
+                result=plan_with_recovery(planner,start,[x,y],yaw,scan,loc,standing)
+                result['observation_recheck']=dict(performed=True,limit=1,motion_sent=False)
+        if not planning_demo:map_identity=verify_map()
+        result['map_identity']=map_identity
         if result.get('self_projection_ignored'):obstacle_note='已排除机身内部的新增投影；原图墙体和前方障碍保留，机器人实时避障保持开启'
         result.update(live_obstacles=len(obstacles),obstacle_note=obstacle_note,
                       execution='platform_trajectory' if engine=='platform' else 'native_single_goal',guide_points_preview_only=engine!='platform',live_surface=planner.live_surface_status())
@@ -1219,7 +1256,7 @@ class Platform:
                 relocation_epoch=(self._plan_generation,id(self.link),self.pose.get('Relocation')))
             return dict(mode='demo' if self.demo else 'live',online=bool(online),server_instance=self.instance_id,pose_view=pose_view,
                         connection_generation=self._plan_generation,
-                        navigation_preparation=dict(client_intent_protocol=1),
+                        navigation_preparation=dict(client_intent_protocol=1,verify_current_localization=True),
                         previous_connection_stop=copy.deepcopy(self.store.value.get('previous_connection_stop')),
                         ip=self.link.ip if self.link else None,basic=self.basic,motion=motion,device=dev,
                         pose=self.pose,velocity=self.velocity,lights=self.lights,reverse=self.reverse,
@@ -1575,7 +1612,7 @@ class Handler(original.Handler):
                 else: return self._json(dict(ok=False,err='接口不存在'),404)
             self._json(result)
         except PermissionError as exc:self._json(dict(ok=False,err=str(exc)),403)
-        except (ValueError,TypeError,KeyError) as exc: self._json(dict(ok=False,err=str(exc)),400)
+        except (ValueError,TypeError,KeyError) as exc: self._json(dict(ok=False,err=str(exc),navigation=error_summary(exc)),400)
         except (BrokenPipeError,ConnectionResetError): pass
         except Exception as exc:
             APP.add_log('error','服务错误: '+type(exc).__name__)

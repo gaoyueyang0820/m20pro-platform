@@ -38,10 +38,12 @@
  function status(t,message,phase=t.phase){guard(t);t.message=message;t.phase=phase;paint();}
  function paint(){
   const busy=!!pending,goal=page==='navigation'&&navIntent==='goal',needs=S?.mode==='live'&&S.pose?.Location!==0;
+  const mapMismatch=typeof goalDiagnosticPresentation==='function'&&goalDiagnosticPresentation()?.action==='sync_active_map';
   const button=$('[data-ui="go-goal"]');
   if(button&&goal){
    if(!supported(S)){button.disabled=true;button.textContent='请先加载新版导航服务';button.title='后台尚不支持可撤销的导航准备，请加载新版平台后刷新';}
    else if(busy){button.disabled=true;button.textContent=pending.phase==='localizing'?'正在恢复定位…':'正在准备导航…';}
+   else if(mapMismatch){button.disabled=true;button.textContent='请先同步活动地图';button.title='当前目标属于另一张地图，请同步机器人当前活动地图后重新选点';}
    else{
     button.textContent=needs?'恢复定位并前往':'前往目标';
     if(needs&&goalKey()&&navigationMapReady()&&!goalReplanning&&!goalSubmitting&&!S.mapping&&!S.autonomy?.active&&!['running','cancelling'].includes(S.nav?.status)){
@@ -49,7 +51,7 @@
     }
    }
   }
-  for(const b of document.querySelectorAll('[data-route-run], [data-ui="start-nav"], [data-ui="goal-replan"]')){
+  for(const b of document.querySelectorAll('[data-route-run], [data-ui="start-nav"], [data-ui="goal-replan"], [data-ui="goal-localize-preview"], [data-ui="goal-observation-recheck"], [data-ui="goal-sync-active-map"]')){
    if(busy||!supported(S)){if(b.dataset.navigationWasDisabled===undefined)b.dataset.navigationWasDisabled=String(b.disabled);b.disabled=true;if(!supported(S))b.title='请加载新版平台后刷新，后台尚不支持可撤销的导航准备';}
    else if(b.dataset.navigationWasDisabled!==undefined){b.disabled=b.dataset.navigationWasDisabled==='true';delete b.dataset.navigationWasDisabled;}
   }
@@ -77,9 +79,10 @@
   if(S.autonomy?.active||['running','cancelling'].includes(S.nav?.status))throw Error('已有任务运行中，请先停止');
  }
  async function localize(t){
-  if(S.mode!=='live'||S.pose?.Location===0)return;
-  status(t,'定位未就绪，正在自动恢复；可随时暂停或手动接管','localizing');
-  const start=await request(t,'/api/maps/localize-auto',{});
+  if(S.mode!=='live'||S.pose?.Location===0&&!t.forceLocalization)return;
+  if(t.forceLocalization&&S.navigation_preparation?.verify_current_localization!==true)throw Error('后台尚不支持静态结构识别，请加载新版平台后刷新');
+  status(t,t.forceLocalization?'正在用新鲜结构重新识别位置；本次只更新路线预览':'定位未就绪，正在自动恢复；可随时暂停或手动接管','localizing');
+  const start=await request(t,'/api/maps/localize-auto',t.forceLocalization?{verify_current:true}:{});
   if(start.localized!==true){
    if(!start.job_id)throw Error('定位请求没有返回可查询的任务编号');
    const deadline=performance.now()+120000;
@@ -106,17 +109,63 @@
   pending=t;if(kind==='goal'){goalSubmitting=true;invalidateGoalPlan();}paintGoalPlan();paint();return t;
  }
  async function finish(t,operation){
-  try{await refresh(t);await localize(t);guard(t);return await operation();}
+  try{await refresh(t);if(!t.skipLocalization)await localize(t);guard(t);return await operation();}
   catch(error){
    if(error.navigationPreparationCancelled||!current(t)){if(pending===t)cancel('连接或设置已变化，已取消后续自动开始');return;}
+   if(t.kind==='goal'&&error.navigation){goalPlanError=error.message;goalPlanKey=t.key;goalPlanDiagnostics=error.navigation;}
    if(t.startDispatched){cancel('启动请求结果未确认，正在撤销本次意图');throw error;}
-   notice=(t.phase==='submitting'?'开始请求未获确认，请查看任务状态或按暂停：':'未开始导航：')+error.message;throw error;
+   notice=(t.previewOnly?'路线预览尚未恢复：':t.phase==='submitting'?'开始请求未获确认，请查看任务状态或按暂停：':'未开始导航：')+error.message;throw error;
   }finally{
    if(pending===t){pending=null;if(t.kind==='goal')goalSubmitting=false;paintGoalPlan();paint();}
   }
  }
+ function goalRequest(){
+  if(!goalKey())throw Error('请先选择目标');
+  const manual=$('#goal-yaw-mode')?.value==='manual',degrees=+($('#goal-yaw')?.value||0);
+  const goal={map_id:mapId,x:points[0].x,y:points[0].y,yaw:manual?(((degrees+180)%360+360)%360-180)*Math.PI/180:null,engine:pointNavigationEngine};
+  if(![goal.x,goal.y].every(Number.isFinite)||goal.yaw!==null&&!Number.isFinite(goal.yaw))throw Error('目标坐标或朝向无效');
+  return goal;
+ }
+ async function updatePreview(t,goal){
+  if(!navigationMapReady())throw Error('活动地图已改变，请先同步机器人当前活动地图');
+  status(t,'正在读取同步观测并重新检查路线','planning');
+  const plan=await request(t,'/api/nav/plan',goal,15000);
+  if(!plan.plan_id)throw Error('规划未返回可用的路线预览');
+  goalPlan={...plan,received:performance.now()};goalPlanKey=t.key;goalPlanError='';
+  if(typeof goalPlanDiagnostics!=='undefined')goalPlanDiagnostics=null;
+  paintGoalPlan();drawMap();return plan;
+ }
+ async function previewRecovery(forceLocalization){
+  if(pending||goalSubmitting||goalReplanning)return;
+  if(!navigationMapReady()||typeof goalDiagnosticPresentation==='function'&&goalDiagnosticPresentation()?.action==='sync_active_map')throw Error('请先同步机器人当前活动地图，再核对路线');
+  if(forceLocalization&&S.mode==='live'&&S.navigation_preparation?.verify_current_localization!==true)throw Error('请加载支持静态结构识别的新版平台后刷新');
+  const goal=goalRequest(),t=begin('goal',{key:goalKey(),previewOnly:true,forceLocalization,skipLocalization:!forceLocalization});if(!t)return;
+  return finish(t,async()=>{
+   const plan=await updatePreview(t,goal);
+   notice=forceLocalization?'位置已重新识别，路线预览已更新；尚未开始行走':'已重新读取观测并更新路线预览；尚未开始行走';
+   return plan;
+  });
+ }
+ ui['goal-localize-preview']=()=>previewRecovery(true);
+ ui['goal-observation-recheck']=()=>previewRecovery(false);
+ ui['goal-sync-active-map']=async()=>{
+  if(pending||goalSubmitting||goalReplanning)return;
+  const t=begin('goal',{key:goalKey(),previewOnly:true,skipLocalization:true});if(!t)return;
+  return finish(t,async()=>{
+   status(t,'正在读取机器人当前活动地图','syncing');
+   const library=await request(t,'/api/maps/library');if(!library.active)throw Error('机器人尚未报告活动地图');
+   const currentMap=typeof selectedMap==='function'?selectedMap():null;
+   const synced=await request(t,'/api/maps/library/sync',{name:library.active,grid_id:currentMap?.robot_map_name===library.active?currentMap.grid_id||0:0},15000);
+   if(!synced.map?.id)throw Error('同步结果缺少地图编号');
+   if(typeof mapLibrary!=='undefined')mapLibrary=library;
+   mapId=synced.map.id;routeId=null;points=[];t.key=goalKey();t.selection=selection();invalidateGoalPlan();
+   notice='已同步机器人当前活动地图，请重新选择目标；没有切换机器人地图或开始行走';
+   await fetchState();guard(t);render();return synced;
+  });
+ };
  ui['go-goal']=async()=>{
   if(pending||goalSubmitting||goalReplanning)return;
+  if(typeof goalDiagnosticPresentation==='function'&&goalDiagnosticPresentation()?.action==='sync_active_map')throw Error('请先同步机器人当前活动地图，再重新选择目标');
   if(!goalKey()||!navigationMapReady())throw Error('请同步当前活动地图并选择目标');
   const manual=$('#goal-yaw-mode')?.value==='manual',degrees=+($('#goal-yaw')?.value||0);
   const goal={map_id:mapId,x:points[0].x,y:points[0].y,yaw:manual?(((degrees+180)%360+360)%360-180)*Math.PI/180:null,engine:pointNavigationEngine};
@@ -127,7 +176,7 @@
    status(t,'定位已就绪，正在从当前位置重新规划','planning');
    const plan=await request(t,'/api/nav/plan',goal,15000);
    if(!plan.plan_id)throw Error('规划未返回可执行路线');
-   goalPlan={...plan,received:performance.now()};goalPlanKey=t.key;goalPlanError='';paintGoalPlan();drawMap();
+   goalPlan={...plan,received:performance.now()};goalPlanKey=t.key;goalPlanError='';if(typeof goalPlanDiagnostics!=='undefined')goalPlanDiagnostics=null;paintGoalPlan();drawMap();
    status(t,'已重新规划，正在开始导航','submitting');guard(t);
    t.startDispatched=true;
    const result=await request(t,'/api/nav/goal',{...t.clientRequest,map_id:goal.map_id,plan_id:plan.plan_id,engine:goal.engine},20000);

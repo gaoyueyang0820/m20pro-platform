@@ -92,7 +92,34 @@ class LiveTraversability:
         return stamp,pose,resolution,life
 
     @staticmethod
+    def _precise_bounds(scan):
+        if scan.get('geometry_version')!=2:return None
+        try:boxes=np.asarray(scan.get('obstacle_bounds',[]),float).reshape(-1,4)
+        except (ValueError,TypeError):return None
+        if len(boxes)!=len(scan['obstacles']) or not np.isfinite(boxes).all() or not np.all(boxes[:,2:]>=boxes[:,:2]):return None
+        boxes=boxes.copy()
+        if len(boxes):boxes[:,:2]-=.005;boxes[:,2:]+=.005
+        return boxes
+
+    @staticmethod
+    def _ray_clear(x,y,boxes):
+        """Segment/box slabs; only measured ground is tested, never ray-filled."""
+        if boxes is None or not len(boxes):return True
+        enter=np.zeros(len(boxes));leave=np.ones(len(boxes));possible=np.ones(len(boxes),bool)
+        for axis,value in enumerate([x,y]):
+            if abs(value)<1e-12:possible&=(boxes[:,axis]<=0)&(boxes[:,axis+2]>=0)
+            else:
+                a=boxes[:,axis]/value;b=boxes[:,axis+2]/value
+                enter=np.maximum(enter,np.minimum(a,b));leave=np.minimum(leave,np.maximum(a,b))
+        return not bool(np.any(possible&(enter<=leave)))
+
+    @staticmethod
     def _visible_floor(scan,resolution):
+        if LiveTraversability._precise_bounds(scan) is not None:
+            # A 20 cm cell can contain both measured floor and a small obstacle
+            # outside the map cell being considered. Exact obstacle projection
+            # and per-map-cell sight lines below decide which part is usable.
+            return {tuple(p) for p in scan['measured_floor'] if math.hypot(*p)*resolution<=2.2}
         floor=set(map(tuple,scan['floor']))&set(map(tuple,scan['measured_floor']))
         obstacles=set(map(tuple,scan['obstacles']))
         floor-=obstacles
@@ -130,7 +157,7 @@ class LiveTraversability:
                         abs(-s*dx+c*dy)<=hy+half*(abs(c)+abs(s))):cells.add((ix,iy))
         return cells,anchors
 
-    def _candidates(self,visible,blocked,pose,resolution):
+    def _candidates(self,visible,blocked,pose,resolution,occluders=None):
         x,y,yaw=pose;c,s=math.cos(yaw),math.sin(yaw);result=set();r=self.NEAR_RADIUS;half=self.res/2
         left,top=self.cell(x-r,y+r);right,bottom=self.cell(x+r,y-r)
         for iy in range(max(0,top),min(self.h,bottom+1)):
@@ -142,7 +169,8 @@ class LiveTraversability:
                 ok=True
                 for dx,dy in [(0,0),(-half,-half),(-half,half),(half,-half),(half,half)]:
                     px,py=wx+dx-x,wy+dy-y;u,v=c*px+s*py,-s*px+c*py
-                    if math.hypot(u,v)>r or (math.floor(u/resolution+.5),math.floor(v/resolution+.5)) not in visible:ok=False;break
+                    if (math.hypot(u,v)>r or (math.floor(u/resolution+.5),math.floor(v/resolution+.5)) not in visible
+                            or not self._ray_clear(u,v,occluders)):ok=False;break
                 if ok:result.add((ix,iy))
         return result
 
@@ -202,7 +230,7 @@ class LiveTraversability:
         try:
             visible=self._visible_floor(scan,resolution)
             blocked,anchors=self._project_blocks(scan,pose,resolution)
-            candidates=self._candidates(visible,blocked,pose,resolution)
+            candidates=self._candidates(visible,blocked,pose,resolution,self._precise_bounds(scan))
         except (ValueError,TypeError,KeyError,OverflowError) as exc:return self.clear('地面证据格式无效：'+str(exc))
         structure=self._structure(anchors,candidates)
         self.evidence={p:q for p,q in self.evidence.items() if q and now-q[-1][1]<=self.EVIDENCE_WINDOW and p not in blocked}
@@ -233,4 +261,5 @@ class LiveTraversability:
                 '已建立本轮临时通路，原图保持不变' if approved else '正在积累独立实测地面帧')
         state='projection_unconfirmed' if pending and not structure['supported'] else 'active' if approved else 'waiting_evidence'
         return self._publish(approved,blocked,accepted=True,state=state,reason=reason,structure=structure,carried_under_body=len(carried),
-                             observed_candidates=len(candidates),pending_occupied=pending)
+                             observed_candidates=len(candidates),pending_occupied=pending,
+                             floor_geometry='precise_bounds' if self._precise_bounds(scan) is not None else 'conservative_cells')

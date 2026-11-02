@@ -420,6 +420,8 @@ class Hub:
                 self.app.store.value.setdefault('map_extensions',[]).append(plan);self.app.store.save()
             return dict(ok=True,plan=plan)
         if path=='/api/maps/localize-auto':
+            verify_current=req.get('verify_current',False)
+            if not isinstance(verify_current,bool):raise ValueError('静态识别参数无效')
             self.normal_mode();self.idle();self.app.live_ready()
             if self.app.mapping:raise ValueError('请先结束并保存建图，再恢复旧图定位')
             with self.app.lock:
@@ -427,7 +429,9 @@ class Hub:
                 token=dict(id=uuid.uuid4().hex,kind='localize',context=self.context(),cancelled=False)
                 self.preparation=token
             def localize(progress):
-                try:return self.app.localizer.recover(progress,check=lambda:self.check_preparation(token))
+                try:
+                    check=lambda:self.check_preparation(token)
+                    return self.app.localizer.recover(progress,check=check,verify_current=True) if verify_current else self.app.localizer.recover(progress,check=check)
                 finally:
                     with self.app.lock:
                         if self.preparation is token:self.preparation=None

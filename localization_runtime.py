@@ -186,7 +186,7 @@ class AutomaticLocalizer:
         self.wait_normal(12,match['pose'],check=check)
         return dict(ok=True,localized=True,method='recent_pose_cloud_match',pose=match['pose'],verification=verification,message='已自动识别位置与朝向，定位恢复正常')
 
-    def recover(self,progress,check=None):
+    def recover(self,progress,check=None,verify_current=False):
         if check:check()
         if self.app.demo:return dict(ok=True,demo=True,localized=True)
         generation=self.generation;link=self.app.link;demo=self.app.demo
@@ -196,7 +196,7 @@ class AutomaticLocalizer:
             if generation!=self.generation or self.app.link is not link or self.app.demo!=demo or getattr(self.app,'done',False):
                 raise OperationCancelled('恢复定位已取消；不会继续初始化或启动其他操作')
         guard();status=self.status();guard()
-        if self.good(status):
+        if self.good(status) and not verify_current:
             self.remember(status);guard();return dict(ok=True,localized=True,method='already_localized',message='当前定位正常')
         saved_error=None
         try:

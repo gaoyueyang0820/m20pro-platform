@@ -32,10 +32,10 @@ GROUPS={
                   'test_control_clock','test_terrain_profiles','test_pose_monitor'],
     'navigation':['test_navigation_planner','test_navigation_planning_v3','test_live_surface_localization',
                   'test_localization_recovery','test_navigation_intents','test_goal_approach','test_goal_approach_review'],
-    'sensing':['test_sensor_cache','test_sensor_reader','test_latest_observation','test_sensing_equivalence','test_manual_turn_scan_frames'],
+    'sensing':['test_sensor_cache','test_sensor_reader','test_latest_observation','test_sensing_equivalence','test_manual_turn_scan_frames','test_live_surface_precision'],
     'maps':['test_map_change_policy','test_map_fusion','test_map_update_v3',
             'test_mapping_save_outcomes.SyntheticSavedObservationTests'],
-    'lifecycle':['test_mapping_request_identity','test_operations_lifecycle','test_delivery_boundary'],
+    'lifecycle':['test_mapping_request_identity','test_operations_lifecycle','test_delivery_boundary','test_navigation_preview_identity'],
     'native':['test_native_sensing'],
     'ui':[],
 }
@@ -48,7 +48,7 @@ EXCLUDE_TESTS={
     'test_mapping_request_identity.MappingRequestIdentityTests.test_stop_waits_for_start_then_saves_same_capture':
         'Calls the host process inventory without a test-local proc fixture; outside portable effect scope.',
 }
-JS_TESTS=['test_autonomy_ui.cjs','test_autonomy_map_view.cjs','test_navigation_preparation.cjs','test_goal_approach_ui.cjs','test_navigation_ui.cjs','test_cloud_ui.cjs','test_camera_player.cjs',
+JS_TESTS=['test_autonomy_ui.cjs','test_autonomy_map_view.cjs','test_navigation_preparation.cjs','test_navigation_diagnostics.cjs','test_goal_approach_ui.cjs','test_navigation_ui.cjs','test_cloud_ui.cjs','test_camera_player.cjs',
           'test_model_check_ui.cjs','test_navigation_status.cjs','test_pose_display.cjs']
 NATIVE_PROOFS=[
     'test_native_sensing.NativeSensingTests.test_random_frames_require_native_hit_and_exact_all_field_equality',

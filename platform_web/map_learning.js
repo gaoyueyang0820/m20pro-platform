@@ -26,25 +26,56 @@ document.addEventListener('click',async e=>{const b=e.target.closest('[data-lear
  }catch(err){toast(err.message,true);}});
 
 let goalPlan=null,goalPlanKey='',goalPlanBusy=false,goalPlanError='',goalPlanGeneration=0,goalSubmitting=false;
+let goalPlanDiagnostics=null;
 let pointNavigationEngine='platform';
 let goalPlanRequest=null,goalReplanning=false;
 function goalKey(){if(page!=='navigation'||navIntent!=='goal'||points.length!==1)return '';return [mapId,points[0].x,points[0].y,$('#goal-yaw-mode')?.value,$('#goal-yaw')?.value,pointNavigationEngine].join('|');}
 function validGoalPlan(){return !!(goalKey()&&goalPlan&&goalKey()===goalPlanKey&&performance.now()-goalPlan.received<55000);}
 function invalidateGoalPlan(){
- goalPlanGeneration++;goalPlan=null;goalPlanKey='';goalPlanError='';$('#goal-plan-preview')?.remove();$('#goal-recovery-preview')?.remove();
+ goalPlanGeneration++;goalPlan=null;goalPlanKey='';goalPlanError='';goalPlanDiagnostics=null;$('#goal-plan-preview')?.remove();$('#goal-recovery-preview')?.remove();
  const request=goalPlanRequest;goalPlanRequest=null;goalPlanBusy=false;
  if(request){clearTimeout(request.timer);request.controller.abort();}
 }
 const plannedRenderPoints=renderPoints;renderPoints=function(){invalidateGoalPlan();plannedRenderPoints();paintGoalPlan();};
 const plannedRender=render;render=function(){if(page!=='navigation'||navIntent!=='goal')invalidateGoalPlan();plannedRender();};
 async function refreshGoalPlan(){
- const key=goalKey();if(!key||goalPlanBusy||goalSubmitting)return;goalPlanBusy=true;goalPlanError='';goalPlan=null;goalPlanKey=key;const generation=++goalPlanGeneration;paintGoalPlan();drawMap();
+ const key=goalKey();if(!key||goalPlanBusy||goalSubmitting)return;goalPlanBusy=true;goalPlanError='';goalPlanDiagnostics=null;goalPlan=null;goalPlanKey=key;const generation=++goalPlanGeneration;paintGoalPlan();drawMap();
  const request={controller:new AbortController(),timedOut:false};goalPlanRequest=request;
  request.timer=setTimeout(()=>{request.timedOut=true;request.controller.abort();},15000);
  try{const manual=$('#goal-yaw-mode')?.value==='manual',degrees=+($('#goal-yaw')?.value||0);const yaw=manual?(((degrees+180)%360+360)%360-180)*Math.PI/180:null;
   const r=await api('/api/nav/plan',{map_id:mapId,x:points[0].x,y:points[0].y,yaw,engine:pointNavigationEngine},true,{signal:request.controller.signal});if(generation===goalPlanGeneration&&goalKey()===key)goalPlan={...r,received:performance.now()};
- }catch(err){if(generation===goalPlanGeneration&&goalKey()===key)goalPlanError=request.timedOut?'规划请求超时，请检查平台连接后点击“重新规划”':err.message;}
+ }catch(err){if(generation===goalPlanGeneration&&goalKey()===key){goalPlanError=request.timedOut?'规划请求超时，请检查平台连接后点击“重新规划”':err.message;goalPlanDiagnostics=err.navigation||null;}}
  finally{clearTimeout(request.timer);if(goalPlanRequest===request){goalPlanRequest=null;goalPlanBusy=false;paintGoalPlan();drawMap();}}
+}
+function goalDiagnosticPresentation(d=goalPlanDiagnostics){
+ if(!d)return null;
+ const code=d.reason_code||d.classification||'',overlap=d.overlap_diagnostics||{},parts=[];
+ const actions=['relocalize_and_replan','sync_active_map','revalidate_observation'];
+ let action=actions.includes(d.recommended_action)?d.recommended_action:null;
+ if(/map_identity|active_map_mismatch|map_changed/.test(code)||d.classification==='map_identity_mismatch')action='sync_active_map';
+ else if(!action&&['live_evidence_expired','insufficient_ground_votes'].includes(code))action='revalidate_observation';
+ else if(!action&&d.classification==='map_surface_disagreement')action='relocalize_and_replan';
+ const count=(key,label)=>{if(Number.isFinite(overlap[key]))parts.push(label+' '+overlap[key]+' 格');};
+ count('overlap_cells','地图重叠');count('unobserved_body_cells','机身盲区尚无观测');count('insufficient_vote_cells','独立观测不足');count('live_blocked_cells','实测障碍');
+ const surface={expired:'临时通行观测已过期',waiting_evidence:'正在收集独立观测',projection_unconfirmed:'扫描与地图结构尚未核对'}[overlap.surface_state];if(surface)parts.push(surface);
+ const title=action==='sync_active_map'?'当前导航图与机器人活动图不一致':d.classification==='map_surface_disagreement'?'当前位置与地图占据存在冲突':d.classification==='live_body_collision'?'实测障碍与机身范围重叠':'本次路线尚未通过核验';
+ return {title,summary:parts.join('；')||d.reason||goalPlanError,action};
+}
+function paintGoalDiagnostics(){
+ const status=$('#goal-plan-status'),view=goalDiagnosticPresentation();let panel=$('#goal-plan-diagnostics');
+ if(!status||!view){if(panel)panel.hidden=true;return;}
+ if(!panel){panel=document.createElement('div');panel.id='goal-plan-diagnostics';panel.className='help';panel.setAttribute('role','status');status.parentNode.insertBefore(panel,status.nextSibling);}
+ panel.hidden=false;const key=JSON.stringify(view);
+ if(panel._diagnosticKey!==key){
+  panel._diagnosticKey=key;panel.replaceChildren();panel._actionButton=null;
+  const title=document.createElement('strong');title.textContent=view.title;panel.append(title);
+  const detail=document.createElement('p');detail.textContent=view.summary;panel.append(detail);
+  const action={sync_active_map:['同步机器人当前活动地图','goal-sync-active-map'],revalidate_observation:['重新读取观测并检查路线','goal-observation-recheck'],relocalize_and_replan:['重新识别位置并重新规划','goal-localize-preview']}[view.action];
+  if(action){const button=document.createElement('button');button.type='button';button.className='btn small';button.dataset.ui=action[1];button.textContent=action[0];panel.append(button);panel._actionButton=button;}
+  const note=document.createElement('p');note.textContent=view.action==='sync_active_map'?'先同步活动地图，再重新选点；不会切换机器人地图。':'上述检查只更新定位或路线预览，不开始行走，也不修改旧地图。';panel.append(note);
+ }
+ const button=panel._actionButton;
+ if(button){button.disabled=goalPlanBusy||goalSubmitting||goalReplanning||['running','cancelling'].includes(S.nav?.status);button.title='';if(view.action==='relocalize_and_replan'&&S.mode==='live'&&S.navigation_preparation?.verify_current_localization!==true){button.disabled=true;button.title='请加载支持静态结构识别的新版平台后刷新';}}
 }
 function paintGoalPlan(){
  if(page!=='navigation'||navIntent!=='goal')return;const key=goalKey();
@@ -61,6 +92,7 @@ function paintGoalPlan(){
  const message=!key?'点选已知空地，自动预览路线':goalPlanBusy?'正在检查通路与转弯空间…':goalPlanError||(valid?goalPlan.length_m+' 米 · '+Math.max(0,goalPlan.points.length-1)+' 个参考折点 · 到达朝向 '+(goalPlan.goal.yaw*180/Math.PI).toFixed(0)+'°':'等待规划');
  const recovery=valid&&goalPlan.recovery?.required?` · 起点先平移退让 ${Math.round(goalPlan.recovery.recovery_distance_m*100)} 厘米再前往目标`:'';
  text('goal-plan-status',message+recovery+(valid&&S.mode==='live'?' · '+goalPlan.obstacle_note:''));
+ paintGoalDiagnostics();
  const feedback=$('#nav-feedback');if(feedback&&S.nav.warning&&!feedback.querySelector('.nav-progress-warning')){const note=document.createElement('p');note.className='help nav-progress-warning';note.textContent=S.nav.warning;feedback.append(note);}
 }
 ui['goal-replan']=async()=>{
