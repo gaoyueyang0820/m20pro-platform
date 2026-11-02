@@ -122,6 +122,37 @@ def clean_environment(temporary):
     return env
 
 
+def prepare_host_metadata():
+    """Warm only stdlib OS metadata before the test effect guard is installed.
+
+    CPython on Windows may execute the read-only ``ver`` builtin while filling
+    platform.uname's cache. Limit this preparation to those exact stdlib probes;
+    no product, NumPy or other optional dependency is imported here.
+    """
+    queries=[];original=subprocess.Popen
+    def metadata_popen(*args,**kwargs):
+        command=args[0] if args else kwargs.get('args')
+        if sys.platform!='win32' or kwargs.get('shell') is not True or command not in ('ver','command /c ver','cmd /c ver'):
+            raise RuntimeError('Unexpected subprocess during host-metadata preparation')
+        queries.append('windows_version_builtin_ver')
+        return original(*args,**kwargs)
+    subprocess.Popen=metadata_popen
+    try:
+        row=platform.uname();machine=platform.machine()
+    finally:subprocess.Popen=original
+    return dict(stage='before_test_effect_guard',provider='stdlib.platform',queries=['uname','machine'],
+                values=dict(system=row.system,release=row.release,version=row.version,machine=machine),
+                preparation_subprocesses=queries,hostname_recorded=False)
+
+
+def verify_host_metadata_cache(prepared):
+    """Called with Popen/network denial already active, before product imports."""
+    row=platform.uname()
+    values=dict(system=row.system,release=row.release,version=row.version,machine=platform.machine())
+    if values!=prepared['values']:raise RuntimeError('Host metadata cache changed after guard installation')
+    return dict(passed=True,stage='after_test_effect_guard',queries=['uname','machine'])
+
+
 def python_guard():
     blocked=[];suppressed=[]
     forbidden={'socket.connect','socket.bind','socket.sendto','socket.getaddrinfo','socket.gethostbyname',
@@ -155,6 +186,9 @@ def python_guard():
 
 
 def worker(group,native_library):
+    try:host_metadata=prepare_host_metadata()
+    except Exception as exc:
+        print(MARKER+json.dumps(dict(status='failed',tests_run=0,passed=[],failed=[],errors=['host_metadata_prepare: '+str(exc)],skipped=[]),ensure_ascii=False));return 1
     blocked,suppressed,self_test=python_guard();sys.path[:0]=[str(ROOT),str(ROOT/'tests')]
     os.environ['YOLO_OFFLINE']='true';os.environ['YOLO_AUTOINSTALL']='false'
     if native_library:os.environ['M20_SENSING_LIBRARY']=native_library
@@ -164,6 +198,7 @@ def worker(group,native_library):
         def __init__(self,*args,**kwargs):super().__init__(*args,**kwargs);self.passed=[]
         def addSuccess(self,test):super().addSuccess(test);self.passed.append(test.id())
     try:
+        host_metadata['post_guard_cache_check']=verify_host_metadata_cache(host_metadata)
         import cv2
         def no_capture(*args,**kwargs):blocked.append('cv2.VideoCapture');raise RuntimeError('Portable checks forbid camera capture')
         cv2.VideoCapture=no_capture
@@ -190,6 +225,7 @@ def worker(group,native_library):
     except Exception as exc:
         payload=dict(status='failed',tests_run=0,passed=[],failed=[],errors=[type(exc).__name__+': '+str(exc)],skipped=[],
                      blocked_effects=blocked,suppressed_probes=suppressed,guard_self_test=self_test)
+    payload['host_metadata']=host_metadata
     print(MARKER+json.dumps(payload,ensure_ascii=False))
     return 0 if payload['status']=='passed' else 2 if payload['status']=='not_verified' else 1
 
@@ -247,8 +283,10 @@ def main(args):
     chosen={name for ids in selected.values() for name in ids};all_ids={name for ids in available.values() for name in ids}
     omitted=[dict(test=name,reason=EXCLUDE_TESTS.get(name,'Private recorded map replay' if name.startswith('test_mapping_save_outcomes.SavedObservationTests.') else 'Outside the reviewed portable selection')) for name in sorted(all_ids-chosen)]
     files=source_files();before={p.relative_to(ROOT).as_posix():digest(p) for p in files}
+    host_metadata=prepare_host_metadata()
     report=dict(schema_version=1,scope='allowlisted_portable_offline_checks_not_field_acceptance',
-                created_at=datetime.now(timezone.utc).isoformat(),platform=sys.platform,machine=platform.machine(),python=platform.python_version(),
+                created_at=datetime.now(timezone.utc).isoformat(),platform=sys.platform,machine=host_metadata['values']['machine'],python=platform.python_version(),
+                host_metadata=host_metadata,
                 selected_groups=groups,language_effect_guards=True,os_network_sandbox=False,
                 private_fixtures_copied=0,model_weights_copied=0,source_hashes=before,
                 selection=dict(selected_python_methods=len(chosen),omitted_python_methods=len(omitted),omitted=omitted,

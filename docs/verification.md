@@ -47,6 +47,8 @@ Python guard 阻止网络调用、子进程和摄像头打开，也禁止访问�
 
 **这些语言 guard 不是 OS 安全沙箱，也不是执行恶意代码的隔离方案。** 原生扩展可能绕过语言 hook，所以白名单与依赖审查仍然必要。严格本机验收的系统级网络隔离能力没有被移植或冒称为便携 runner 的能力。
 
+Worker 在安装测试 guard 前，仅预热标准库 `platform.uname()` / `platform.machine()` 缓存，并在报告的 `host_metadata` 中记录边界。Windows 标准库必要时执行只读 `ver` 查询；准备函数只接受其三个精确命令形式。guard 安装后包括 `cmd /c ver` 在内的所有测试子进程仍被禁止，并再次验证平台信息可从缓存读取。NumPy、OpenCV 和产品模块仍在 guard 之后导入。独立回归可运行 `python -m unittest discover -s tests -p "test_portable_host_metadata.py" -v`；它仅启动本地 Python 子进程来验证不可卸载的审计 hook，不属于产品测试白名单，也不替代 Windows 托管 CI 的实际结果。
+
 依赖安装是 CI 的独立准备步骤，可以从公开包源取依赖；测试阶段不下载依赖、模型或资料，不使用额外私密 secret。GitHub 工作流只请求只读仓库权限。
 
 ### 原生后端证据
