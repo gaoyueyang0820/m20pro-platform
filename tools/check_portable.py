@@ -31,7 +31,7 @@ GROUPS={
     'navigation':['test_navigation_planner','test_navigation_planning_v3','test_live_surface_localization',
                   'test_localization_recovery'],
     'sensing':['test_sensor_cache','test_sensor_reader','test_latest_observation','test_sensing_equivalence'],
-    'maps':['test_map_change_policy','test_map_fusion','test_map_update_v3',
+    'maps':['test_map_change_policy','test_map_fusion','test_map_update_v3','test_map_catalog',
             'test_mapping_save_outcomes.SyntheticSavedObservationTests'],
     'lifecycle':['test_mapping_request_identity','test_operations_lifecycle','test_delivery_boundary'],
     'native':['test_native_sensing'],
@@ -47,7 +47,7 @@ EXCLUDE_TESTS={
         'Calls the host process inventory without a test-local proc fixture; outside portable effect scope.',
 }
 JS_TESTS=['test_autonomy_ui.cjs','test_navigation_ui.cjs','test_cloud_ui.cjs','test_camera_player.cjs',
-          'test_model_check_ui.cjs','test_navigation_status.cjs','test_pose_display.cjs']
+          'test_model_check_ui.cjs','test_navigation_status.cjs','test_pose_display.cjs','test_map_library_ui.cjs']
 NATIVE_PROOFS=[
     'test_native_sensing.NativeSensingTests.test_random_frames_require_native_hit_and_exact_all_field_equality',
     'test_native_sensing.NativeSensingTests.test_full_100k_150k_300k_inputs_are_native_not_hidden_fallback',

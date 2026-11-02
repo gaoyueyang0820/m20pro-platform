@@ -38,7 +38,7 @@ class Hub:
 
     def _seed_demo(self):
         folder=self.demo_maps.maps/'demo-yard'
-        if folder.exists():return
+        if folder.exists() or self.demo_maps.maps.exists() and any(p.is_dir() and not p.name.startswith('.') for p in self.demo_maps.maps.iterdir()):return
         folder.mkdir(parents=True)
         w,h=320,220
         pixels=bytearray([245]*(w*h))
@@ -355,7 +355,8 @@ class Hub:
         if path=='/api/connections':return dict(ok=True,connections=self.connections.public())
         if path=='/api/operations':return dict(ok=True,jobs=self.operations.get(query.get('id',[None])[0]))
         if path=='/api/files':return dict(ok=True,files=self.files.list())
-        if path=='/api/maps/library':return self.remote_maps('/maps/list')
+        if path=='/api/maps/library':return dict(self.remote_maps('/maps/list'),desktop_management_version=1)
+        if path=='/api/maps/library/trash':return self.remote_maps('/maps/trash')
         if path=='/api/nos/status':
             return dict(self.demo_maps.library(),services=dict(localization='demo',planner='demo')) if self.app.demo else self.proxy('nos','/status',timeout=12)
         if path=='/api/nos/logs':
@@ -641,6 +642,21 @@ class Hub:
         if path=='/api/maps/package/export':return self.operations.submit('map-export',lambda progress:self.export_map(req.get('name'),progress))
         if path=='/api/maps/package/import':return self.mutate('map-import',lambda progress:self.import_package(req.get('id'),req.get('name'),progress))
         if path=='/api/maps/details':return self.remote_maps('/maps/details',req)
+        if path in ['/api/maps/library/rename','/api/maps/library/delete','/api/maps/library/restore']:
+            action=path.rsplit('/',1)[-1]
+            def edit(progress):
+                if self.app.mapping or self.remote_maps('/maps/build/status').get('in_progress'):raise ValueError('正在采集或保存地图，请完成后再编辑')
+                learning=self.app.map_learning.snapshot()
+                if learning.get('enabled') or learning.get('state')=='generating':raise ValueError('请先结束行走地图更新')
+                result=self.remote_maps('/maps/'+action,req)
+                with self.app.lock:
+                    for cached in self.app.store.value['maps']:
+                        if cached.get('robot_map_name')==result.get('name'):
+                            if action=='rename':cached['name']=result['display_name']
+                            if action=='delete':cached['verified_for_robot']=False
+                    self.app.store.save()
+                return result
+            return self.mutate('map-'+action,edit)
         if path=='/api/sensors/cloud':
             if self.app.demo:raise ValueError('演示环境不提供虚构的实时 ROS2 点云；请选择保存的演示地图')
             role=self.connections.value.get('sensor_source','nos')
@@ -653,6 +669,7 @@ class Hub:
                 if self.app.mapping:raise ValueError('正在采集或融合地图，保存完成后再切换地图')
             self.idle()
             def apply(progress):
+                previous=self.remote_maps('/maps/list').get('active') if req.get('cleanup_previous') is True else None
                 with self.app.lock:
                     for m in self.app.store.value['maps']:m['verified_for_robot']=False
                     self.app.store.save()
@@ -661,6 +678,13 @@ class Hub:
                 try:synced=self.sync_map(dict(name=req.get('name'),grid_id=req.get('grid_id',0)))
                 except ValueError as exc:raise ValueError('活动地图已切换，但导航栅格同步未完成：'+str(exc)+'。请点击“同步用于导航”重试')
                 if not synced['map']['verified_for_robot']:raise ValueError('活动地图在同步期间发生变化，请重新核对')
+                if previous and previous!=req.get('name'):
+                    try:
+                        learning=self.app.map_learning.snapshot()
+                        if learning.get('enabled') or learning.get('state')=='generating':raise ValueError('行走地图更新仍在运行')
+                        result['cleanup']=self.remote_maps('/maps/cleanup-previous',dict(name=req['name'],base=previous))
+                    except Exception as exc:
+                        result['cleanup']=dict(ok=False,retained=True,message='新图已启用，旧图保留：'+str(exc))
                 return dict(result,map=synced['map'],navigation_ready=True)
             return self.mutate('map-apply',apply)
         if path=='/api/maps/library/sync':
