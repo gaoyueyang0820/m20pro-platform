@@ -5,6 +5,7 @@ executor. Never falls back between the two executors while a task is moving.
 Robot locomotion/balance remain vendor controlled. Live acceptance is separate.
 """
 import hashlib
+import copy
 import math
 from pathlib import Path
 import threading
@@ -43,11 +44,14 @@ class PointNavigator:
     def __init__(self,app):
         self.app=app;self.active=False;self.run_id=None;self.generation=0
         self.context=None;self.nav=None;self.lease=0.;self.deadline=0.;self.stop_at=None
+        self.client_intent=None
         self.after_stop='cancelled';self.planner=None;self.follower=None
+        self.goal_intent=None
 
     def current(self,token):
         return (self.active and self.run_id==token and self.app.nav is self.nav
-                and self.app.hub.same_context(self.context) and self.nav['status']=='running')
+                and self.app.hub.same_context(self.context) and self.nav['status']=='running'
+                and self.app.navigation_intents.valid(self.client_intent,self.app.instance_id,self.app._plan_generation))
 
     def check(self,token):
         with self.app.lock:
@@ -55,10 +59,11 @@ class PointNavigator:
             if time.monotonic()-self.lease>2.5 or time.monotonic()>self.deadline:
                 self.stop('paused','操作页面离线或本轮到期，已请求停车');raise ValueError('导航会话已结束')
 
-    def start(self,route,plan,intent):
+    def start(self,route,plan,intent,client_intent=None):
         app=self.app
         with app.lock:
             if intent!=app._nav_start_generation:raise ValueError('导航启动已取消')
+            app.navigation_intents.check(client_intent,app.instance_id,app._plan_generation)
             app.live_ready();app.hub.normal_mode();app.hub.idle()
             if app.autonomy.active or app.mapping or app.hub.busy or app.nav['status'] in ['running','cancelling']:
                 raise ValueError('请先结束当前运动、导航或建图任务')
@@ -67,10 +72,13 @@ class PointNavigator:
             if app._reported_active_navigation():raise ValueError('原厂导航任务仍在运行，请先停止')
             map_=next(m.copy() for m in app.maps() if m['id']==route['map_id'])
             self.generation+=1;self.run_id=uuid.uuid4().hex;self.active=True;self.context=app.hub.context()
+            self.client_intent=client_intent
             self.lease=time.monotonic();self.deadline=self.lease+600;self.stop_at=None
+            self.goal_intent=copy.deepcopy({k:plan['result'].get(k) for k in ['goal','requested_goal','goal_adjustment']})
             self.nav=dict(status='running',engine='platform',phase='preparing',execution_state='preparing',
                           route=route,index=0,completed=0,progress=0,started=time.time(),run_id=self.run_id,
                           message='正在准备平台自主寻路',plan=plan['result'],replans=0)
+            self.nav.update(app.navigation_intents.nav_fields(client_intent))
             app.nav=self.nav;app.cancel_request=None;app.velocity=[0.,0.,0.]
             if app.link:app.link.set_velocity(0,0,0)
             token=self.run_id
@@ -116,7 +124,16 @@ class PointNavigator:
 
     def _update(self,token,**fields):
         with self.app.lock:
+            if 'plan' in fields:fields['plan']=self._display_plan(fields['plan'])
             self.check(token);self.nav.update(fields)
+
+    def _display_plan(self,plan):
+        original=self.goal_intent or {};adjustment=original.get('goal_adjustment') or {}
+        goal=original.get('goal') or {};current=plan.get('goal') or {}
+        if (adjustment.get('applied') and all(k in goal and k in current for k in ['x','y'])
+                and math.hypot(goal['x']-current['x'],goal['y']-current['y'])<1e-6):
+            return dict(plan,requested_goal=copy.deepcopy(original['requested_goal']),goal_adjustment=copy.deepcopy(adjustment))
+        return plan
 
     def _prepare(self,token,map_):
         app=self.app;self.check(token)
@@ -282,7 +299,7 @@ class PointNavigator:
                         self._update(token,phase='recovering_start',recovery=dict(state='settling',preview_recomputed=True))
                     else:follower.set_path(new.get('dense_path') or new['path'])
                     with app.lock:
-                        if self.current(token):self.nav.update(plan=new,replans=self.nav['replans']+1,message='已根据当前障碍重规划')
+                        if self.current(token):self.nav.update(plan=self._display_plan(new),replans=self.nav['replans']+1,message='已根据当前障碍重规划')
                 time.sleep(.04)
         except Exception as exc:
             with app.lock:

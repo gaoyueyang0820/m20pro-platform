@@ -174,5 +174,40 @@ class AutonomyObservationRuntimeTests(unittest.TestCase):
             self.assertFalse(any(r['at']>=r['deadline'] for r in moving))
             with self.app.lock:a.pause('done')
 
+    def test_sustained_real_runtime_forward_nonresponse_brakes_then_changes_direction(self):
+        a=self.configure();started=time.monotonic();requested=[];original=a.explorer.request_recovery
+        def transport(*args,**kwargs):
+            time.sleep(.06);return self.packet(100.+time.monotonic()-started)
+        def recover(*args,**kwargs):
+            requested.append((time.monotonic(),a.explorer.current_scan['stamp']))
+            return original(*args,**kwargs)
+        with patch('platform_hub.rpc',side_effect=transport),patch.object(a.explorer,'request_recovery',side_effect=recover):
+            self.run_worker()
+            self.assertTrue(self.wait_for(lambda:any(abs(r['axes'][1])>.1 for r in self.app.link.output),6.),a.message)
+            self.assertTrue(requested)
+            self.assertTrue(self.wait_for(lambda:a.explorer.recovery is not None and a.explorer.recovery.get('issued')))
+            side=next(r for r in self.app.link.output if abs(r['axes'][1])>.1)
+            self.assertGreater(side['stamp'],requested[0][1],'direction change needs a newer stop-feedback frame')
+            self.assertTrue(any(not any(r['axes']) and requested[0][0]<=r['at']<side['at'] for r in self.app.link.output))
+            self.assertLessEqual(side['deadline'],a.explorer.recovery['deadline_monotonic'])
+            self.assertNotIn('持续没有有效位移',a.message)
+            with self.app.lock:a.pause('done')
+
+    def test_expired_drive_does_not_charge_an_unissued_recovery_candidate(self):
+        from test_precise_clearance import scene
+        a=self.configure();late=threading.Event();original=a._drive;start=time.monotonic()
+        def transport(*args,**kwargs):
+            time.sleep(.04);stamp=100.+time.monotonic()-start
+            packet=self.packet(stamp);packet.update(scene(stamp=stamp));return packet
+        def drive(run_id,forward,yaw,valid_until=None,side=0.):
+            if a.explorer.recovery is not None and any([forward,side,yaw]):
+                late.set();valid_until=time.monotonic()-.001
+            return original(run_id,forward,yaw,valid_until,side=side)
+        with patch('platform_hub.rpc',side_effect=transport),patch.object(a,'_drive',side_effect=drive):
+            self.run_worker();self.assertTrue(late.wait(1.5),a.message)
+            self.assertEqual(a.explorer.recovery_attempts,0);self.assertEqual(a.explorer.recovery_total_attempts,0)
+            self.assertFalse(any(any(row['axes']) for row in self.app.link.output))
+            with self.app.lock:a.pause('done')
+
 
 if __name__=='__main__':unittest.main()

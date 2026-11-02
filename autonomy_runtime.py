@@ -13,10 +13,11 @@ import uuid
 from collections import deque
 
 from autonomy_core import Explorer, PriorMap, PersonLock, clearance, RESOLUTION
-from platform_core import number
+from platform_core import number, age_of
 from vision_models import default_path
 from localization_runtime import OperationCancelled
 from latest_observation import LatestObservationPump, ObservationContextChanged
+from exploration_view import PausedExplorationView
 
 
 class PersonVision:
@@ -119,10 +120,13 @@ class MotionProgress:
         self.anchor=None;self.seen=set();self.goal=None;self.best_distance=None
         self.best_heading=None;self.best_area=0;self.started=None;self.moved_at=None;self.last_at=None
         self.last_motion=None
+        self.pose_window=deque(maxlen=128);self.command_window=deque(maxlen=256)
 
     def update(self,pose,goal,area,now,moving=None):
         x,y,yaw=pose
         if not all(math.isfinite(v) for v in pose):raise ValueError('进展位姿无效')
+        self.pose_window.append((now,tuple(pose)))
+        while len(self.pose_window)>1 and self.pose_window[1][0]<now-4.5:self.pose_window.popleft()
         key=(math.floor(x/.25),math.floor(y/.25));kind='none'
         target=tuple(goal) if goal is not None else None
         distance=math.dist((x,y),target) if target else None
@@ -152,6 +156,36 @@ class MotionProgress:
 
     def stalled(self,now):return self.last_at is not None and now-self.last_at>25
 
+    def observe_command(self,axes,now):
+        self.command_window.append((now,tuple(float(v) for v in axes)))
+        while len(self.command_window)>1 and self.command_window[1][0]<now-4.5:self.command_window.popleft()
+
+    def stuck_reason(self,now):
+        """Early recovery trigger from a sustained intent/pose window, not ACKs."""
+        if len(self.pose_window)<3 or now-self.pose_window[0][0]<3.5:return None
+        first=self.pose_window[0][1];last=self.pose_window[-1][1]
+        spread=max(math.dist(p[:2],first[:2]) for _,p in self.pose_window)
+        if spread>=.18:return None
+        linear=angular=0.
+        events=list(self.command_window)
+        for i,(start,axes) in enumerate(events):
+            end=events[i+1][0] if i+1<len(events) else now
+            duration=max(0.,min(now,end)-max(now-4.,start))
+            if math.hypot(*axes[:2])>.1:linear+=duration
+            if abs(axes[2])>.12:angular+=duration
+        if linear>=1.5:return '持续请求平移但实测位置没有离开原处'
+        yaw_net=abs(math.atan2(math.sin(last[2]-first[2]),math.cos(last[2]-first[2])))
+        if angular>=2. and yaw_net<.2:return '持续请求转向但未形成有效朝向变化'
+        return None
+
+    def failed_axes(self):
+        return next((axes for _,axes in reversed(self.command_window) if any(abs(v)>.1 for v in axes)),(0.,0.,0.))
+
+    def recovery_started(self):
+        # A bounded recovery gets a clean intent window, never a new global
+        # progress deadline. Goal churn and yaw oscillation cannot renew it.
+        self.command_window.clear()
+
 
 class Autonomy:
     def __init__(self,app):
@@ -163,30 +197,51 @@ class Autonomy:
         self.context=None;self.generation=0;self._save_token=None
         self.capture_id=None
         self.observation_pump=None
+        self.display_observer=PausedExplorationView(self)
+        self.follow_detail=None
+        self._resume_token=None;self._resume_receipts={};self._session_request={};self.elapsed_base=0.
+        self.lifecycle_phase='idle';self._worker_thread=None
+        self._discard_capability=None;self._last_discard_result=None;self.discard_details=None
+        self._control_generation=0
+
+    def _resumable(self):
+        p=self.app.hub.preparation
+        return bool(self.mode=='explore' and self.state in ['paused','failed'] and not self.active
+                    and self.explorer is not None and self.capture_id and self.app.mapping
+                    and self.context is not None and self.app.hub.same_context(self.context)
+                    and self._save_token is None and self._resume_token is None and not p and not self.app.hub.busy)
 
     def snapshot(self):
         p=self.app.hub.preparation
-        cleanup=bool(self._save_token or p and p['kind']=='mapping' and p['cancelled'])
+        cleanup=bool(self._save_token or self._resume_token or p and p['kind']=='mapping' and p['cancelled'])
         uncertain=self.app.hub.mapping_uncertain
         unresolved=bool(uncertain and self.app.hub.same_context(uncertain['context']))
+        resumable=self._resumable() and not unresolved
         return dict(active=self.active,run_id=self.run_id,state=self.state,mode=self.mode,message=self.message,
-                    demo=self.app.demo,elapsed=round(time.monotonic()-self.started) if self.started and self.active else self.finished_elapsed,
-                    map=self.map_view,target=self.target.box if self.target else None,
+                    demo=self.app.demo,elapsed=round(self.elapsed_base+time.monotonic()-self.started) if self.started and self.active else self.finished_elapsed,
+                    map=self.display_observer.decorate(self.map_view),target=self.target.box if self.target else None,
+                    follow_controller=self.follow_detail,
                     vision=self.vision.snapshot(),result_maps=self.result_maps,timing=list(self.timing),scope=self.scope,
                     cleanup_pending=cleanup,preparation_unresolved=unresolved,
                     observation_pump=self.observation_pump.status() if self.observation_pump else None,
-                    can_start=not(self.active or self.state=='saving' or cleanup or unresolved or self.app.hub.busy))
+                    can_resume=resumable,capture_id=self.capture_id,lifecycle_phase=self.lifecycle_phase,control_generation=self._control_generation,
+                    can_discard=bool((self.app.demo or self._discard_capability) and self.mode=='explore' and self.capture_id and self.app.mapping
+                                     and self.context is not None and self.app.hub.same_context(self.context) and not cleanup and not unresolved and not self.app.hub.busy),
+                    discard_supported=bool(self.app.demo or self._discard_capability),discard_details=self.discard_details,
+                    can_start=not(self.active or self.state in ['saving','discarding'] or cleanup or unresolved or self.app.hub.busy or resumable))
 
     def pause(self,message='已停止自主移动，可手动接管'):
         # Always called while app.lock is held. No joins or network operations.
+        self._control_generation+=1
         preparation=self.app.hub.preparation
         self.app.hub.cancel_preparations()
         if self.observation_pump:self.observation_pump.cancel()
         if self.active:
             if preparation and preparation['kind']=='mapping' and preparation.get('dispatching'):
                 message='已停止自主移动；正在收尾已发出的建图请求'
-            self.finished_elapsed=round(time.monotonic()-self.started) if self.started else 0
+            self.finished_elapsed=round(self.elapsed_base+time.monotonic()-self.started) if self.started else 0
             self.active=False;self.run_id=None;self.state='paused';self.message=message
+            self.lifecycle_phase='paused'
             self.app.velocity=[0.,0.,0.]
             if self.app.link:self.app.link.set_velocity(0,0,0)
 
@@ -196,7 +251,9 @@ class Autonomy:
         self.app.hub.detach_context()
         self.generation+=1;self._save_token=None;self.context=None
         self.state='idle';self.message='连接已切换，等待开始新任务';self.result_maps=[]
-        self.map_view=None;self.scan=None;self.deadline=None;self.capture_id=None
+        self.map_view=None;self.scan=None;self.deadline=None;self.capture_id=None;self.follow_detail=None
+        self._resume_token=None;self._resume_receipts={};self._session_request={};self.elapsed_base=0.;self.lifecycle_phase='idle'
+        self._discard_capability=None;self._last_discard_result=None;self.discard_details=None
 
     def _assert_run(self,run_id):
         with self.app.lock:
@@ -230,15 +287,19 @@ class Autonomy:
             return True
 
     def _check_start(self):
-        if self.active or self.state=='saving':raise ValueError('请先停止当前自主任务')
+        if self.active or self.state in ['saving','discarding']:raise ValueError('请先停止当前自主任务并完成收尾')
         self.app.hub.normal_mode();self.app.hub.idle();self.app.live_ready()
         if self.app.hub.busy:raise ValueError('正在执行后台操作，请稍候')
         if self.app.reverse:raise ValueError('请将手动驾驶的前进方向切回头部朝前')
         if self.app.estopped or self.app.basic.get('MotionState')!=17:
             raise ValueError('请先让机器人站稳，再开始自主操作')
         if not self.app.demo and self.app.link:
+            direction=self.app.link.record(1002,6)
+            if age_of(direction)>2:raise ValueError('等待新鲜的行走方向反馈，请确认手柄设为头朝前后再开始')
+            if direction.get('items',{}).get('BasicStatus',{}).get('Direction')!=0:
+                raise ValueError('请在手柄设为头朝前（Direction=0）后再开始自主作业')
             nav=self.app.link.record(1007,1)
-            if time.time()-nav.get('at',0)<2 and nav.get('items',{}).get('Status') in [1,2,3,5,255]:
+            if age_of(nav)<2 and nav.get('items',{}).get('Status') in [1,2,3,5,255]:
                 raise ValueError('机器人仍有外部或上次导航任务，请先停止后再开始自主作业')
 
     def _check_observation(self,check=None):
@@ -255,13 +316,16 @@ class Autonomy:
                 if attempt<9:time.sleep(.1)
                 continue
             check()
-            clear,reason=clearance(scan,0,.1)
-            # A narrow passage may permit straight travel without enough room
-            # to turn in place. Check the actual chosen motion again in _run.
-            if not clear:
-                forward_clear,forward_reason=clearance(scan,.1,0)
-                clear=forward_clear
-                if not clear:reason=forward_reason
+            clear=False;reason='没有已确认的起步通路'
+            # This checks whether exploration can begin, not whether it must
+            # initially drive forward or rotate. Recovery may start by moving
+            # backward or sideways; the actual command is checked again later.
+            for name,forward,side,yaw in [('forward',.1,0.,0.),('reverse',-.1,0.,0.),('left',0.,.1,0.),
+                                          ('right',0.,-.1,0.),('turn_left',0.,0.,.1),('turn_right',0.,0.,-.1)]:
+                clear,reason=clearance(scan,forward,yaw,side=side)
+                if clear:
+                    self.scan_timing['preflight_direction']=name
+                    break
             if not clear:
                 last='已收到雷达，但'+reason.replace('，已停车','');clear_frames=0
             elif scan.get('stamp')!=last_stamp:
@@ -271,6 +335,8 @@ class Autonomy:
         raise ValueError('尚未开始自主移动：'+last)
 
     def start(self,req):
+        if req.get('mode')=='explore' and req.get('use_current') and self._resumable():
+            return self.resume(req)
         mode=req.get('mode');scope=req.get('scope','room')
         if mode not in ['explore','follow']:raise ValueError('请选择自主建图或跟随人员')
         if scope not in ['room','floor']:raise ValueError('探索范围无效')
@@ -298,16 +364,123 @@ class Autonomy:
             self.capture_id=None
             self.active=True;self.run_id=uuid.uuid4().hex;self.mode=mode;self.state='preparing';self.scope=scope;self.prior_grid=None
             self.message='正在检查实时感知与建图条件' if mode=='explore' else '已锁定人物，正在检查前方地面'
-            self.started=time.monotonic();self.lease=self.started;self.result_maps=[];self.map_view=None;self.finished_elapsed=0
+            self.started=time.monotonic();self.lease=self.started;self.result_maps=[];self.map_view=None;self.scan=None;self.follow_detail=None;self.finished_elapsed=0
+            self.elapsed_base=0.;self._session_request=dict(req);self._resume_receipts={};self.lifecycle_phase='preparing'
+            self._last_discard_result=None;self.discard_details=None
             self.deadline=self.started+minutes*60;self.timing.clear();run_id=self.run_id
         # Return the lease ID before slow sensor warmup or map I/O. Stop requests
         # can now cancel preparation instead of waiting for a held state lock.
-        try:threading.Thread(target=self._prepare_and_run,args=(run_id,dict(req),minutes*60),daemon=True).start()
+        try:
+            worker=threading.Thread(target=self._prepare_and_run,args=(run_id,dict(req),minutes*60),daemon=True)
+            with self.app.lock:
+                if self.run_id==run_id:self._worker_thread=worker
+            worker.start()
         except Exception:
             with self.app.lock:
                 if self.run_id==run_id:self.pause('准备线程未能启动，未发送运动或建图请求')
             raise
         return dict(ok=True,run_id=run_id,state='preparing',message='正在检查并准备，不会自动恢复旧任务')
+
+    def resume(self,req=None):
+        req=req or {};request_id=req.get('request_id') or uuid.uuid4().hex
+        if not isinstance(request_id,str) or len(request_id)!=32 or any(c not in '0123456789abcdef' for c in request_id):raise ValueError('继续请求编号无效')
+        with self.app.lock:
+            if req.get('control_generation') not in [None,self._control_generation]:raise ValueError('继续请求已被暂停或手动操作取消，请刷新后重试')
+            if req.get('server_instance') not in [None,getattr(self.app,'instance_id',None)]:raise ValueError('平台已重新启动，请刷新后继续')
+            if request_id in self._resume_receipts:
+                return dict(self._resume_receipts[request_id],state=self.state,active=self.active,delivery='already_requested')
+            if req.get('capture_id') not in [None,self.capture_id]:raise ValueError('采集会话已变化，请刷新后继续')
+            if not self._resumable():raise ValueError('本轮暂不可继续；须为同一连接中仍在采集的已暂停探索')
+            self._check_start()
+            minutes=number(req.get('minutes',self._session_request.get('minutes',5)),.1,60 if self.scope=='floor' else 20)
+            self.generation+=1;self.active=True;self.run_id=uuid.uuid4().hex;self.state='preparing';self.lifecycle_phase='resuming'
+            self.message='正在核对原采集和当前建图位置，保留本轮历史后继续'
+            self.elapsed_base=self.finished_elapsed;self.started=time.monotonic();self.lease=self.started;self.deadline=self.started+minutes*60
+            self.app.velocity=[0.,0.,0.];self.app.velocity_deadline=None
+            if self.app.link:self.app.link.set_velocity(0,0,0)
+            token=dict(request_id=request_id,run_id=self.run_id,generation=self.generation,capture_id=self.capture_id,context=self.context,
+                       old_stamp=(self.scan or {}).get('stamp'),role=self.app.hub.connections.value.get('sensor_source','nos'),duration=minutes*60,
+                       previous_thread=self._worker_thread)
+            self._resume_token=token
+            result=dict(ok=True,run_id=self.run_id,state='preparing',phase='resuming',capture_id=self.capture_id,request_id=request_id,
+                        message='正在继续本轮采集；原地图、探索起点和历史保留')
+            self._resume_receipts[request_id]=result
+        try:
+            worker=threading.Thread(target=self._resume_and_run,args=(token,),daemon=True)
+            with self.app.lock:
+                if self.run_id==token['run_id']:self._worker_thread=worker
+            worker.start()
+        except Exception:
+            with self.app.lock:
+                if self._resume_token is token:self._resume_token=None;self.pause('继续线程未启动，采集仍保留');self.lifecycle_phase='paused'
+            raise
+        return result
+
+    def _resume_and_run(self,token):
+        def check():
+            self._assert_run(token['run_id'])
+            if self._resume_token is not token or self.capture_id!=token['capture_id']:raise OperationCancelled('继续请求已取消或采集已变化')
+        def same_capture(status):
+            if (status.get('request_protocol')!=1 or status.get('phase')!='collecting' or not status.get('in_progress')
+                    or status.get('mapping',{}).get('request_id')!=token['capture_id']):
+                raise ValueError('原采集已结束或会话已变化，不能把新位置接到旧探索历史')
+        try:
+            previous_thread=token.get('previous_thread')
+            if previous_thread is not None and previous_thread is not threading.current_thread() and previous_thread.is_alive():
+                previous_thread.join(2.)
+                if previous_thread.is_alive():raise ValueError('上一控制循环尚未结束，未启动第二份控制；原采集保留')
+            check();same_capture(self.app.hub.remote_maps('/maps/build/status',context=token['context'],timeout=2));check()
+            pending=self.app.hub.post('/api/maps/continue-here',dict(autonomy_gait=0x3002,_autonomy_run_id=token['run_id']))
+            while True:
+                check();job=self.app.hub.operations.get(pending['job_id'])
+                if job['status']=='failed':raise ValueError(job['error'])
+                if job['status']=='completed':
+                    if job.get('result',{}).get('cancelled') or job.get('result',{}).get('request_id')!=token['capture_id']:
+                        raise ValueError('继续准备未确认属于原采集，未恢复移动')
+                    break
+                time.sleep(.04)
+            previous=token['old_stamp'];fresh=None
+            operation_context=getattr(self.app.hub._operation_context,'value',None)
+            self.app.hub._operation_context.value=token['context']
+            try:
+                from observation_errors import ObservationSyncPending
+                for _ in range(12):
+                    check()
+                    try:packet=self.scan_now(True,role=token['role'])
+                    except ObservationSyncPending:
+                        check();fresh=None;time.sleep(.05);continue
+                    check()
+                    pose=packet.get('pose',[]);stamp=packet.get('stamp')
+                    if len(pose)!=3 or not all(isinstance(v,(int,float)) and math.isfinite(v) for v in pose):raise ValueError('等待同一采集的有效位置')
+                    if not isinstance(stamp,(int,float)) or not math.isfinite(stamp):raise ValueError('建图扫描缺少有效源时间戳')
+                    if previous is not None and stamp<=previous:time.sleep(.05);continue
+                    if fresh is not None:
+                        if math.dist(pose[:2],fresh['pose'][:2])>.2 or abs(math.atan2(math.sin(pose[2]-fresh['pose'][2]),math.cos(pose[2]-fresh['pose'][2])))>.2:
+                            raise ValueError('当前建图位置尚未稳定，采集保留，请停稳后重试继续')
+                        fresh=packet;break
+                    fresh=packet;previous=stamp;time.sleep(.04)
+                else:raise ValueError('尚未取得两个新的同采集位置，原采集保留')
+            finally:self.app.hub._operation_context.value=operation_context
+            same_capture(self.app.hub.remote_maps('/maps/build/status',context=token['context'],timeout=2));check()
+            with self.app.lock:
+                check();explorer=self.explorer;pose=tuple(fresh['pose'])
+                # Manual displacement is not a new SLAM origin or autonomous
+                # mileage. Re-anchor only the continuity/controller state.
+                displacement=math.dist(pose[:2],explorer.last_pose[:2]) if explorer.last_pose is not None else 0.
+                explorer.reset_recovery_context(verified_translation_m=displacement,reason='explicit_same_capture_resume')
+                explorer.last_pose=pose;explorer.last_stamp=fresh['stamp'];explorer.distance_anchor=pose[:2];explorer.current_scan=fresh
+                explorer.path=[];explorer.goal=None;explorer.plan_state='idle'
+                self.scan=fresh;self.map_view=explorer.view();self.map_view['capture_id']=self.capture_id
+                self.scan_timing={};self.lifecycle_phase='running';self.message='已核对原采集，正从当前位置重新规划'
+                self._resume_token=None
+            self._run(token['run_id'],None,token['duration'])
+        except Exception as exc:
+            with self.app.lock:
+                if self.run_id==token['run_id']:
+                    self.pause('未继续移动：'+str(exc)+'；原采集仍保留');self.lifecycle_phase='paused'
+        finally:
+            with self.app.lock:
+                if self._resume_token is token:self._resume_token=None
 
     def _prepare_and_run(self,run_id,req,duration):
         try:
@@ -370,7 +543,10 @@ class Autonomy:
 
     def _run(self,run_id,job_id,duration):
         mode=self.mode;explorer=self.explorer;target=self.target
-        from local_trajectory import TrajectoryFollower
+        from local_trajectory import TrajectoryFollower, exploration_step
+        from follow_control import FollowControl
+        follow_controller=FollowControl() if mode=='follow' else None
+        follow_request=(0.,0.)
         follower=TrajectoryFollower(explorer.forward_limit,explorer.yaw_limit) if explorer else None
         trajectory_key=None;trajectory_detail={}
         last_plan=0;last_vision=None;blocked_attempts=0;waiting=time.monotonic();exhausted=0;progress=MotionProgress()
@@ -433,6 +609,7 @@ class Autonomy:
                         self.capture_id=job.get('result',{}).get('request_id')
                     job_id=None;waiting=now
                 if mode=='explore':
+                    progress.observe_command(self.app.velocity,time.monotonic())
                     health_at,build=map_health.get('result',(0,{}))
                     if self.capture_id and health_at and build.get('mapping',{}).get('request_id')!=self.capture_id:
                         raise ValueError('采集归属已变化，已停止自主移动，未结束其他采集')
@@ -483,7 +660,7 @@ class Autonomy:
                 if not self.app.demo:scan['_velocity_body']=None
                 if not self.app.demo and self.app.link:
                     motion=self.app.link.record(1002,4)
-                    if time.time()-motion.get('at',0)<.25:
+                    if age_of(motion)<.25:
                         measured=motion.get('items',{}).get('MotionStatus',{})
                         velocity=[measured.get('LinearX'),measured.get('LinearY')]
                         if all(isinstance(v,(int,float)) and math.isfinite(v) for v in velocity):
@@ -514,14 +691,26 @@ class Autonomy:
                     moving=None
                     if not self.app.demo and self.app.link:
                         feedback=self.app.link.record(1002,4)
-                        if time.time()-feedback.get('at',0)<.5:
+                        if age_of(feedback)<.5:
                             values=feedback.get('items',{}).get('MotionStatus',{})
                             moving=math.hypot(values.get('LinearX',0),values.get('LinearY',0))>.08
                     detail=(progress.update(scan['pose'],tuple(c*RESOLUTION for c in explorer.goal) if explorer.goal else None,len(explorer.free)*RESOLUTION**2,time.monotonic(),moving)
                             if new_scan else dict(kind='cached_observation',seconds_without_progress=round(time.monotonic()-progress.last_at,2) if progress.last_at is not None else 0.))
                     self.scan_timing['progress']=detail
+                    stuck=progress.stuck_reason(time.monotonic()) if new_scan else None
+                    detail['stuck_reason']=stuck
+                    if stuck and explorer.recovery is None and not explorer.recovery_pending:
+                        feedback=scan.get('_velocity_body')
+                        if feedback is not None and time.monotonic()<scan.get('_valid_until',0):
+                            if not explorer.request_recovery(progress.failed_axes(),stuck):raise ValueError(explorer.motion_hint)
+                            progress.recovery_started()
+                            self._drive(run_id,0,0)
+                            trajectory_detail=dict(state='recovering',axes=[0.,0.,0.],reason=explorer.motion_hint,zero_reason='stuck_brake_before_direction_change')
+                            with self.app.lock:
+                                if self.run_id==run_id:self.message=explorer.motion_hint;self.map_view=dict(explorer.view(),controller=trajectory_detail)
+                            time.sleep(.02);continue
                     if progress.stalled(time.monotonic()):raise ValueError('持续没有有效位移或目标接近，已暂停；转向摆动不会计为行走进展')
-                    if new_scan and (now-last_plan>1 or not explorer.path):
+                    if new_scan and explorer.recovery is None and not explorer.recovery_pending and (now-last_plan>1 or not explorer.path):
                         stage=time.monotonic();outcome=explorer.plan();last_plan=now
                         self.scan_timing['plan_ms']=round((time.monotonic()-stage)*1000,1)
                         if outcome=='blocked':
@@ -541,15 +730,14 @@ class Autonomy:
                     yaw_rate=0.
                     if not self.app.demo and self.app.link:
                         record=self.app.link.record(1002,4)
-                        if time.time()-record.get('at',0)<.25:
+                        if age_of(record)<.25:
                             measured=record.get('items',{}).get('MotionStatus',{})
                             yaw_rate=measured.get('OmegaZ',0.)
                             scan['_speed_mps']=math.hypot(measured.get('LinearX',0),measured.get('LinearY',0))
                     trajectory_verified=False
-                    if not scanning and explorer.path and explorer.recovery is None:
-                        key=tuple(explorer.path)
-                        if key!=trajectory_key:follower.set_path([(x*RESOLUTION,y*RESOLUTION) for x,y in key]);trajectory_key=key
-                        trajectory_detail=follower.command(scan,yaw_rate,allowed_pose=lambda x,y,a:math.dist((x,y),explorer.origin)<=explorer.radius)
+                    if not scanning and explorer.path and explorer.recovery is None and not explorer.recovery_pending:
+                        trajectory_detail=exploration_step(explorer,follower,scan,yaw_rate,new_scan=new_scan)
+                        if trajectory_detail.get('path_repair_state')=='exhausted':raise ValueError(trajectory_detail['reason'])
                         if trajectory_detail['state']=='arrived':
                             explorer.visited.add(explorer.goal);explorer.path=[];last_plan=0
                             forward=side=yaw=0.;trajectory_verified=True
@@ -560,24 +748,43 @@ class Autonomy:
                         elif new_scan:forward,side,yaw=explorer.command_axes(yaw_rate,scan.get('age',0))
                         else:forward=side=yaw=0.;trajectory_verified=True
                     elif scanning:forward,side,yaw=0.,0.,explorer.yaw_limit
-                    elif explorer.recovery is not None:
+                    elif explorer.recovery is not None or explorer.recovery_pending:
                         explorer._current_yaw_rate=yaw_rate
                         forward,side,yaw=explorer._recover_axes()
                     elif new_scan:forward,side,yaw=explorer.command_axes(yaw_rate,scan.get('age',0))
                     else:forward=side=yaw=0.;trajectory_verified=True
+                    if explorer.recovery is not None:
+                        action_deadline=explorer.recovery.get('deadline_monotonic')
+                        if action_deadline is not None:valid_until=min(valid_until,action_deadline) if valid_until is not None else action_deadline
                 else:
                     consumed_sequence=cached['sequence']
                     vision=self.vision.snapshot()
                     if not vision['fresh']:raise ValueError('人员识别或相机更新中断，已停车；请重新点选')
-                    if vision['sequence']==last_vision:
-                        # Never refresh a moving command using an old inference.
+                    if vision['sequence']==last_vision and not new_scan:
                         time.sleep(.03);continue
-                    last_vision=vision['sequence'];forward,yaw=target.update(vision['detections']);side=0.
-                    if not self.app.demo:valid_until=min(valid_until,time.monotonic()+.65-vision['age'])
+                    if vision['sequence']!=last_vision:
+                        follow_request=target.update(vision['detections']);last_vision=vision['sequence']
+                    yaw_rate=0.
+                    if self.app.demo:
+                        scan['_velocity_body']=list(self.app.velocity[:2]);yaw_rate=self.app.velocity[2]
+                    elif self.app.link:
+                        record=self.app.link.record(1002,4)
+                        if age_of(record)<.25:
+                            yaw_rate=record.get('items',{}).get('MotionStatus',{}).get('OmegaZ',0.)
+                    # New radar may reopen a temporarily obscured corridor.
+                    # Reusing the SAME vision frame never extends its deadline.
+                    follow_detail=follow_controller.choose(scan,follow_request,
+                        vision=dict(vision,locked=True,target_id=run_id),yaw_rate=yaw_rate)
+                    forward,side,yaw=follow_detail['axes'];valid_until=follow_detail['valid_until']
+                    with self.app.lock:
+                        if self.run_id==run_id:
+                            self.follow_detail=dict(follow_detail,scan_stamp=scan.get('stamp'),scan_age=scan.get('age'),vision_sequence=vision['sequence'])
+                    if follow_detail.get('reselection_required'):
+                        raise ValueError(follow_detail['reason'])
                 # The sampled controller has checked the actual swept arc on
                 # this same fresh scan. Do not replace it with a 90-degree disk
                 # test, which would reject a feasible gentle turn in a corridor.
-                clear,reason=(True,'') if mode=='explore' and trajectory_verified else clearance(scan,forward,yaw,side=side)
+                clear,reason=(True,'') if mode=='follow' or mode=='explore' and trajectory_verified else clearance(scan,forward,yaw,side=side)
                 if not clear:
                     if mode=='explore' and blocked_attempts<10:
                         self._drive(run_id,0,0);blocked_attempts+=1
@@ -591,8 +798,11 @@ class Autonomy:
                     if not self.active or self.run_id!=run_id:return
                     if mode=='explore':self.map_view=dict(explorer.view(),controller=trajectory_detail)
                     self.state='exploring' if mode=='explore' else 'following'
-                    self.message=('转向补充侧向地面观测' if scanning else (getattr(explorer,'motion_hint','') or {'expand':'正在扩展原地图未扫描区域','refine':'正在复查已扫描区域，积累地图更新','observe':'正在前往新的观察位置补扫'}[explorer.target_kind])) if mode=='explore' else '跟随选中的人 · 以选中时的距离为参考'
+                    self.message=('转向补充侧向地面观测' if scanning else (getattr(explorer,'motion_hint','') or {'expand':'正在扩展原地图未扫描区域','refine':'正在复查已扫描区域，积累地图更新','observe':'正在前往新的观察位置补扫'}[explorer.target_kind])) if mode=='explore' else follow_detail['reason']
                 driven=self._drive(run_id,forward,yaw,valid_until,side=side)
+                if driven is True and mode=='explore' and explorer.note_recovery_command([forward,side,yaw]):
+                    with self.app.lock:
+                        if self.run_id==run_id:self.map_view=dict(explorer.view(),controller=trajectory_detail)
                 if driven is False:return
                 if driven is None:
                     sensing_lost=sensing_lost or time.monotonic();recovery_frames=0;recovery_stamp=None
@@ -614,15 +824,16 @@ class Autonomy:
         with self.app.lock:
             if run_id and self.run_id!=run_id:return
             if self._save_token and self._save_current(self._save_token):
+                if self._save_token.get('mode')=='discard':raise ValueError('本轮正在放弃，不能同时保存')
                 result=self._save_token.get('result')
                 if result:return result
                 raise ValueError('地图保存请求正在提交')
             pending=self.app.hub.preparation_job(save=True)
             if not self.app.mapping and not pending:raise ValueError('当前没有正在采集或准备的地图')
             self.pause(message)
-            token=dict(id=uuid.uuid4().hex,generation=self.generation,context=self.app.hub.context(),capture_id=self.capture_id,
+            token=dict(id=uuid.uuid4().hex,mode='save',generation=self.generation,context=self.app.hub.context(),capture_id=self.capture_id,
                        preparation=self.app.hub.preparation if pending else None)
-            self._save_token=token;self.state='saving';self.message=message
+            self._save_token=token;self.state='saving';self.lifecycle_phase='saving';self.message=message
             try:
                 stop=dict(action='stop',request_id=token['id'])
                 if token['capture_id']:stop['expected_start_request_id']=token['capture_id']
@@ -657,7 +868,7 @@ class Autonomy:
                         if status.get('phase')=='saved':
                             with self.app.lock:
                                 if not self._save_current(token):return
-                                self.state='completed';self.message=status.get('message') or '地图已保存，可在地图库中检查结果'
+                                self.state='completed';self.lifecycle_phase='saved';self.message=status.get('message') or '地图已保存，可在地图库中检查结果'
                                 self.result_maps=status.get('result_maps',[]);self._save_token=None
                             return
                     time.sleep(.2)
@@ -669,8 +880,88 @@ class Autonomy:
         threading.Thread(target=wait_saved,daemon=True).start()
         return result
 
+    def finish_discard(self,req=None):
+        req=req or {}
+        with self.app.lock:
+            if req.get('capture_id') not in [None,self.capture_id]:raise ValueError('采集已变化，未放弃其他会话')
+            if self._save_token and self._save_current(self._save_token):
+                if self._save_token.get('mode')!='discard':raise ValueError('本轮正在保存，不能改为放弃')
+                if self._save_token.get('result'):return self._save_token['result']
+                raise ValueError('放弃请求正在提交，请等待状态更新')
+            last=self._last_discard_result
+            if last and last['capture_id']==self.capture_id and self.app.hub.same_context(last['context']):
+                return dict(last['result'],delivery='already_requested')
+            if (self.mode!='explore' or not self.capture_id or not self.app.mapping or self.context is None
+                    or not self.app.hub.same_context(self.context)):
+                raise ValueError('没有可确认归属的本轮采集，未发送放弃命令')
+            if self.app.hub.preparation or self._resume_token:raise ValueError('准备操作正在收尾，采集保留；请待状态明确后再放弃')
+            self.app.hub.normal_mode()
+            self.app.stop()
+            request_id=req.get('request_id') or uuid.uuid4().hex
+            if not isinstance(request_id,str) or len(request_id)!=32 or any(c not in '0123456789abcdef' for c in request_id):raise ValueError('放弃请求编号无效')
+            token=dict(id=request_id,mode='discard',generation=self.generation,context=self.context,capture_id=self.capture_id)
+            self._save_token=token;self.state='discarding';self.lifecycle_phase='discarding'
+            self.message='正在停止采集并放弃本轮更新；原活动地图保持不变'
+        def check():
+            with self.app.lock:
+                if not self._save_current(token):raise OperationCancelled('连接或本轮任务已变化，未向新会话发送收尾')
+        def owned(status):
+            if status.get('mapping',{}).get('request_id')!=token['capture_id']:raise ValueError('采集归属已变化，未放弃其他会话')
+        def work(progress):
+            try:
+                check();status=self.app.hub.remote_maps('/maps/build/status',context=token['context'],timeout=8);check();owned(status)
+                if status.get('discard_protocol')!=1:raise ValueError('机器人平台服务尚未同步放弃功能；原采集保留，未改用保存命令')
+                stop=status.get('stop_mapping',{})
+                already=(status.get('phase')=='discarded' or status.get('phase')=='discarding' and stop.get('context',{}).get('discard') is True)
+                if not already:
+                    if status.get('phase')=='saved' or status.get('phase')=='saving':raise ValueError('本轮已保存或正在保存，不能将已开始的保存改写为放弃')
+                    if not status.get('in_progress'):raise ValueError('原采集已结束，不能将历史结果改写为本轮放弃')
+                    progress(.2,'正在停止本轮采集，跳过融合候选生成')
+                    try:
+                        self.app.hub.remote_maps('/maps/build',dict(action='discard',request_id=token['id'],expected_start_request_id=token['capture_id']),context=token['context'],timeout=15)
+                    except ValueError:
+                        # A lost launch reply is reconciled by the persistent
+                        # request/capture receipt; never fall back to save.
+                        check();probe=self.app.hub.remote_maps('/maps/build/status',context=token['context'],timeout=8);owned(probe)
+                        marker=probe.get('stop_mapping',{})
+                        if marker.get('request_id')!=token['id'] or marker.get('context',{}).get('discard') is not True:raise
+                deadline=time.monotonic()+300
+                while time.monotonic()<deadline:
+                    check();status=self.app.hub.remote_maps('/maps/build/status',context=token['context'],timeout=8);check();owned(status)
+                    with self.app.lock:
+                        check();self.app.mapping=bool(status.get('in_progress'))
+                    if status.get('phase')=='error':raise ValueError(status.get('message','放弃本轮未成功'))
+                    if status.get('phase')=='discarded' and not status.get('in_progress'):
+                        details={key:status.get(key) for key in ['observations_saved','temporary_files_retained','temporary_observations','observation_ownership','message']}
+                        details.update(candidate_created=False,activated=False,discarded=True)
+                        result=dict(ok=True,discarded=True,capture_id=token['capture_id'],request_id=token['id'],**{k:v for k,v in details.items() if k!='discarded'})
+                        with self.app.lock:
+                            check();self.app.mapping=False;self.state='discarded';self.lifecycle_phase='discarded';self.result_maps=[]
+                            self.discard_details=details;self.message=status.get('message') or '本轮已放弃，未发布候选；厂商临时观测可能保留'
+                            self._save_token=None
+                            self._last_discard_result=dict(context=token['context'],capture_id=token['capture_id'],result=token['result'])
+                        return result
+                    progress(.6,'正在等待厂商停止后处理；不会发布本轮融合候选');time.sleep(.15)
+                raise ValueError('放弃结果仍待确认，请查看采集状态；本轮不会恢复运动')
+            except Exception as exc:
+                with self.app.lock:
+                    if self._save_current(token):
+                        self._save_token=None;self.state='paused' if self.app.mapping else 'failed';self.lifecycle_phase='paused'
+                        self.message='放弃未确认：'+str(exc)
+                raise
+        try:
+            with self.app.lock:
+                if not self._save_current(token):raise OperationCancelled('放弃请求已失效')
+                token['result']=self.app.hub.operations.submit('autonomy-discard',work)
+                return token['result']
+        except Exception:
+            with self.app.lock:
+                if self._save_current(token):self._save_token=None;self.state='paused';self.lifecycle_phase='paused';self.message='放弃线程未启动，原采集仍保留'
+            raise
+
     def post(self,path,req):
         if path=='/api/autonomy/start':return self.start(req)
+        if path=='/api/autonomy/resume':return self.resume(req)
         if path=='/api/autonomy/lease':
             with self.app.lock:
                 if self.active and req.get('run_id')==self.run_id:self.lease=time.monotonic()
@@ -678,7 +969,10 @@ class Autonomy:
         if path=='/api/autonomy/stop':
             with self.app.lock:self.pause()
             return dict(ok=True)
-        if path=='/api/autonomy/save':return self.finish_save()
+        if path=='/api/autonomy/save':
+            if req.get('capture_id') not in [None,self.capture_id]:raise ValueError('采集会话已变化，未保存其他本轮')
+            return self.finish_save()
+        if path=='/api/autonomy/discard':return self.finish_discard(req)
         if path=='/api/autonomy/vision/start':return self.vision.start(str(req.get('model_path','')))
         if path=='/api/autonomy/vision/stop':
             with self.app.lock:

@@ -19,6 +19,7 @@ from urllib.request import Request, urlopen
 import xml.etree.ElementTree as ET
 
 import m20_console as original
+from observation_errors import sync_error
 
 ROOT = Path(__file__).resolve().parent
 LEGS = ['FL', 'FR', 'HL', 'HR']
@@ -68,13 +69,17 @@ def rpc(base, path, data=None, timeout=4, token=None):
             result = json.load(r)
     except HTTPError as exc:
         try:
-            message = json.loads(exc.read()).get('err', '代理返回错误')
+            payload=json.loads(exc.read());message=payload.get('err', '代理返回错误')
         except Exception:
-            message = '代理 HTTP %s' % exc.code
+            payload=None;message = '代理 HTTP %s' % exc.code
+        pending=sync_error(payload,path,data)
+        if pending:raise pending
         raise ValueError(message)
     except (URLError, TimeoutError, OSError):
         raise ValueError('代理连接失败或超时，请检查地址、SSH 隧道和代理进程')
     if isinstance(result, dict) and result.get('ok') is False:
+        pending=sync_error(result,path,data)
+        if pending:raise pending
         raise ValueError(result.get('err', '代理操作失败'))
     return result
 

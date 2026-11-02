@@ -3,6 +3,7 @@ import json
 import os
 from urllib.request import Request,urlopen
 from urllib.error import HTTPError,URLError
+from observation_errors import sync_error
 
 
 class SensorClient:
@@ -12,11 +13,16 @@ class SensorClient:
         try:
             with urlopen(request,timeout=2) as response:result=json.load(response)
         except HTTPError as exc:
-            try:message=json.load(exc).get('err','感知服务返回错误')
-            except Exception:message=str(exc)
+            try:payload=json.load(exc);message=payload.get('err','感知服务返回错误')
+            except Exception:payload=None;message=str(exc)
+            pending=sync_error(payload,path,data)
+            if pending:raise pending
             raise ValueError(message)
         except (URLError,OSError):raise ValueError('只读感知服务尚未就绪，请更新 NOS/GOS 平台服务')
-        if not result.get('ok'):raise ValueError(result.get('err','感知服务返回错误'))
+        if not result.get('ok'):
+            pending=sync_error(result,path,data)
+            if pending:raise pending
+            raise ValueError(result.get('err','感知服务返回错误'))
         return result
 
     def status(self):return self.call('/sensors/status')

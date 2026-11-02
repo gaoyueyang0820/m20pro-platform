@@ -186,13 +186,18 @@ class Hub:
         context=context if context is not None else getattr(self._operation_context,'value',None)
         with self.app.lock:
             if context is not None and not self.same_context(context):raise OperationCancelled('连接已变化，未向新连接发送旧操作')
+            observed_context=self.context()
             demo=self.app.demo;service=self.demo_maps
             if not demo:
                 target=self.connections.value['targets']['nos']
                 base,token=self.connections.endpoint('nos') if target.get('enabled') else (self.app.config.get('nos'),self.app.bridge_token)
-        if demo:return service.dispatch(path,req)
-        if context is None:return self.proxy('nos',path,req,timeout)
-        return rpc(base,path,req,timeout,token)
+        result=service.dispatch(path,req) if demo else self.proxy('nos',path,req,timeout) if context is None else rpc(base,path,req,timeout,token)
+        if path=='/maps/build/status':
+            with self.app.lock:
+                a=getattr(self.app,'autonomy',None)
+                if a is not None and self.same_context(observed_context):
+                    a._discard_capability=result.get('discard_protocol')==1
+        return result
 
     def preview(self,kind,key,progress):
         progress(.1,'正在读取点云地图')
@@ -376,7 +381,7 @@ class Hub:
                 elif result.get('demo') or (stop.get('state')=='command_finished' and stop.get('ended',0)>start.get('started',0)) or start.get('state')=='failed':
                     self.app.mapping=False
                 elif start.get('state')=='running' or stop.get('state')=='running':self.app.mapping=True
-                if result.get('phase') in ['idle','saved','interrupted'] and not result.get('in_progress'):
+                if result.get('phase') in ['idle','saved','discarded','interrupted'] and not result.get('in_progress'):
                     self.mapping_uncertain=None
                 elif (self.mapping_uncertain and result.get('phase')=='collecting'
                       and start.get('request_id')==self.mapping_uncertain['request_id']):
@@ -416,6 +421,8 @@ class Hub:
                 self.app.store.value.setdefault('map_extensions',[]).append(plan);self.app.store.save()
             return dict(ok=True,plan=plan)
         if path=='/api/maps/localize-auto':
+            verify_current=req.get('verify_current',False)
+            if not isinstance(verify_current,bool):raise ValueError('静态识别参数无效')
             self.normal_mode();self.idle();self.app.live_ready()
             if self.app.mapping:raise ValueError('请先结束并保存建图，再恢复旧图定位')
             with self.app.lock:
@@ -423,7 +430,9 @@ class Hub:
                 token=dict(id=uuid.uuid4().hex,kind='localize',context=self.context(),cancelled=False)
                 self.preparation=token
             def localize(progress):
-                try:return self.app.localizer.recover(progress,check=lambda:self.check_preparation(token))
+                try:
+                    check=lambda:self.check_preparation(token)
+                    return self.app.localizer.recover(progress,check=check,verify_current=True) if verify_current else self.app.localizer.recover(progress,check=check)
                 finally:
                     with self.app.lock:
                         if self.preparation is token:self.preparation=None

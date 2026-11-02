@@ -123,6 +123,24 @@ class _Geometry:
     def physical(self,pose):return self.clearance(pose)>=-1e-8 and self.supported(pose)
     def standard(self,pose):return self.map_gap(pose,CLEARANCE_HALF_LENGTH,CLEARANCE_HALF_WIDTH)>=-1e-8 and self.local_gap(pose,CLEARANCE_HALF_LENGTH,CLEARANCE_HALF_WIDTH)>=-1e-8 and self.supported(pose)
 
+    def overlap_diagnostics(self,pose):
+        """Explain remaining WORKING-map overlap without granting a seed."""
+        layer=getattr(self.planner,'live_surface',None);rows=[];half=self.planner.res/2
+        for box in self.map_boxes:
+            if _rect_gap(*pose,BODY_HALF_LENGTH,BODY_HALF_WIDTH,np.asarray([box]))>=-1e-8:continue
+            wx,wy=(box[0]+box[2])/2,(box[1]+box[3])/2;ix,iy=self.planner.cell(wx,wy)
+            votes=list(layer.evidence.get((ix,iy),())) if layer is not None else []
+            blind=math.hypot(max(0.,abs(wx-pose[0])-half),max(0.,abs(wy-pose[1])-half))<=.55
+            rows.append(dict(cell=[ix,iy],old_occupied=bool(layer.occupied[iy,ix]) if layer is not None else None,
+                             live_obstacle=bool(layer and (ix,iy) in layer.blocked_cells),
+                             observed_frames=len(votes),source_span_s=round(votes[-1][0]-votes[0][0],3) if len(votes)>1 else 0.,
+                             in_body_blind_patch=blind))
+        status=layer.snapshot() if layer is not None else {}
+        return dict(overlap_cells=len(rows),unobserved_body_cells=sum(r['in_body_blind_patch'] and not r['observed_frames'] for r in rows),
+                    insufficient_vote_cells=sum(r['observed_frames']<3 or r['source_span_s']<.4-1e-6 for r in rows),
+                    live_blocked_cells=sum(r['live_obstacle'] for r in rows),surface_state=status.get('state','disabled'),
+                    structure=status.get('structure',{}),cells=rows,standing_is_not_map_clearing_evidence=True)
+
     def edge(self,a,b,relaxed=False):
         length=math.dist(a[:2],b[:2]);angle=_wrap(b[2]-a[2]);n=max(1,math.ceil(length/.025),math.ceil(abs(angle)/math.radians(2.5)))
         previous=self.clearance(a)
@@ -162,7 +180,7 @@ def _knots(poses,geometry):
 
 
 def recover_start(planner,start,goal,yaw=None,scan=None,localization=None,standing=False,max_distance=.8,max_turn=math.radians(20),budget=1.2):
-    """Return a verified recovery prefix + route to the unchanged exact goal.
+    """Return a verified recovery prefix and the planner's goal policy.
 
     All outputs are planning evidence, never robot commands. Integrators must
     track the short prefix with live feedback and check_recovery_step(), then
@@ -193,7 +211,17 @@ def recover_start(planner,start,goal,yaw=None,scan=None,localization=None,standi
         if live_gap<-1e-8:
             result.update(classification='live_body_collision',reason='真实机身与当前实测障碍包围范围重叠，需更精确核对；不能通过缩小机身或忽略回波自动脱困');return result
         if map_gap<-1e-8:
-            result.update(classification='map_surface_disagreement',reason='真实机身仍与工作图占据重叠；需先验证局部旧图残影或恢复定位，不能单凭本帧清墙');return result
+            diagnostics=geometry.overlap_diagnostics(start);structure=diagnostics['structure']
+            if diagnostics['surface_state']=='expired':
+                code='live_evidence_expired';reason='临时通行观测已过期，需重新取得同步扫描后规划；原图保持不变'
+            elif structure and not structure.get('supported'):
+                code='local_structure_unconfirmed';reason='当前位置仍与旧图冲突，外围结构尚不足以确认局部残影；请先恢复定位或补充同步观测'
+            elif diagnostics['unobserved_body_cells']:
+                code='unobserved_body_overlap';reason='旧图占据落在机身盲区且没有历史实测地面，不能仅凭站立清墙；需先补充可验证的观测'
+            elif diagnostics['insufficient_vote_cells']:
+                code='insufficient_ground_votes';reason='旧图重叠区的独立地面帧还不足，需继续取得同步观测后再规划'
+            else:code='map_surface_disagreement';reason='真实机身仍与工作图占据重叠，当前证据不能验证通路；原图和实际障碍均已保留'
+            result.update(classification='map_surface_disagreement',reason=reason,reason_code=code,overlap_diagnostics=diagnostics);return result
         if not geometry.supported(start):
             result.update(classification='unsupported_floor',reason='当前机身周边缺少实际地面支撑观测');return result
         relaxed=not geometry.standard(start)
@@ -232,6 +260,14 @@ def recover_start(planner,start,goal,yaw=None,scan=None,localization=None,standi
                 while prefix[-1]!=origin:prefix.append(parents[prefix[-1]])
                 prefix.reverse();trajectory=[start]
                 for q in prefix[1:]:trajectory.extend(edges[q])
+                # The axis lattice may discover an L-shaped escape even when
+                # one fixed-heading diagonal translation is clear. The runtime
+                # executes only a single translation: shorten this prefix only
+                # after checking its ENTIRE swept body and non-decreasing
+                # clearance, including fresh measured floor along the segment.
+                if abs(_wrap(p[2]-start[2]))<1e-8:
+                    direct=geometry.edge(start,p,relaxed=relaxed)
+                    if direct is not None:trajectory=[start]+direct
                 best_prefix=_knots(trajectory,geometry)
                 if attempts<8:
                     attempts+=1

@@ -1,5 +1,5 @@
 """Mock coordination tests: no real platform, network or robot requests."""
-import base64,copy,tempfile,threading,time,unittest
+import base64,copy,math,tempfile,threading,time,unittest
 from pathlib import Path
 from types import SimpleNamespace as NS
 from unittest.mock import Mock,patch
@@ -9,7 +9,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 from localization_runtime import AutomaticLocalizer,OperationCancelled
 from localization_recovery import saved_slam_pose
-from test_localization_recovery import structure,saved_fixture
+from test_localization_recovery import structure,saved_fixture,transformed
 
 
 class SavedSlamCoordinatorTests(unittest.TestCase):
@@ -38,6 +38,8 @@ class SavedSlamCoordinatorTests(unittest.TestCase):
         if path=='/maps/list':return dict(active=self.active)
         if path=='/maps/build/status':self.build_calls+=1;return copy.deepcopy(self.build)
         if path=='/maps/localization-reference':return self.reference
+        if path=='/maps/project':return dict(active=True,project=dict(root_map='base',revision=2,
+            sessions=[copy.deepcopy(self.build['stop_mapping']['fusion'])]))
         if path=='/maps/localize-auto':return dict(accepted=True)
         raise AssertionError(path)
     def test_saved_trajectory_runs_before_local_search_and_only_initializes_pose(self):
@@ -57,6 +59,71 @@ class SavedSlamCoordinatorTests(unittest.TestCase):
         result=self.localizer.recover(Mock())
         self.assertEqual(result['method'],'fallback');self.localizer.local_hint.assert_called_once()
         self.assertEqual(self.sent,[]);self.localizer.body_cloud.assert_not_called()
+
+    def moved_candidate(self,heading):
+        # Explicit synthetic scene: the saved session ended at the origin,
+        # then the operator moved 0.3 m and turned, without changing the walls.
+        self.active='base-r2';self.build['stop_mapping']['fusion'].update(
+            includes_complete_base=True,grid_id=0,transform=np.eye(4).tolist())
+        self.sensor['slam_odom'].update(PosX=0,PosY=0,PosZ=0)
+        pose=np.array([.3,-.2,0,heading]);world=structure()
+        body=transformed(world-pose[:3],np.array([0,0,0,-heading]))
+        self.reference.update(map_name=self.active,points=base64.b64encode(world.astype('<f4').tobytes()).decode())
+        self.localizer.body_cloud.side_effect=[(dict(points=body,frame_id='base_link'),200.),
+            (dict(points=body+.001,frame_id='base_link'),201.)]
+        return pose,body
+
+    def test_manual_quarter_and_half_turn_recover_against_activated_candidate(self):
+        for heading in [math.pi/2,math.pi]:
+            with self.subTest(heading=heading):
+                self.sent.clear();self.localizer.body_cloud.reset_mock()
+                expected,_=self.moved_candidate(heading)
+                result=self.localizer.saved_slam_hint(Mock())
+                self.assertEqual(result['method'],'saved_session_local_match')
+                self.assertEqual(result['reference_map'],'base-r2')
+                self.assertEqual(result['original_base_map'],'base')
+                pose=result['pose']
+                self.assertLess(math.hypot(pose['PosX']-expected[0],pose['PosY']-expected[1]),.07)
+                self.assertLess(abs(math.atan2(math.sin(pose['Yaw']-heading),math.cos(pose['Yaw']-heading))),.03)
+                self.assertEqual(len(self.sent),1);self.assertEqual(self.sent[0][:2],(2101,1))
+                self.assertTrue(result['verification']['verified'])
+                self.assertEqual(self.localizer.body_cloud.call_args_list[1].kwargs['after'],200.)
+
+    def test_candidate_fixed_pose_keeps_fast_path_and_reads_current_reference(self):
+        self.active='base-r2';self.build['stop_mapping']['fusion']['includes_complete_base']=True
+        self.reference['map_name']=self.active
+        with patch('localization_recovery.match_pose',side_effect=AssertionError('no search needed')):
+            result=self.localizer.saved_slam_hint(Mock())
+        self.assertEqual(result['method'],'saved_slam_full_transform')
+        self.assertEqual(result['reference_map'],'base-r2')
+        refs=[c for c in self.hub.remote_maps.call_args_list if c.args[0]=='/maps/localization-reference']
+        self.assertEqual(refs[0].args[1]['name'],'base-r2')
+
+    def test_local_search_independent_frame_failure_does_not_initialize(self):
+        _,body=self.moved_candidate(math.pi/2)
+        self.localizer.body_cloud.side_effect=[(dict(points=body,frame_id='base_link'),200.),
+            (dict(points=body+[1.2,0,0],frame_id='base_link'),201.)]
+        with self.assertRaisesRegex(ValueError,'没有确认'):self.localizer.saved_slam_hint(Mock())
+        self.assertEqual(self.sent,[]);self.localizer.wait_normal.assert_not_called()
+
+    def test_cancel_during_local_search_never_initializes_or_falls_back(self):
+        self.moved_candidate(math.pi/2)
+        from localization_recovery import match_pose as original
+        def cancel(*args,**kwargs):
+            result=original(*args,**kwargs);self.localizer.cancel();return result
+        with patch('localization_recovery.match_pose',side_effect=cancel):
+            with self.assertRaises(OperationCancelled):self.localizer.recover(Mock())
+        self.assertEqual(self.sent,[]);self.assertEqual(self.localizer.body_cloud.call_count,1)
+        self.assertFalse(any(c.args[0]=='/maps/localize-auto' for c in self.hub.remote_maps.call_args_list))
+
+    def test_candidate_to_base_switch_after_validation_does_not_initialize(self):
+        self.moved_candidate(math.pi/2)
+        from localization_recovery import verify_pose as original
+        def switch(*args,**kwargs):
+            result=original(*args,**kwargs);self.active='base';return result
+        with patch('localization_recovery.verify_pose',side_effect=switch):
+            with self.assertRaisesRegex(ValueError,'保存轨迹已变化'):self.localizer.saved_slam_hint(Mock())
+        self.assertEqual(self.sent,[])
     def test_changed_map_before_command_is_rejected(self):
         def clouds(after=None,**kwargs):
             packet=self.clouds.pop(0)

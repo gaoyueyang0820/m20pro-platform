@@ -149,3 +149,27 @@ test('unresolved preparation is not offered as startable and old snapshots remai
  const f=fixture();f.c.S.autonomy={active:false,state:'paused',can_start:false,preparation_unresolved:true};f.c.paintAutoMapOptions();assert.equal(f.nodes.get('auto-start').disabled,true);
  f.c.S.autonomy={active:false,state:'idle'};f.c.paintAutoMapOptions();assert.equal(f.nodes.get('auto-start').disabled,false);
 });
+
+test('paused owned exploration exposes resume and active confirmed capture can discard in one click',async()=>{
+ const f=fixture();for(const id of ['auto-resume','auto-save','auto-discard'])f.nodes.set(id,{hidden:true,disabled:false});
+ f.c.S.mapping=true;f.c.S.autonomy={mode:'explore',active:false,state:'paused',can_resume:true,can_start:false,can_discard:true,discard_supported:true,capture_id:'a'.repeat(32),control_generation:4};
+ f.c.paintAutoMapOptions();assert.equal(f.nodes.get('auto-resume').hidden,false);assert.equal(f.nodes.get('auto-resume').disabled,false);
+ assert.equal(f.nodes.get('auto-start').disabled,true);assert.equal(f.nodes.get('auto-map-kind').disabled,true);
+ f.c.S.autonomy={...f.c.S.autonomy,active:true,state:'exploring',can_resume:false};f.c.paintAutoMapOptions();
+ assert.equal(f.nodes.get('auto-discard').hidden,false);assert.equal(f.nodes.get('auto-discard').disabled,false);
+ await f.c.ui['auto-discard']();assert.deepEqual(f.calls.map(v=>v.path),['/api/autonomy/discard']);assert.equal(f.calls[0].data.capture_id,'a'.repeat(32));
+});
+test('unsupported discard stays hidden and lifecycle requests cannot double submit',async()=>{
+ const f=fixture();for(const id of ['auto-resume','auto-save','auto-discard'])f.nodes.set(id,{hidden:false,disabled:false});
+ f.c.S.mapping=true;f.c.S.autonomy={state:'paused',can_resume:true,can_discard:false,discard_supported:false,capture_id:'a'.repeat(32),control_generation:7};f.c.paintAutoMapOptions();
+ assert.equal(f.nodes.get('auto-discard').hidden,true);
+ let finish;apiFixture(f,(path)=>path==='/api/autonomy/resume'?new Promise(resolve=>finish=resolve):{ok:true});
+ const first=f.c.ui['auto-resume']();await tick();await f.c.ui['auto-resume']();assert.equal(f.calls.length,1);assert.equal(f.calls[0].data.control_generation,7);
+ finish({ok:true});await first;
+});
+test('paused or background client cannot submit a late resume after the preparatory refresh',async()=>{
+ const f=fixture();f.c.S.mapping=true;f.c.S.autonomy={state:'paused',can_resume:true,capture_id:'a'.repeat(32),control_generation:9};
+ let refresh;f.c.fetchState=()=>new Promise(resolve=>refresh=resolve);
+ const request=f.c.ui['auto-resume']();await tick();f.c.fetchState=async()=>{};await f.c.ui['auto-stop']();refresh();await request;
+ assert.equal(f.calls.some(v=>v.path==='/api/autonomy/resume'),false);assert.equal(f.calls.filter(v=>v.path==='/api/autonomy/stop').length,1);
+});

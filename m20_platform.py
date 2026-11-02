@@ -25,11 +25,12 @@ from urllib.parse import urlparse,parse_qs,quote
 from urllib.request import Request, urlopen
 
 import m20_console as original
+from navigation_validation import NavigationEvidenceError, validate_map_identity, error_summary
 import greeting
 from greeting_runtime import GreetingSession
 from platform_core import ROOT, JOINTS, LEGS, NEUTRAL, ERRORS, RobotLink, Store, Training, number, integer, rpc, explain_error, leg_target, age_of
 from platform_hub import Hub
-from shared_access import SharedAccess, lan_addresses
+from shared_access import SharedAccess, lan_addresses, shared_listener
 from camera_streams import Cameras
 from autonomy_runtime import Autonomy
 from vision_models import ModelChecks, catalog as vision_catalog, default_path
@@ -138,6 +139,8 @@ class Platform:
         self.map_learning=MapLearning(self)
         self.goal_plans={}
         self._plan_generation=0;self._nav_start_generation=0
+        from navigation_intents import NavigationIntents
+        self.navigation_intents=NavigationIntents()
         self.people=PeopleCounter(self)
         from localization_runtime import AutomaticLocalizer
         self.localizer=AutomaticLocalizer(self)
@@ -208,6 +211,26 @@ class Platform:
         if self.nav.get('status')=='running' and self.nav.get('phase') in ['validating','preparing']:
             self.nav.update(status='cancelled',phase='stopped',execution_state='cancelled',message='导航准备已由手动操作取消')
             self.nav.pop('preparation',None)
+
+    def cancel_navigation_intent(self,req):
+        """Revoke even a delayed start; stop only the task carrying this ID."""
+        with self.lock:
+            token=self.navigation_intents.revoke(req,self.instance_id,self._plan_generation)
+            matched=self.navigation_intents.owns(self.nav,token)
+            if matched:
+                if self.nav.get('engine')=='platform':
+                    if self.nav.get('status')=='paused':self.nav.update(status='cancelled',phase='cancelled',execution_state='cancelled')
+                    else:self.point_navigation.stop('cancelled','本次客户端导航意图已撤销，已请求停车')
+                elif self.nav.get('status')=='running' and self.nav.get('phase') in ['validating','preparing']:
+                    self.nav.update(status='cancelled',phase='stopped',execution_state='cancelled',message='本次导航准备已撤销')
+                    self.nav.pop('preparation',None)
+                    self.velocity=[0.,0.,0.];self.velocity_deadline=None
+                    if self.link:self.link.set_velocity(0,0,0)
+                elif self.nav.get('status')=='running':self._cancel_navigation('client_intent_revoked','cancelled')
+                elif self.nav.get('status')=='cancelling':self.nav['after_cancel']='cancelled'
+                elif self.nav.get('status')=='paused':self.nav.update(status='cancelled',phase='cancelled',execution_state='cancelled')
+            return dict(ok=True,revoked=True,client_intent=token[2],matched=matched,
+                        status=self.nav.get('status') if matched else 'revoked')
 
     def stop(self, estop=False):
         self.cancel_greeting()
@@ -366,6 +389,13 @@ class Platform:
             valid_until=time.monotonic()+number(req['hold_seconds'],0,.5)
         if any(v):
             if autonomous and self._greet_busy:raise ValueError('问候动作持有控制权，请先停止问候')
+            if autonomous and not self.demo:
+                direction=self.link.record(1002,6) if self.link else {}
+                if (self.reverse or age_of(direction)>2 or
+                        direction.get('items',{}).get('BasicStatus',{}).get('Direction')!=0):
+                    self.velocity=[0.,0.,0.];self.velocity_deadline=None;self.velocity_at=time.time()
+                    if self.link:self.link.set_velocity(0,0,0)
+                    raise ValueError('自主行走需要新鲜的头朝前反馈；请用手柄切回头朝前，并关闭平台尾向前后重试')
             if self.hub.busy:raise ValueError('正在执行 '+self.hub.busy+'，暂不可移动')
             if not self.demo and self.hub.sdk_mode.get('state') in ['sdk','awaiting_handset_exit']:
                 raise ValueError('请先退出 SDK 模式再使用日常遥控')
@@ -563,6 +593,15 @@ class Platform:
             self.live_ready()
             if not self.demo and (self.pose.get('Location')!=0 or not self.link or age_of(self.link.record(1007,2))>2):raise ValueError('请先完成地图定位，并等待新鲜定位反馈')
             start=[number(self.pose.get(k)) for k in ['PosX','PosY','Yaw']]
+            planning_context=self.hub.context()
+        def verify_map():
+            if planning_demo:return None
+            library=self.hub.remote_maps('/maps/list',context=planning_context,timeout=3)
+            with self.lock:
+                if generation!=self._plan_generation or self.link is not planning_link or self.demo!=planning_demo:
+                    raise ValueError('连接已改变，请重新规划')
+            return validate_map_identity(map_,library)
+        map_identity=verify_map()
         source=self.store.path.parent/'maps'/(map_['id']+'.pgm')
         if map_.get('demo') and map_['id']=='demo':source=self.hub.demo_maps.maps/'demo-yard/occ_grid.pgm'
         if not source.is_file():
@@ -602,15 +641,42 @@ class Platform:
             surface=planner.live_surface_status()
             obstacle_note=('已结合实时通行层：临时更新 %s 个旧占据格；原图不改动'%surface.get('occupied_overrides',0)) if surface.get('occupied_overrides') else (last_error or surface.get('reason','按旧图规划，行走中检查现场通路'))
         if latest_surface:start=list(latest_surface[0]['pose'])
-        try:result=planner.plan(start,[x,y],yaw)
+        try:result=planner.plan(start,[x,y],yaw,goal_tolerance=.65)
         except ValueError as exc:
-            if engine!='platform' or not latest_surface:raise
+            if not planning_demo:verify_map()
+            if engine!='platform' or planning_demo:raise
+            if not latest_surface:
+                raise NavigationEvidenceError('没有足够的新鲜同步观测核对起点：'+(last_error or obstacle_note),
+                    classification='observation_unavailable',reason_code='observation_unavailable',
+                    recommended_action='revalidate_observation') from exc
             from start_recovery_runtime import plan_with_recovery
             scan,loc=latest_surface
             if '_valid_until' in scan:scan['age']=max(0.,.65+time.monotonic()-scan['_valid_until'])
             record=planning_link.record(1002,6);basic=record.get('items',{}).get('BasicStatus',{})
             standing=age_of(record)<2 and basic.get('MotionState')==17 and basic.get('HES')==0 and not basic.get('Sleep')
-            result=plan_with_recovery(planner,start,[x,y],yaw,scan,loc,standing,standard_error=exc)
+            try:result=plan_with_recovery(planner,start,[x,y],yaw,scan,loc,standing,standard_error=exc)
+            except ValueError as recovery_error:
+                recovery=getattr(recovery_error,'recovery',{})
+                if recovery.get('reason_code') not in ['live_evidence_expired','insufficient_ground_votes']:raise
+                # One bounded read-only recheck, never an indefinite retry and
+                # never a permission to move using old projected evidence.
+                verify_map();until=time.monotonic()+1.2;newer=scan.get('stamp');refreshed=False
+                for _ in range(4):
+                    if time.monotonic()>=until:break
+                    with self.lock:
+                        if generation!=self._plan_generation or self.link is not planning_link:raise ValueError('连接已改变，请重新规划')
+                    next_scan,next_loc=self.navigation_surface(map_['id'])
+                    if newer is not None and next_scan.get('stamp',-1)<=newer:continue
+                    update=planner.update_live_surface(next_scan,next_loc)
+                    if not update.get('accepted'):continue
+                    scan,loc=next_scan,next_loc;start=list(scan['pose']);newer=scan.get('stamp');refreshed=True
+                if not refreshed:raise recovery_error
+                record=planning_link.record(1002,6);basic=record.get('items',{}).get('BasicStatus',{})
+                standing=age_of(record)<2 and basic.get('MotionState')==17 and basic.get('HES')==0 and not basic.get('Sleep')
+                result=plan_with_recovery(planner,start,[x,y],yaw,scan,loc,standing)
+                result['observation_recheck']=dict(performed=True,limit=1,motion_sent=False)
+        if not planning_demo:map_identity=verify_map()
+        result['map_identity']=map_identity
         if result.get('self_projection_ignored'):obstacle_note='已排除机身内部的新增投影；原图墙体和前方障碍保留，机器人实时避障保持开启'
         result.update(live_obstacles=len(obstacles),obstacle_note=obstacle_note,
                       execution='platform_trajectory' if engine=='platform' else 'native_single_goal',guide_points_preview_only=engine!='platform',live_surface=planner.live_surface_status())
@@ -624,12 +690,15 @@ class Platform:
         return dict(result,plan_id=key,map_id=map_['id'],demo=self.demo)
 
     def start_goal(self, req):
-        with self.lock:intent=self._nav_start_generation
-        if not req.get('plan_id'):req=dict(req,plan_id=self.plan_goal(req)['plan_id'])
-        return self._start_planned_goal(req,intent)
-
-    def _start_planned_goal(self, req,intent=None):
         with self.lock:
+            intent=self._nav_start_generation
+            client_intent=self.navigation_intents.register(req,self.instance_id,self._plan_generation)
+        if not req.get('plan_id'):req=dict(req,plan_id=self.plan_goal(req)['plan_id'])
+        return self._start_planned_goal(req,intent,client_intent)
+
+    def _start_planned_goal(self, req,intent=None,client_intent=None):
+        with self.lock:
+            self.navigation_intents.check(client_intent,self.instance_id,self._plan_generation)
             intent=self._nav_start_generation if intent is None else intent
             if intent!=self._nav_start_generation:raise ValueError('导航启动已取消')
             plan=self.goal_plans.get(req['plan_id'])
@@ -646,20 +715,22 @@ class Platform:
             route.update(temporary=True,preview_start=list(plan['start']),preview_source=plan['source'],preview_fingerprint=plan['fingerprint'],preview_path=result['path'])
         engine=req.get('engine','native')
         if engine not in ['native','platform']:raise ValueError('未知导航执行器')
-        if engine=='platform':return self.point_navigation.start(route,plan,intent)
-        started=self.start_route(dict(nav_mode=1,speed=1,gait='flat',pause_at_point=False,_start_generation=intent),goal=route)
+        if engine=='platform':return self.point_navigation.start(route,plan,intent,client_intent)
+        started=self.start_route(dict(nav_mode=1,speed=1,gait='flat',pause_at_point=False,_start_generation=intent),goal=route,client_intent=client_intent)
         with self.lock:
             if self.nav.get('route',{}).get('id')==route['id']:self.nav['plan']=result
         message='正在确认模式与步态，完成后仅提交最终目标' if started.get('phase')=='preparing' else '已提交最终目标；预览路线供核对，机器人自主寻路并实时避障，终点自动结束'
         if self.demo:message='演示任务已开始；未向机器人发送指令'
         return dict(started,goal=point,planner=result['planner'],execution='native_single_goal',demo=self.demo,message=message)
 
-    def start_route(self, req, goal=None):
+    def start_route(self, req, goal=None,client_intent=None):
         # Reserve an intent before remote reads, then release the state lock.
         # Stop/reconnect can invalidate it while a slow map request is pending.
         with self.lock:
             if req.get('_start_generation',self._nav_start_generation)!=self._nav_start_generation:raise ValueError('导航启动已取消')
             if self._greet_busy:raise ValueError('请先停止问候动作，再开始导航')
+            if client_intent is None:client_intent=self.navigation_intents.register(req,self.instance_id,self._plan_generation)
+            self.navigation_intents.check(client_intent,self.instance_id,self._plan_generation)
             if self.autonomy.active:raise ValueError('请先停止自主任务，再开始导航')
             if self.hub.busy:raise ValueError('后台操作正在进行，请等待完成')
             if not self.demo and self.hub.sdk_mode.get('state') in ['sdk','awaiting_handset_exit']:
@@ -686,16 +757,18 @@ class Platform:
             nav=dict(status='running',phase='validating',execution_state='preparing',message='正在核对活动地图与建图状态',
                      validation_deadline=time.monotonic()+15,index=0,route=route,progress=0,completed=0,started=time.time(),
                      options=options,pause_at_point=pause,grid_id=map_.get('grid_id',0),previous_cancelled_value=previous_cancelled)
+            nav.update(self.navigation_intents.nav_fields(client_intent))
             self.nav=nav;self.velocity=[0.,0.,0.]
             if link:link.set_velocity(0,0,0)
         def current():
-            return self.nav is nav and nav['status']=='running' and nav.get('phase')=='validating' and self.link is link and self.demo==demo
+            return (self.nav is nav and nav['status']=='running' and nav.get('phase')=='validating' and self.link is link and self.demo==demo
+                    and self.navigation_intents.valid(client_intent,self.instance_id,self._plan_generation))
         try:
             if demo:
                 if self.mapping:raise ValueError('建图采集或后处理尚未完成，请先停止建图并核对结果')
             else:
                 build=self.hub.get('/api/maps/build/status',{})
-                if build.get('in_progress',True) or build.get('phase') not in ['idle','saved','interrupted']:
+                if build.get('in_progress',True) or build.get('phase') not in ['idle','saved','discarded','interrupted']:
                     raise ValueError('建图采集或后处理尚未确认结束，请先核对建图结果')
                 with self.lock:
                     if not current():raise ValueError('导航启动已取消或连接已改变')
@@ -953,7 +1026,7 @@ class Platform:
         try:
             if not demo:
                 build=self.hub.get('/api/maps/build/status',{})
-                if build.get('in_progress',True) or build.get('phase') not in ['idle','saved','interrupted']:raise ValueError('建图采集或后处理尚未确认结束')
+                if build.get('in_progress',True) or build.get('phase') not in ['idle','saved','discarded','interrupted']:raise ValueError('建图采集或后处理尚未确认结束')
                 loc=link.record(1007,2)
                 if age_of(loc)>2 or loc.get('items',{}).get('Location')!=0:raise ValueError('定位异常或数据过期')
                 if self.proxy('nos','/status').get('active')!=map_.get('robot_map_name'):raise ValueError('活动地图已改变，请重新规划路线')
@@ -1230,6 +1303,8 @@ class Platform:
                 motion_age=0. if self.demo else age_of(self.link.record(1002,4)) if self.link else float('inf'),
                 relocation_epoch=(self._plan_generation,id(self.link),self.pose.get('Relocation')))
             return dict(mode='demo' if self.demo else 'live',online=bool(online),server_instance=self.instance_id,pose_view=pose_view,
+                        connection_generation=self._plan_generation,
+                        navigation_preparation=dict(client_intent_protocol=1,verify_current_localization=True),
                         previous_connection_stop=copy.deepcopy(self.store.value.get('previous_connection_stop')),
                         ip=self.link.ip if self.link else None,basic=self.basic,motion=motion,device=dev,
                         pose=self.pose,velocity=self.velocity,lights=self.lights,reverse=self.reverse,
@@ -1452,6 +1527,7 @@ class Handler(original.Handler):
             if p=='/api/nav/goal':return self._json(APP.start_goal(req))
             if p=='/api/nav/lease':return self._json(APP.point_navigation.renew(req.get('run_id')))
             if p=='/api/nav/start':return self._json(APP.start_route(req))
+            if p=='/api/nav/intent/cancel':return self._json(APP.cancel_navigation_intent(req))
             if p=='/api/nav/resume':return self._json(APP.resume_route())
             result=APP.autonomy.post(p,req)
             if result is not None:return self._json(result)
@@ -1587,7 +1663,7 @@ class Handler(original.Handler):
                 else: return self._json(dict(ok=False,err='接口不存在'),404)
             self._json(result)
         except PermissionError as exc:self._json(dict(ok=False,err=str(exc)),403)
-        except (ValueError,TypeError,KeyError) as exc: self._json(dict(ok=False,err=str(exc)),400)
+        except (ValueError,TypeError,KeyError) as exc: self._json(dict(ok=False,err=str(exc),navigation=error_summary(exc)),400)
         except (BrokenPipeError,ConnectionResetError): pass
         except Exception as exc:
             APP.add_log('error','服务错误: '+type(exc).__name__)
@@ -1618,12 +1694,9 @@ def main():
     APP=Platform(store)
     if args.share:
         try:
-            ACCESS=SharedAccess(APP.store.path.parent,args.share,args.token)
-            addresses=lan_addresses(ACCESS.network)
-            if not addresses:raise ValueError('本机尚未连接指定共享网段，请连接对应 Wi-Fi 后重试')
+            ACCESS,args.bind,share_notice=shared_listener(APP.store.path.parent,args.share,args.http,args.token)
         except ValueError as exc:ap.error(str(exc))
-        ACCESS.urls=['http://%s:%s/'%(address,args.http) for address in addresses]
-        args.bind='0.0.0.0'
+        if share_notice:APP.add_log('network',share_notice);print(share_notice)
     if args.ip and not args.demo: APP.connect(dict(mode='live',ip=args.ip,port=args.port))
     elif not args.demo and APP.hub.connections.value.get('auto_connect'):
         saved=APP.hub.connections.value

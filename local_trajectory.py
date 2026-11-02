@@ -7,6 +7,7 @@ All candidate footprints stay on currently measured floor. No actuator I/O.
 """
 import math
 import time
+import copy
 import numpy as np
 from robot_geometry import CLEARANCE_HALF_LENGTH, CLEARANCE_HALF_WIDTH, BODY_HALF_LENGTH, BODY_HALF_WIDTH
 
@@ -16,39 +17,67 @@ RES=.2
 def wrap(a):return math.atan2(math.sin(a),math.cos(a))
 
 
+class PathConnectionError(ValueError):
+    """A valid path has an obsolete/disconnected local prefix."""
+
+
 class LocalSurface:
     """Continuous rectangular footprint against a discrete live surface."""
     def __init__(self,scan):
         from autonomy_core import supported_cells, disk
         self.free=supported_cells(scan)|set(disk(.55))
         self.blocked={tuple(p) for p in scan['obstacles']}
-        bounds=np.asarray(scan.get('obstacle_bounds',[]),float).reshape(-1,4)
+        try:bounds=np.asarray(scan.get('obstacle_bounds',[]),float).reshape(-1,4)
+        except (ValueError,TypeError):bounds=np.empty((0,4),float)
         self.precise=scan.get('geometry_version')==2 and len(bounds)==len(scan['obstacles']) and np.isfinite(bounds).all() and bool(np.all(bounds[:,2:]>=bounds[:,:2]))
         self.bounds=bounds
         if self.precise:self.free.update(tuple(p) for p in scan.get('measured_floor',[]))
         self.cache={}
+        self.last_failure=None
 
-    def valid(self,x,y,yaw):
+    def valid(self,x,y,yaw,*,padding=(0.,0.)):
         # SAT rectangle/cell intersection, with sub-cell translation retained.
+        self.last_failure=None
         c,s=math.cos(yaw),math.sin(yaw);a,b=abs(c),abs(s);half=RES/2
-        hx,hy=CLEARANCE_HALF_LENGTH,CLEARANCE_HALF_WIDTH
+        hx,hy=CLEARANCE_HALF_LENGTH+padding[0],CLEARANCE_HALF_WIDTH+padding[1]
+        support_x,support_y=BODY_HALF_LENGTH+padding[0],BODY_HALF_WIDTH+padding[1]
         if self.precise and len(self.bounds):
             centers=(self.bounds[:,:2]+self.bounds[:,2:])/2
             halfsize=(self.bounds[:,2:]-self.bounds[:,:2])/2+.005
             dx,dy=centers[:,0]-x,centers[:,1]-y
             hit=(abs(dx)<hx*a+hy*b+halfsize[:,0])&(abs(dy)<hx*b+hy*a+halfsize[:,1])
             hit&=(abs(c*dx+s*dy)<hx+halfsize[:,0]*a+halfsize[:,1]*b)&(abs(-s*dx+c*dy)<hy+halfsize[:,0]*b+halfsize[:,1]*a)
-            if hit.any():return False
+            if hit.any():self.last_failure='obstacle';return False
         rx=hx*a+hy*b+half;ry=hx*b+hy*a+half
         for ix in range(math.ceil((x-rx)/RES),math.floor((x+rx)/RES)+1):
             for iy in range(math.ceil((y-ry)/RES),math.floor((y+ry)/RES)+1):
                 dx,dy=ix*RES-x,iy*RES-y;u,v=abs(c*dx+s*dy),abs(-s*dx+c*dy)
                 if u>=hx+half*(a+b)-1e-8 or v>=hy+half*(a+b)-1e-8:continue
-                if not self.precise and (ix,iy) in self.blocked:return False
-                if (u<BODY_HALF_LENGTH+half*(a+b)-1e-8 and v<BODY_HALF_WIDTH+half*(a+b)-1e-8
-                    and abs(dx)<BODY_HALF_LENGTH*a+BODY_HALF_WIDTH*b+half-1e-8
-                    and abs(dy)<BODY_HALF_LENGTH*b+BODY_HALF_WIDTH*a+half-1e-8
-                    and (ix,iy) not in self.free):return False
+                if not self.precise and (ix,iy) in self.blocked:self.last_failure='obstacle';return False
+                if (u<support_x+half*(a+b)-1e-8 and v<support_y+half*(a+b)-1e-8
+                    and abs(dx)<support_x*a+support_y*b+half-1e-8
+                    and abs(dy)<support_x*b+support_y*a+half-1e-8
+                    and (ix,iy) not in self.free):self.last_failure='support';return False
+        return True
+
+    def sweep_valid(self,dx,dy,turn=0.):
+        """Conservative continuous translation plus the full +/-90° turn sweep.
+
+        A fixed-angle translated rectangle is enclosed at the segment midpoint
+        by its projected half-segment padding. Five-degree rotation intervals
+        add the maximum corner displacement around the interval midpoint, so
+        checking interval midpoints cannot miss an in-between rotation contact.
+        Default valid() geometry and its 3 cm clearance margin are unchanged.
+        """
+        if turn:
+            step=math.pi/36;radius=math.hypot(CLEARANCE_HALF_LENGTH,CLEARANCE_HALF_WIDTH)
+            angular_pad=2*radius*math.sin(step/4)
+            angles=[math.copysign((i+.5)*step,turn) for i in range(18)]
+        else:angular_pad=0.;angles=[0.]
+        for angle in angles:
+            c,s=math.cos(angle),math.sin(angle)
+            padding=(abs(c*dx+s*dy)/2+angular_pad,abs(-s*dx+c*dy)/2+angular_pad)
+            if not self.valid(dx/2,dy/2,angle,padding=padding):return False
         return True
 
 
@@ -71,12 +100,23 @@ class TrajectoryFollower:
         self.previous=np.zeros(3);self.gain=np.array([1.,1.,1.])
         self.path=np.empty((0,2));self.index=0;self.plan_key=None;self.last={}
         self.path_arc=np.empty(0);self.progress_pose=None;self.goal_braking=False
+        self.terminal=True;self.last_handoff_pose=None
+        self.path_repair_stamp=None;self.path_repair_attempts=0;self.path_repair_anchor=None
 
-    def set_path(self,path):
-        self.path=dense_polyline(path);self.index=0
-        if not len(self.path):raise ValueError('路径为空')
+    def set_path(self,path,*,terminal=True,start_pose=None):
+        candidate=dense_polyline(path)
+        if not len(candidate):raise ValueError('路径为空')
+        if start_pose is not None:
+            pose=np.asarray(start_pose[:2],float)
+            if not np.isfinite(pose).all():raise ValueError('新路径起点位姿无效')
+            arc=np.r_[0.,np.cumsum(np.linalg.norm(np.diff(candidate,axis=0),axis=1))]
+            end=min(len(candidate),int(np.searchsorted(arc,.5,side='right')))
+            nearest=int(np.argmin(np.linalg.norm(candidate[:max(1,end)]-pose,axis=1)))
+            if np.linalg.norm(candidate[nearest]-pose)>.35:raise PathConnectionError('新观察路径与当前位置不相接')
+            candidate=dense_polyline([pose,*candidate[nearest:]])
+        self.path=candidate;self.index=0
         self.path_arc=np.r_[0.,np.cumsum(np.linalg.norm(np.diff(self.path,axis=0),axis=1))]
-        self.progress_pose=None;self.goal_braking=False
+        self.progress_pose=None;self.goal_braking=False;self.terminal=bool(terminal)
 
     def _feedback(self,scan,yaw_rate):
         v=scan.get('_velocity_body',[0.,0.])
@@ -93,6 +133,7 @@ class TrajectoryFollower:
 
     def command(self,scan,yaw_rate=0.,goal_yaw=None,allowed_pose=None):
         started=time.perf_counter();pose=np.asarray(scan['pose'],dtype=float)
+        self.last.update(zero_reason=None,terminal_path=self.terminal,needs_continuation=False)
         if len(pose)!=3 or not np.isfinite(pose).all():raise ValueError('位姿无效')
         feedback=self._feedback(scan,yaw_rate)
         if feedback is None:return self._result([0,0,0],'waiting_feedback','等待新鲜运动反馈',[],started)
@@ -125,22 +166,30 @@ class TrajectoryFollower:
         still=speed<.08 and angular_speed<.12
         self.last.update(remaining_path_m=round(remaining_path,3),stopping_distance_m=round(stopping,3),
                          arrival_tolerance_m=.18,stopping_model=dict(deceleration_min=deceleration,reaction_s=reaction,hardware_calibrated=False))
+        continuation_window=max(.55,min(1.1,stopping+.25))
+        self.last.update(needs_continuation=not self.terminal and remaining_path<=continuation_window and distance<=continuation_window,
+                         continuation_window_m=round(continuation_window,3))
         if at_goal and heading_error<.14:
             if still:
                 self.goal_braking=False
                 return self._result([0,0,0],'arrived','已到达目标并读回停稳',[],started)
             self.goal_braking=True
+            self.last['zero_reason']='terminal_tolerance_brake' if self.terminal else 'viewpoint_tolerance_brake'
             return self._result([0,0,0],'braking','已进入目标范围，正在制动；尚未确认停稳',[],started)
         if self.goal_braking:
-            if not still:return self._result([0,0,0],'braking','正在制动，等待实际速度下降后再接近终点',[],started)
+            if not still:
+                self.last['zero_reason']='terminal_brake_latch' if self.terminal else 'viewpoint_brake_latch'
+                return self._result([0,0,0],'braking','正在制动，等待实际速度下降后再接近终点',[],started)
             self.goal_braking=False
         if speed>=.08 and (at_goal or remaining_path<=stopping+.10):
             self.goal_braking=True
+            self.last['zero_reason']='terminal_stopping_distance' if self.terminal else 'viewpoint_stopping_distance'
             return self._result([0,0,0],'braking','按剩余路径与实际速度提前制动',[],started)
         if at_goal and goal_yaw is not None and feedback[2]*wrap(goal_yaw-pose[2])>0:
             angular_stopping=angular_speed*reaction+angular_speed**2/(2*1.2)
             if angular_speed>=.12 and heading_error<=angular_stopping+.025:
                 self.goal_braking=True
+                self.last['zero_reason']='terminal_heading_brake'
                 return self._result([0,0,0],'braking','终点朝向接近，正在制动转向',[],started)
         c,s=math.cos(pose[2]),math.sin(pose[2]);delta=remain-pose[:2]
         local=np.column_stack((c*delta[:,0]+s*delta[:,1],-s*delta[:,0]+c*delta[:,1]))
@@ -242,6 +291,7 @@ class TrajectoryFollower:
         cost[~valid]=np.inf
         best=int(np.argmin(cost));self.last['candidate_count']=n;self.last['valid_candidates']=int(valid.sum())
         if not np.isfinite(cost[best]):
+            self.last['zero_reason']='no_admissible_trajectory'
             state='braking' if speed>=.08 or angular_speed>=.12 else 'blocked'
             return self._result([0,0,0],state,'当前扫描内没有可通行轨迹，先请求停车再重规划',[],started)
         # Brake is always available even if its future stopping envelope has
@@ -249,6 +299,7 @@ class TrajectoryFollower:
         axes=candidates[best]
         if best and np.isfinite(cost[0]) and cost[best]>=cost[0]-.025:best=0;axes=candidates[0]
         state='tracking' if np.linalg.norm(axes) else 'braking' if speed>=.08 or angular_speed>=.12 else 'blocked'
+        if not np.linalg.norm(axes):self.last['zero_reason']='trajectory_scoring_brake' if state=='braking' else 'trajectory_no_progress'
         reason='连续跟踪通路' if state=='tracking' else '正在制动，等待实际停稳' if state=='braking' else '等待通路或重规划'
         if axes[0]<0:reason='后退调整到可通行轨迹'
         elif abs(axes[1])>.05:reason='侧移绕开障碍'
@@ -256,8 +307,104 @@ class TrajectoryFollower:
         return self._result(axes,state,reason,trajectories[best].tolist(),started)
 
     def _result(self,axes,state,reason,trajectory,started):
+        if not any(axes) and self.last.get('zero_reason') is None:
+            self.last['zero_reason']={'waiting_feedback':'missing_motion_feedback','idle':'no_path',
+                                     'arrived':'terminal_arrived' if self.terminal else 'viewpoint_arrived'}.get(state,state)
         self.previous=np.array(axes,dtype=float)
         self.last.update(axes=[float(x) for x in axes],state=state,reason=reason,trajectory=trajectory,
                          path_index=self.index,path_points=len(self.path),compute_ms=round((time.perf_counter()-started)*1000,2),
                          velocity_gain=self.gain.tolist(),model='kinematic_feedback_adapted_not_calibrated')
         return dict(self.last)
+
+
+def _repair_exploration_path(explorer,follower,scan,new_scan):
+    began=time.perf_counter();stamp=scan.get('stamp');pose=scan['pose']
+    follower.last['zero_reason']='path_repair_stop'
+    status='waiting_new_scan';reason='观察路径已落后于当前位置，停车等待新扫描重建通路'
+    deadline=scan.get('_valid_until')
+    fresh=deadline is None or time.monotonic()<deadline
+    matched=(explorer.last_stamp==stamp and explorer.last_pose is not None
+             and math.dist(explorer.last_pose[:2],pose[:2])<1e-6)
+    if new_scan and fresh and matched and stamp!=follower.path_repair_stamp:
+        follower.path_repair_stamp=stamp
+        if follower.path_repair_attempts>=3:
+            status='exhausted';reason='当前位置连续重建通路仍未成功，已停车等待核对定位和通路'
+        else:
+            follower.path_repair_attempts+=1
+            if follower.path_repair_anchor is None:follower.path_repair_anchor=tuple(pose[:2])
+            explorer.path=[];explorer.goal=None
+            try:
+                outcome=explorer.plan()
+                if outcome=='planned' and explorer.path:
+                    key=tuple(explorer.path)
+                    follower.set_path([(x*RES,y*RES) for x,y in key],terminal=False,start_pose=pose)
+                    follower.plan_key=key;status='replanned';reason='已从当前位置重建通路，停稳后继续'
+                else:status='waiting_route';reason='正在从当前位置重新检查可通行方向，当前保持停车'
+            except ValueError:
+                explorer.path=[];follower.plan_key=None;status='waiting_route'
+                reason='当前观测尚不能形成连续通路，保持停车等待下一帧'
+    result=follower._result([0.,0.,0.],'braking',reason,[],began)
+    result.update(path_repair_state=status,path_repair_attempts=follower.path_repair_attempts)
+    return result
+
+
+def exploration_step(explorer,follower,scan,yaw_rate=0.,*,new_scan=True):
+    """Join validated exploration paths before braking at an observation point.
+
+    A frontier observation point is not a user-requested final destination.
+    Retiring it changes only planner bookkeeping, never actual_visited or map
+    evidence. If no successor can be planned, the original terminal braking
+    remains in force. This function issues no command itself.
+    """
+    if (follower.path_repair_anchor is not None and scan.get('_speed_mps',0)>=.08
+            and math.dist(scan['pose'][:2],follower.path_repair_anchor)>=.5):
+        follower.path_repair_attempts=0;follower.path_repair_anchor=None
+    if follower.path_repair_stamp is not None and scan.get('stamp')==follower.path_repair_stamp:
+        return _repair_exploration_path(explorer,follower,scan,False)
+    key=tuple(explorer.path)
+    if key!=follower.plan_key:
+        old_key=follower.plan_key
+        suffix=(bool(key) and old_key is not None and len(key)<=len(old_key) and tuple(old_key[-len(key):])==key)
+        nearby=follower.path[max(0,follower.index-2):min(len(follower.path),follower.index+8)]
+        connected_old=bool(len(nearby)) and float(np.linalg.norm(nearby-np.asarray(scan['pose'][:2]),axis=1).min())<=.35
+        # Legacy fallback may consume a prefix of the SAME route. Its remaining
+        # first grid point can be >.35m ahead while the installed continuous
+        # route still passes through this pose; do not discard that connection.
+        if not (suffix and connected_old):
+            try:follower.set_path([(x*RES,y*RES) for x,y in key],terminal=False,start_pose=scan['pose'])
+            except PathConnectionError:return _repair_exploration_path(explorer,follower,scan,new_scan)
+        follower.plan_key=key
+    before_previous=follower.previous.copy();before_gain=follower.gain.copy()
+    allowed=lambda x,y,a:math.dist((x,y),explorer.origin)<=explorer.radius
+    result=follower.command(scan,yaw_rate,allowed_pose=allowed)
+    if not new_scan or not result.get('needs_continuation') or explorer.goal is None:return result
+    pose=scan['pose']
+    if follower.last_handoff_pose is not None and math.dist(pose[:2],follower.last_handoff_pose)<.3:
+        result['continuation_state']='waiting_actual_translation';return result
+    old=dict(goal=explorer.goal,path=list(explorer.path),kind=explorer.target_kind,state=explorer.plan_state,
+             metrics=dict(explorer.frontier_metrics),frontier_last=dict(explorer.frontiers.last),
+             previous_goal=explorer.frontiers.previous_goal,switches=explorer.frontiers.goal_switches)
+    follower_state={name:copy.deepcopy(getattr(follower,name)) for name in
+        ['path','path_arc','index','plan_key','previous','gain','progress_pose','goal_braking','terminal','last_handoff_pose','last']}
+    was_visited=old['goal'] in explorer.visited
+    explorer.visited.add(old['goal']);explorer.goal=None;explorer.path=[]
+    try:
+        outcome=explorer.plan()
+        if outcome=='planned' and explorer.path and explorer.goal!=old['goal']:
+            new_key=tuple(explorer.path)
+            follower.set_path([(x*RES,y*RES) for x,y in new_key],terminal=False,start_pose=pose)
+            # The first provisional decision was never sent. Recompute with
+            # exactly one feedback adaptation, retaining the applied-axis model.
+            follower.previous=before_previous;follower.gain=before_gain;follower.plan_key=new_key
+            follower.last_handoff_pose=tuple(pose[:2])
+            result=follower.command(scan,yaw_rate,allowed_pose=allowed)
+            result.update(continuation_state='joined',handoff_from=list(old['goal']),handoff_to=list(explorer.goal))
+            return result
+    except ValueError as exc:result['continuation_error']=str(exc)
+    if not was_visited:explorer.visited.discard(old['goal'])
+    explorer.goal=old['goal'];explorer.path=old['path'];explorer.target_kind=old['kind'];explorer.plan_state=old['state']
+    explorer.frontier_metrics=old['metrics'];explorer.frontiers.last=old['frontier_last']
+    explorer.frontiers.previous_goal=old['previous_goal'];explorer.frontiers.goal_switches=old['switches']
+    for name,value in follower_state.items():setattr(follower,name,value)
+    result['continuation_state']='no_valid_successor'
+    return result

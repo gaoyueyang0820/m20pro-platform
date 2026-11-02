@@ -47,7 +47,7 @@ class PointNavigationRuntimeTests(unittest.TestCase):
         self.app.done=True;self.app.hub.close();cases.PlatformTests.tearDown(self)
     def ready(self,x=2.05,y=3.05,yaw=0.,mode=0,velocity=(0,0,0)):
         a=self.app
-        basic=dict(HES=0,MotionState=17,ControlUsageMode=mode,Sleep=0,Gait=0x3002)
+        basic=dict(HES=0,MotionState=17,ControlUsageMode=mode,Sleep=0,Gait=0x3002,Direction=0)
         a.link.put(1002,6,dict(BasicStatus=basic));a.basic=basic.copy()
         a.link.put(1002,4,dict(MotionStatus=dict(zip(['LinearX','LinearY','OmegaZ'],velocity))))
         a.link.put(1007,2,dict(Location=0,Confidence=.99,PosX=x,PosY=y,Yaw=yaw));a.pose=dict(Location=0,Confidence=.99,PosX=x,PosY=y,Yaw=yaw)
@@ -58,8 +58,8 @@ class PointNavigationRuntimeTests(unittest.TestCase):
         map_=a.import_map(dict(name='runtime-test',pgm=base64.b64encode(raw).decode(),resolution=.1,origin=[0,0,0]))['map']
         map_.update(robot_map_name='runtime-test',verified_for_robot=True,robot_ip='127.0.0.1')
         a.demo=False;a.link=RecordedLink();self.ready();a.hub.sdk_mode=dict(state='normal')
-        a.proxy=lambda *args,**kwargs:dict(active='runtime-test',phase='idle',in_progress=False)
-        a.hub.remote_maps=lambda *args,**kwargs:dict(active='runtime-test',phase='idle',in_progress=False)
+        a.proxy=lambda *args,**kwargs:dict(active='runtime-test',maps=[dict(name='runtime-test',grids=[0])],phase='idle',in_progress=False)
+        a.hub.remote_maps=lambda *args,**kwargs:dict(active='runtime-test',maps=[dict(name='runtime-test',grids=[0])],phase='idle',in_progress=False)
         self.map=map_;self.scans=0
         def scan(mapping=False):
             self.scans+=1

@@ -92,7 +92,17 @@ def execute(req,maps=Path('/var/opt/robot/data/maps'),data=Path('/var/lib/m20-pl
         return launch('mapping','m20-session-'+(identity or uuid.uuid4().hex[:10]),context=dict(workflow='extension',base=base,anchor=anchor,grid_id=grid,maps=str(maps)),request_id=identity)
     if action=='mapping':
         return launch('mapping',map_name(req.get('name')),request_id=req.get('request_id'))
-    if action=='stop_mapping':return launch('stop_mapping',request_id=req.get('request_id'),expected_start_request_id=req.get('expected_start_request_id'))
+    if action in ['stop_mapping','discard_mapping']:
+        context=None
+        if action=='discard_mapping':
+            try:from .mapping_job import read_job
+            except ImportError:from mapping_job import read_job
+            expected=request_identity(req.get('expected_start_request_id'))
+            if expected is None:raise ValueError('放弃本轮需要明确的采集归属')
+            capture=read_job('mapping')
+            if capture.get('request_id')!=expected:raise ValueError('采集已变化，未放弃其他会话')
+            context=dict(capture.get('context',{}),discard=True,maps=str(maps))
+        return launch('stop_mapping',context=context,request_id=req.get('request_id'),expected_start_request_id=req.get('expected_start_request_id'))
     raise ValueError('不允许此系统操作')
 
 
