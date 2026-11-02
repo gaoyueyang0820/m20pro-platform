@@ -193,7 +193,7 @@ class Autonomy:
         self.state='idle';self.mode=None;self.message='选择自主建图或跟随人员';self.lease=0
         self.explorer=None;self.target=None;self.started=0;self.scan=None;self.result_maps=[];self.map_view=None;self.finished_elapsed=0
         self.deadline=None;self.timing=deque(maxlen=180);self.scan_timing={}
-        self.scope='room';self.prior_grid=None
+        self.scope='radius';self.prior_grid=None
         self.context=None;self.generation=0;self._save_token=None
         self.capture_id=None
         self.observation_pump=None
@@ -260,17 +260,17 @@ class Autonomy:
             if (not self.active or self.run_id!=run_id or
                     self.context is not None and not self.app.hub.same_context(self.context)):
                 raise OperationCancelled('自主任务已取消或连接已变化')
-            if self.deadline is not None and time.monotonic()>=self.deadline or time.monotonic()-self.lease>2:
-                self.pause('自主准备或会话已到期，已停止')
-                raise OperationCancelled('自主准备或会话已到期')
+            if self.deadline is not None and time.monotonic()>=self.deadline:
+                self.pause('本轮时间已到，已停止')
+                raise OperationCancelled('本轮时间已到')
 
     def watchdog(self):
         if self.active and self.deadline is not None and time.monotonic()>=self.deadline:
             if self.mode=='explore' and (self.app.mapping or self.app.hub.has_preparation(self.run_id)):
                 self.finish_save(self.run_id,'达到本轮时间，已停车，正在保存地图')
             else:self.pause('本轮时间已到，已停车')
-        if self.active and time.monotonic()-self.lease>2:
-            self.pause('操作页面已断开或进入后台，已停车；返回后重新开始')
+        # The desktop owns autonomous jobs. Browser visibility is unrelated to
+        # sensor/command freshness, which is enforced on every drive command.
 
     def _drive(self,run_id,forward,yaw,valid_until=None,side=0):
         began=time.monotonic()
@@ -337,11 +337,12 @@ class Autonomy:
     def start(self,req):
         if req.get('mode')=='explore' and req.get('use_current') and self._resumable():
             return self.resume(req)
-        mode=req.get('mode');scope=req.get('scope','room')
+        mode=req.get('mode');scope=req.get('scope','radius')
+        scope={'room':'radius','floor':'map'}.get(scope,scope)
         if mode not in ['explore','follow']:raise ValueError('请选择自主建图或跟随人员')
-        if scope not in ['room','floor']:raise ValueError('探索范围无效')
-        if scope=='floor' and (mode!='explore' or not req.get('extend')):raise ValueError('整层探索需要从当前地图续建，才能同时更新旧区域')
-        radius=number(req.get('radius',6),2,12);minutes=number(req.get('minutes',5),.1,60 if scope=='floor' else 20)
+        if scope not in ['radius','map']:raise ValueError('探索范围无效')
+        if scope=='map' and (mode!='explore' or not req.get('extend')):scope='radius'
+        radius=number(req.get('radius',6),2,100);minutes=number(req.get('minutes',5),.1,60)
         forward=number(req.get('forward_limit',.35),.10,1);yaw=number(req.get('yaw_limit',.70),.1,1)
         with self.app.lock:
             self._check_start()
@@ -368,7 +369,7 @@ class Autonomy:
             self.elapsed_base=0.;self._session_request=dict(req);self._resume_receipts={};self.lifecycle_phase='preparing'
             self._last_discard_result=None;self.discard_details=None
             self.deadline=self.started+minutes*60;self.timing.clear();run_id=self.run_id
-        # Return the lease ID before slow sensor warmup or map I/O. Stop requests
+        # Return the task ID before slow sensor warmup or map I/O. Stop requests
         # can now cancel preparation instead of waiting for a held state lock.
         try:
             worker=threading.Thread(target=self._prepare_and_run,args=(run_id,dict(req),minutes*60),daemon=True)
@@ -392,7 +393,7 @@ class Autonomy:
             if req.get('capture_id') not in [None,self.capture_id]:raise ValueError('采集会话已变化，请刷新后继续')
             if not self._resumable():raise ValueError('本轮暂不可继续；须为同一连接中仍在采集的已暂停探索')
             self._check_start()
-            minutes=number(req.get('minutes',self._session_request.get('minutes',5)),.1,60 if self.scope=='floor' else 20)
+            minutes=number(req.get('minutes',self._session_request.get('minutes',5)),.1,60)
             self.generation+=1;self.active=True;self.run_id=uuid.uuid4().hex;self.state='preparing';self.lifecycle_phase='resuming'
             self.message='正在核对原采集和当前建图位置，保留本轮历史后继续'
             self.elapsed_base=self.finished_elapsed;self.started=time.monotonic();self.lease=self.started;self.deadline=self.started+minutes*60
@@ -498,7 +499,7 @@ class Autonomy:
                     grid=self.app.hub.remote_maps('/maps/grid',dict(name=req.get('base'),grid_id=req.get('grid_id',0)),context=self.context);check()
                 with self.app.lock:
                     check();self.prior_grid=grid
-                    if grid and self.scope=='floor':
+                    if grid and self.scope=='map':
                         from navigation_planner import pgm_pixels
                         w,h,_=pgm_pixels(base64.b64decode(grid['pgm'],validate=True))
                         self.explorer.radius=min(100,max(12,math.hypot(w,h)*grid['resolution']+6))

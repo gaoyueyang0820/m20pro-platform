@@ -10,7 +10,10 @@ class RefinementAgent:
         self.maps=maps;self.sensors=sensors;self.clock=clock;self.lock=threading.RLock();self.thread=None;self.done=False;self.context={};self.lease=0
         self.root=maps.data/'refinement';self.root.mkdir(parents=True,exist_ok=True);self.file=self.root/'state.json'
         self.row=json.loads(self.file.read_text()) if self.file.exists() else dict(frames=0,revisions=[],message='开启后，在正常定位下积累行走观测')
-        self.row.update(enabled=False,state='off',protocol=1);self.last_pose=None;self.last_stamp=0;self.published_frames=self.row.get('published_frames',0);self.last_publish=self.clock();self.flush=False
+        self.row.update(enabled=False,state='off',protocol=1,message='地图更新未开启，已采集观测保留');self.last_pose=None;self.last_stamp=0;self.published_frames=self.row.get('published_frames',0);self.last_publish=self.clock();self.flush=False
+        # Root map guards read this durable state, not this process's memory.
+        # Restart never resumes recording; persist that reset without losing frames.
+        self.save()
 
     def save(self):
         temp=self.file.with_suffix('.tmp');temp.write_text(json.dumps(self.row,ensure_ascii=False));temp.replace(self.file)

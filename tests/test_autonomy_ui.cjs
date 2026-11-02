@@ -5,8 +5,8 @@ const fs=require('node:fs');
 const vm=require('node:vm');
 
 function fixture(){
- const nodes=new Map(),calls=[],listeners={};
- for(const [id,value] of Object.entries({'auto-map-kind':'extend','auto-scope':'room','auto-radius':'6','auto-minutes':'5','auto-forward':'35','auto-yaw':'70','auto-start':'','auto-relocalize':'','auto-scope-field':'','auto-map-help':'','auto-message':'','auto-state':''})){
+ const nodes=new Map(),calls=[],listeners={},intervals=[];
+ for(const [id,value] of Object.entries({'auto-map-kind':'extend','auto-scope':'map','auto-radius':'6','auto-minutes':'5','auto-forward':'35','auto-yaw':'70','auto-start':'','auto-relocalize':'','auto-scope-field':'','auto-map-help':'','auto-message':'','auto-state':''})){
   const field={hidden:false};nodes.set(id,{value,hidden:false,disabled:false,textContent:'',closest:()=>field,field});
  }
  const lookup=selector=>nodes.get(selector.startsWith('#')?selector.slice(1):selector.match(/data-ui="([^"]+)"/)?.[1]);
@@ -14,11 +14,11 @@ function fixture(){
   $:lookup,text:(id,value)=>{if(nodes.has(id))nodes.get(id).textContent=value;},html(){},fmt:v=>String(v??''),esc:v=>String(v??''),icon:()=>'',heading:()=>'',btn:(name,id)=>`<button data-ui="${id}">${name}</button>`,field:(name,id,value)=>`<label>${name}<input id="${id}" value="${value}"></label>`,
   update(){},render(){},renderNav(){},navigate(){},toast(){},fetchState:async()=>{},
   api:async(path,data)=>{calls.push({path,data});return path==='/api/maps/library'?{active:c.mapLibrary.active}:{ok:true};},
-  window:{motion:()=>'',mapsPage:()=>'',navPage:()=>'',addEventListener:(name,fn)=>{(listeners[name]||=[]).push(fn);}},location:{hash:'#autonomy'},setInterval(){},setTimeout,clearTimeout,AbortController,performance,
+  window:{motion:()=>'',mapsPage:()=>'',navPage:()=>'',addEventListener:(name,fn)=>{(listeners[name]||=[]).push(fn);}},location:{hash:'#autonomy'},setInterval(fn){intervals.push(fn);},setTimeout,clearTimeout,AbortController,performance,
   document:{hidden:false,querySelector:lookup,getElementById:id=>nodes.get(id),addEventListener:(name,fn)=>{(listeners[name]||=[]).push(fn);}}
  });
  vm.runInContext(fs.readFileSync('platform_web/autonomy.js','utf8'),c);
- return {c,nodes,calls,listeners,change:id=>{for(const fn of listeners.change||[])fn({target:{id}});}};
+ return {c,nodes,calls,listeners,intervals,change:id=>{for(const fn of listeners.change||[])fn({target:{id}});}};
 }
 const tick=()=>new Promise(setImmediate);
 function apiFixture(f,responder){f.c.api=async(path,data,quiet,options)=>{f.calls.push({path,data,options});return responder(path,data,options);};}
@@ -30,7 +30,8 @@ test('map method and exploration range are separate controls without duplicate m
  assert.deepEqual([...method.matchAll(/value="([^"]+)"/g)].map(m=>m[1]),['new','extend','continue']);
  assert.match(method,/更新当前地图（补扫＋优化）/);assert.doesNotMatch(method,/整层探索|续建当前活动地图/);
  const scope=markup.match(/<select id="auto-scope">([\s\S]*?)<\/select>/)[1];
- assert.match(scope,/当前房间/);assert.match(scope,/整层楼/);
+ assert.match(scope,/按地图范围/);assert.match(scope,/指定半径/);
+ assert.doesNotMatch(markup,/当前房间|整层楼|调试|待验证|电脑端功能已接入/);
 });
 test('defaults to current-map update, current capture, or new map as available',()=>{
  const f=fixture();assert.equal(f.c.autoDefaultMapKind(),'extend');
@@ -39,33 +40,33 @@ test('defaults to current-map update, current capture, or new map as available',
  f.c.S.maps=[{verified_for_robot:true,robot_ip:'fixture'}];assert.equal(f.c.autoDefaultMapKind(),'extend');
  f.c.S.maps[0].robot_ip='another-robot';assert.equal(f.c.autoDefaultMapKind(),'new');
 });
-test('whole-floor update hides the unused radius and explains how its range is chosen',()=>{
- const f=fixture();f.nodes.get('auto-scope').value='floor';f.change('auto-scope');
+test('map-range update hides the unused radius and explains its coverage',()=>{
+ const f=fixture();f.nodes.get('auto-scope').value='map';f.change('auto-scope');
  assert.equal(f.nodes.get('auto-scope-field').hidden,false);
  assert.equal(f.nodes.get('auto-radius').field.hidden,true);assert.equal(f.nodes.get('auto-radius').disabled,true);
- assert.match(f.nodes.get('auto-map-help').textContent,/活动地图自动计算/);
- assert.match(f.nodes.get('auto-map-help').textContent,/优先补扫未扫描区域.*复查已扫描区域/);
+ assert.match(f.nodes.get('auto-map-help').textContent,/活动地图范围/);
+ assert.match(f.nodes.get('auto-map-help').textContent,/优先补扫未扫描区域.*更新已扫描区域/);
  assert.equal(f.calls.length,0);
 });
-test('switching to new map removes the inapplicable floor choice without sending commands',()=>{
- const f=fixture();f.nodes.get('auto-scope').value='floor';f.nodes.get('auto-map-kind').value='new';f.change('auto-map-kind');
- assert.equal(f.nodes.get('auto-scope-field').hidden,true);assert.equal(f.nodes.get('auto-scope').value,'room');
+test('new mapping uses an explicit radius without sending commands',()=>{
+ const f=fixture();f.nodes.get('auto-scope').value='map';f.nodes.get('auto-map-kind').value='new';f.change('auto-map-kind');
+ assert.equal(f.nodes.get('auto-scope-field').hidden,true);assert.equal(f.nodes.get('auto-scope').value,'radius');
  assert.equal(f.nodes.get('auto-radius').field.hidden,false);assert.equal(f.nodes.get('auto-radius').disabled,false);
  assert.match(f.nodes.get('auto-map-help').textContent,/独立的新地图/);assert.equal(f.calls.length,0);
 });
-test('room and whole-floor update use the same extension workflow with different scope',async()=>{
- for(const scope of ['room','floor']){
+test('radius and map-range updates use the same extension workflow',async()=>{
+ for(const scope of ['radius','map']){
   const f=fixture();f.nodes.get('auto-scope').value=scope;await f.c.ui['auto-start']();
   assert.deepEqual(f.calls.map(r=>r.path),['/api/maps/library','/api/autonomy/start']);
   const req=f.calls[1].data;assert.equal(req.extend,true);assert.equal(req.base,'room');assert.equal(req.scope,scope);
   assert.equal(req.forward_limit,.35);assert.equal(req.yaw_limit,.70);assert.equal(req.minutes,5);
  }
 });
-test('new and continued collection never submit unsupported floor scope or extension requests',async()=>{
+test('new and continued collection submit radius scope without extension requests',async()=>{
  for(const kind of ['new','continue']){
-  const f=fixture();f.c.S.mapping=kind==='continue';f.nodes.get('auto-map-kind').value=kind;f.nodes.get('auto-scope').value='floor';
+  const f=fixture();f.c.S.mapping=kind==='continue';f.nodes.get('auto-map-kind').value=kind;f.nodes.get('auto-scope').value='map';
   await f.c.ui['auto-start']();assert.deepEqual(f.calls.map(r=>r.path),['/api/autonomy/start']);
-  const req=f.calls[0].data;assert.equal(req.scope,'room');assert.equal(req.extend,undefined);assert.equal(req.use_current,kind==='continue');
+  const req=f.calls[0].data;assert.equal(req.scope,'radius');assert.equal(req.extend,undefined);assert.equal(req.use_current,kind==='continue');
  }
 });
 test('missing active map or missing current collection does not silently create a new map',async()=>{
@@ -81,14 +82,14 @@ test('running and saving states lock the method, scope and motion inputs togethe
 });
 
 test('update automatically localizes before starting and reports preparation status',async()=>{
- const f=fixture();f.c.S.pose.Location=1;f.nodes.get('auto-scope').value='floor';let finish;
+ const f=fixture();f.c.S.pose.Location=1;f.nodes.get('auto-scope').value='map';let finish;
  apiFixture(f,path=>path==='/api/maps/library'?{active:'room'}:path==='/api/maps/localize-auto'?{job_id:'loc-1'}:path.startsWith('/api/operations')?new Promise(r=>finish=r):{ok:true});
  const pending=f.c.ui['auto-start']();await tick();
  assert.equal(f.nodes.get('auto-start').disabled,true);assert.equal(f.nodes.get('auto-state').textContent,'恢复定位中');
- assert.match(f.nodes.get('auto-message').textContent,/自动恢复定位/);assert.equal(f.calls.some(r=>r.path==='/api/autonomy/start'),false);
+ assert.match(f.nodes.get('auto-message').textContent,/恢复定位/);assert.equal(f.calls.some(r=>r.path==='/api/autonomy/start'),false);
  finish(localizationResult());await pending;
  assert.deepEqual(f.calls.map(r=>r.path),['/api/maps/library','/api/maps/localize-auto','/api/operations?id=loc-1','/api/autonomy/start']);
- assert.equal(f.calls.at(-1).data.scope,'floor');assert.equal(f.calls.at(-1).data.extend,true);
+ assert.equal(f.calls.at(-1).data.scope,'map');assert.equal(f.calls.at(-1).data.extend,true);
  assert.equal(f.nodes.get('auto-start').disabled,false);
 });
 test('failed localization releases busy state and never starts movement',async()=>{
@@ -121,7 +122,7 @@ test('changing method or scope invalidates a pending localization result',async(
  for(const id of ['auto-map-kind','auto-scope']){
   const f=fixture();f.c.S.pose.Location=1;let finish;
   apiFixture(f,path=>path==='/api/maps/library'?{active:'room'}:path==='/api/maps/localize-auto'?{job_id:'loc-1'}:new Promise(r=>finish=r));
-  const pending=f.c.ui['auto-start']();await tick();f.nodes.get(id).value=id==='auto-scope'?'floor':'new';f.change(id);
+  const pending=f.c.ui['auto-start']();await tick();f.nodes.get(id).value=id==='auto-scope'?'radius':'new';f.change(id);
   finish(localizationResult());await pending;assert.equal(f.calls.some(r=>r.path==='/api/autonomy/start'),false,id);
  }
 });
@@ -136,7 +137,7 @@ test('a duplicate click cannot launch a second localization; late old failure ca
  apiFixture(f,path=>path==='/api/maps/library'?{active:'room'}:path==='/api/maps/localize-auto'?{job_id:'loc-'+(++n)}:path.includes('loc-1')?new Promise((r,j)=>rejectOld=j):path.includes('loc-2')?new Promise(r=>finishNew=r):{ok:true});
  const old=f.c.ui['auto-start']();await tick();await f.c.ui['auto-start']();assert.equal(n,1);
  await f.c.ui['auto-stop']();const current=f.c.ui['auto-start']();await tick();rejectOld(Error('late failure'));await old;
- assert.equal(f.nodes.get('auto-start').disabled,true);assert.match(f.nodes.get('auto-message').textContent,/自动恢复定位/);
+ assert.equal(f.nodes.get('auto-start').disabled,true);assert.match(f.nodes.get('auto-message').textContent,/恢复定位/);
  finishNew(localizationResult());await current;assert.equal(f.calls.filter(r=>r.path==='/api/autonomy/start').length,1);
 });
 
@@ -172,4 +173,19 @@ test('paused or background client cannot submit a late resume after the preparat
  let refresh;f.c.fetchState=()=>new Promise(resolve=>refresh=resolve);
  const request=f.c.ui['auto-resume']();await tick();f.c.fetchState=async()=>{};await f.c.ui['auto-stop']();refresh();await request;
  assert.equal(f.calls.some(v=>v.path==='/api/autonomy/resume'),false);assert.equal(f.calls.filter(v=>v.path==='/api/autonomy/stop').length,1);
+});
+
+
+test('active background jobs do not require browser heartbeats or pause on visibility changes',async()=>{
+ const f=fixture();f.c.page='motion';f.c.S.autonomy={active:true,run_id:'active-job'};f.c.S.nav={status:'running',engine:'platform',run_id:'active-nav'};
+ for(const interval of f.intervals)interval();await tick();assert.equal(f.calls.length,0);
+ f.c.document.hidden=true;for(const fn of f.listeners.visibilitychange||[])fn();
+ assert.equal(f.calls.length,0);assert.equal(f.c.S.autonomy.active,true);assert.equal(f.c.S.nav.status,'running');
+});
+test('hiding the page after dispatch does not claim the accepted start was cancelled',async()=>{
+ const f=fixture();let finish;
+ apiFixture(f,path=>path==='/api/maps/library'?{active:'room'}:path==='/api/autonomy/start'?new Promise(resolve=>finish=resolve):{ok:true});
+ const pending=f.c.ui['auto-start']();await tick();assert.equal(f.calls.at(-1).path,'/api/autonomy/start');
+ f.c.document.hidden=true;for(const fn of f.listeners.visibilitychange||[])fn();finish({ok:true});await pending;
+ assert.equal(f.calls.filter(v=>v.path==='/api/autonomy/stop').length,0);assert.doesNotMatch(f.nodes.get('auto-message').textContent,/取消/);
 });

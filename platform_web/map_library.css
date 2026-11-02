@@ -1,0 +1,24 @@
+.map-library-toolbar{padding:12px 14px;border-bottom:1px solid var(--line)}
+.map-library-toolbar input{width:100%;min-width:0;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;color:inherit;background:white}
+.mapping-sidebar>.card:first-child .card-header{padding:12px;gap:6px}
+.mapping-sidebar>.card:first-child .card-title{white-space:nowrap;flex-shrink:0;font-size:14px}
+.mapping-sidebar>.card:first-child .card-header .button-row{gap:5px;justify-content:flex-end}
+.mapping-sidebar>.card:first-child .card-header .pill{font-size:10px;padding:4px 6px}
+.mapping-sidebar>.card:first-child .card-header .btn{font-size:11px;padding:6px 8px}
+.map-library-toolbar>div{display:flex;align-items:center;justify-content:space-between;margin-top:8px;gap:8px}
+.mapping-sidebar .compact-map-library{max-height:440px;max-height:clamp(260px,45vh,520px)}
+.map-library-entry{border-bottom:1px solid var(--line)}
+.map-library-entry.selected{background:var(--accent-soft,#edf7f4)}
+.map-library-entry .map-library-item{border:0;width:100%;padding:13px 14px;gap:10px;align-items:flex-start;background:transparent}
+.map-library-entry .map-entry-label{flex:1;min-width:0}
+.map-library-entry .map-entry-label strong{white-space:normal;overflow-wrap:anywhere;display:block;line-height:1.45}
+.map-library-entry .map-identity{font-size:10px;overflow-wrap:anywhere;white-space:normal;opacity:.8}
+.map-active-label{font-size:11px;white-space:nowrap;color:var(--accent,#00826d);padding-top:3px}
+.map-row-edit{display:flex;gap:8px;padding:0 14px 12px 58px}
+.map-row-edit .btn{flex:1}
+.map-trash-list{max-height:50vh;overflow:auto}
+.map-trash-row{display:flex;gap:16px;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid var(--line)}
+.map-trash-row span{min-width:0;overflow-wrap:anywhere}
+.map-trash-row small{display:block;color:var(--muted);margin-top:3px}
+.map-cleanup-choice{display:flex;align-items:flex-start;gap:8px;margin-top:18px;line-height:1.5}
+.map-cleanup-choice input{width:auto;margin-top:4px}

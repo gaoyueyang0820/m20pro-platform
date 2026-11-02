@@ -166,6 +166,30 @@ class SensingTests(unittest.TestCase):
 class PlatformAutonomyTests(unittest.TestCase):
     setUp=cases.PlatformTests.setUp
     tearDown=cases.PlatformTests.tearDown
+    def test_general_ranges_normalize_legacy_requests_and_accept_configured_radius(self):
+        a=self.app.autonomy
+        for requested,expected in [('room','radius'),('floor','map'),('radius','radius'),('map','map')]:
+            with self.subTest(scope=requested),patch('autonomy_runtime.threading.Thread'):
+                result=a.start(dict(mode='explore',scope=requested,extend=True,radius=40,minutes=45))
+                self.assertEqual(a.snapshot()['scope'],expected);self.assertEqual(a.explorer.radius,40)
+                self.assertAlmostEqual(a.deadline-a.started,45*60);self.assertTrue(result['ok'])
+                a.pause()
+        with patch('autonomy_runtime.threading.Thread'):
+            a.start(dict(mode='explore',scope='map'))
+        self.assertEqual(a.scope,'radius');a.pause()
+
+    def test_map_scope_derives_search_extent_from_existing_map_not_scene_name(self):
+        import base64
+        a=self.app.autonomy
+        grid=dict(pgm=base64.b64encode(b'P5\n100 80\n255\n'+bytes([254])*8000).decode(),resolution=.2)
+        with patch('autonomy_runtime.threading.Thread'):
+            result=a.start(dict(mode='explore',scope='map',extend=True,base='site-map',radius=6))
+        with patch.object(a,'_check_observation'),patch.object(self.app.hub,'remote_maps',return_value=grid),\
+             patch.object(self.app.hub,'post',return_value=dict(job_id='prepared')),patch.object(a,'_run') as run:
+            a._prepare_and_run(result['run_id'],dict(mode='explore',scope='map',extend=True,base='site-map'),300)
+        self.assertAlmostEqual(a.explorer.radius,math.hypot(100,80)*.2+6)
+        self.assertEqual(run.call_args.args,(result['run_id'],'prepared',300));a.pause()
+
     def test_automatic_relocation_waits_for_valid_status_and_never_drives(self):
         cases.PlatformTests.live(self)
         with patch.object(self.app.hub,'remote_maps',return_value=dict(accepted=True,localized=False)),patch.object(self.app,'proxy',return_value=dict(localization_quality=dict(status=0,normal_status=0,age=.1),matching_quality=dict(error=.04,inlier_ratio=.99,age=.1))):
@@ -185,9 +209,13 @@ class PlatformAutonomyTests(unittest.TestCase):
     def test_manual_takeover_invalidates_pending_worker_output(self):
         a=self.reserve();self.app.set_velocity(dict(yaw=.1))
         self.assertFalse(a.active);self.assertFalse(a._drive('old',.1,0));self.assertEqual(self.app.velocity,[0.,0.,.1])
-    def test_watchdog_stops_even_with_worker_stuck_on_network(self):
-        a=self.reserve();a.lease-=3;self.app.tick(.01)
-        self.assertFalse(a.active);self.assertEqual(self.app.velocity,[0.,0.,0.])
+    def test_browser_inactivity_does_not_pause_owned_background_task(self):
+        a=self.reserve();a.context=self.app.hub.context();a.lease-=30;self.app.tick(.01)
+        self.assertTrue(a.active);a._assert_run('old')
+    def test_expired_sensor_command_stops_without_browser_or_worker_callbacks(self):
+        cases.PlatformTests.live(self);a=self.reserve();a.context=self.app.hub.context();a.lease-=30
+        self.app.velocity_deadline=time.monotonic()-.01;self.app.tick(.01)
+        self.assertTrue(a.active);self.assertEqual(self.app.velocity,[0.,0.,0.]);self.assertEqual(self.app.link.v,(0,0,0))
     def test_old_lease_cannot_extend_new_session(self):
         a=self.reserve();before=a.lease;a.post('/api/autonomy/lease',dict(run_id='different'))
         self.assertEqual(a.lease,before)
@@ -209,7 +237,7 @@ class PlatformAutonomyTests(unittest.TestCase):
         cases.PlatformTests.live(self);a=self.reserve();deadline=time.monotonic()+.1
         self.assertTrue(a._drive('old',.12,0,deadline))
         self.assertEqual(self.app.link.valid_until,deadline)
-    def test_session_deadline_stops_even_with_fresh_ui_lease(self):
+    def test_session_deadline_stops_background_task(self):
         a=self.reserve();a.deadline=time.monotonic()-.01
         self.app.tick(.01)
         self.assertFalse(a.active);self.assertEqual(self.app.velocity,[0.,0.,0.])

@@ -533,16 +533,18 @@ class Platform:
         return dict(ok=True, route=value)
 
     def maps(self):
+        include_seed=self.demo
         seed = dict(id='demo', name='演示园区 · 一层', resolution=.1, origin=[-16,-11,0],
                     width=320, height=220, image='/assets/demo-map.svg', demo=True)
         if self.demo and hasattr(self,'hub'):
             source=self.hub.demo_maps.maps/'demo-yard/occ_grid.pgm'
+            include_seed=source.is_file()
             if source.is_file():
                 target=self.store.path.parent/'maps/demo.png';target.parent.mkdir(parents=True,exist_ok=True)
                 if not target.exists() or target.stat().st_mtime<source.stat().st_mtime:
                     target.write_bytes(import_pgm(base64.b64encode(source.read_bytes()).decode())[2])
                 seed['image']='/maps/demo.png'
-        return ([seed] if self.demo else []) + [m for m in self.store.value['maps'] if self.demo or not m.get('demo')]
+        return ([seed] if include_seed else []) + [m for m in self.store.value['maps'] if not m.get('archived') and (self.demo or not m.get('demo'))]
 
     def import_map(self, req, existing_id=None):
         w, h, png = import_pgm(req.get('pgm', ''))

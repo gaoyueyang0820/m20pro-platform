@@ -165,11 +165,11 @@ class PointNavigationRuntimeTests(unittest.TestCase):
         a.point_navigation._drive(r['run_id'],[.35,0,.7],dict(_valid_until=time.monotonic()-.1))
         self.assertEqual(a.link.v,(0,0,0));self.assertFalse(any(any(v['v']) for v in a.link.velocities))
 
-    def test_page_lease_loss_stops_and_blocks_restart_until_fresh_stillness(self):
+    def test_deadline_stops_and_blocks_restart_until_fresh_stillness(self):
         a=self.setup_live();workers=DeferredWorkers();r=self.start(workers)
         a.point_navigation._prepare(r['run_id'],self.map)
         a.point_navigation._drive(r['run_id'],[.35,0,0],dict(_valid_until=time.monotonic()+.5))
-        future=a.point_navigation.lease+3
+        future=a.point_navigation.deadline+.01
         with patch.object(runtime.time,'monotonic',return_value=future):
             a.point_navigation.tick()
             self.assertFalse(a.point_navigation.active);self.assertEqual(a.link.v,(0,0,0));self.assertEqual(a.nav['status'],'cancelling')
@@ -177,6 +177,17 @@ class PointNavigationRuntimeTests(unittest.TestCase):
         with patch.object(runtime.time,'monotonic',return_value=future+.1):
             self.ready();a.point_navigation.tick()
         self.assertEqual(a.nav['status'],'paused')
+
+    def test_browser_inactivity_does_not_pause_navigation_but_expired_sensing_stops_axes(self):
+        a=self.setup_live();workers=DeferredWorkers();r=self.start(workers)
+        a.point_navigation._prepare(r['run_id'],self.map)
+        a.point_navigation.lease-=30
+        a.point_navigation.check(r['run_id']);a.point_navigation.tick()
+        self.assertTrue(a.point_navigation.active)
+        a.point_navigation._drive(r['run_id'],[.35,0,0],dict(_valid_until=time.monotonic()+.1))
+        self.assertEqual(a.link.v,(.35,0,0))
+        a.velocity_deadline=time.monotonic()-.01;a.tick(.01)
+        self.assertTrue(a.point_navigation.active);self.assertEqual(a.link.v,(0,0,0))
 
     def test_new_native_task_during_control_takes_away_platform_ownership(self):
         a=self.setup_live();workers=DeferredWorkers();self.start(workers)
