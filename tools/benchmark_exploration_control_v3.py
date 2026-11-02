@@ -64,6 +64,7 @@ def run(steps=750,dt=.2,stop_after_door=False):
         elif plan_state not in ('exhausted','blocked'):
             axes=explorer.command_axes(velocity[2],0.);fallbacks+=1
         if not verified and not clearance(scan,axes[0],axes[2],side=axes[1])[0]:axes=[0.,0.,0.]
+        explorer.note_recovery_command(axes)
         old_pose=pose.copy();wanted=np.array(axes)
         velocity+=np.clip(wanted-velocity,[-.7*dt,-.7*dt,-1.8*dt],[.7*dt,.7*dt,1.8*dt])
         theta=pose[2]+velocity[2]*dt*.5;c,s=math.cos(theta),math.sin(theta)

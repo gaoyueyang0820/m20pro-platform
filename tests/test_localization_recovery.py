@@ -94,6 +94,37 @@ class LocalizationRecoveryTests(unittest.TestCase):
 
 
 class SavedSlamRecoveryTests(unittest.TestCase):
+    def candidate_fixture(self):
+        build,sensors=saved_fixture()
+        fusion=build['stop_mapping']['fusion'];fusion['includes_complete_base']=True;fusion['grid_id']=0
+        return build,sensors,dict(root_map='base',revision=2,sessions=[copy.deepcopy(fusion)])
+
+    def test_exact_saved_candidate_retains_base_coordinate_prior(self):
+        build,sensors,project=self.candidate_fixture()
+        base=saved_slam_pose(build,sensors,'base')
+        candidate=saved_slam_pose(build,sensors,'base-r2',project=project)
+        self.assertEqual(candidate['original_base_map'],'base')
+        self.assertEqual(candidate['reference_map'],'base-r2')
+        self.assertEqual(candidate['active_map'],'base-r2')
+        np.testing.assert_allclose(candidate['transform'],base['transform'])
+        self.assertTrue(candidate['requires_independent_validation'])
+
+    def test_candidate_requires_exact_manifest_and_complete_base(self):
+        changes=[lambda b,p:p['sessions'][-1].update(source_map='other-123'),
+                 lambda b,p:p['sessions'][-1].update(created=113),
+                 lambda b,p:p['sessions'][-1].update(includes_complete_base=False),
+                 lambda b,p:p['sessions'][-1]['transform'][0].__setitem__(3,9),
+                 lambda b,p:b['stop_mapping']['fusion'].update(includes_complete_base=False),
+                 lambda b,p:p.update(sessions=[]),
+                 lambda b,p:b.update(result_maps=[])]
+        for change in changes:
+            with self.subTest(change=change):
+                b,s,p=self.candidate_fixture();change(b,p)
+                with self.assertRaises(ValueError):saved_slam_pose(b,s,'base-r2',project=p)
+        b,s,p=self.candidate_fixture()
+        with self.assertRaises(ValueError):saved_slam_pose(b,s,'base-r2')
+        with self.assertRaises(ValueError):saved_slam_pose(b,s,'base-r3',project=p)
+
     def test_saved_pose_composes_full_transform_and_preserves_tilt(self):
         build,sensors=saved_fixture();result=saved_slam_pose(build,sensors,'base')
         expected=rigid();expected[:3,3]+=expected[:3,:3]@np.array([.4,-.2,.01])

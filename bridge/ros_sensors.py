@@ -10,6 +10,7 @@ import sys
 import os
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+from observation_errors import ObservationSyncPending
 
 TOPICS=['/SLAM_ALIGNED_POINTS','/SLAM_ACCUMULATED_POINTS_MAP','/SLAM_CLOUD_REGISTERED_BODY','/ALIGNED_POINTS','/FULL_CLOUD_MAP','/LOC_BODY_POINTS','/LIDAR/POINTS','/LIDAR/POINTS2','/NAV_POINTS']
 
@@ -208,9 +209,13 @@ class RosSensors:
         if mapping:
             with self.lock:
                 pose=copy.deepcopy(self.slam_odom);proof=self.slam_pose_proof;body=self.slam_raw.get('/SLAM_CLOUD_REGISTERED_BODY');world=self.slam_raw.get('/SLAM_ALIGNED_POINTS')
+            if pose and pose.get('frame_id')!='map':raise ValueError('SLAM 位姿父坐标系尚未核对：'+str(pose.get('frame_id')))
+            if pose and pose['child_frame_id'] not in ['','base_link']:raise ValueError('SLAM 位姿子坐标系尚未核对：'+str(pose['child_frame_id']))
+            if pose and pose['tilt']>.14:raise ValueError('机身倾斜，已停止自主探索')
             if pose and not pose['child_frame_id'] and not proof:
                 self.ensure_topic('/SLAM_CLOUD_REGISTERED_BODY');self.ensure_topic('/SLAM_ALIGNED_POINTS')
-                if not body or not world or max(time.monotonic()-body[1],time.monotonic()-world[1])>.5:raise ValueError('等待新鲜的 SLAM 坐标对照点云')
+                if not body or not world or max(time.monotonic()-body[1],time.monotonic()-world[1])>.5:
+                    raise ObservationSyncPending('等待新鲜的 SLAM 坐标对照点云','slam_reference_sync')
                 from slam_pose_check import verify_slam_body_pose
                 proof=verify_slam_body_pose(body[0],world[0],pose)
                 with self.lock:self.slam_pose_proof=proof
@@ -238,11 +243,12 @@ class RosSensors:
             if data['age']>.65:raise ValueError('雷达更新中断，已停止自主移动')
             if mapping:
                 pose=min(self.slam_history,key=lambda p:abs(p['stamp']-data['stamp'])) if self.slam_history else None
+                if pose and pose.get('frame_id')!='map':raise ValueError('SLAM 位姿父坐标系尚未核对：'+str(pose.get('frame_id')))
+                if pose and pose['child_frame_id']!='base_link' and not (pose['child_frame_id']=='' and self.slam_pose_proof):raise ValueError('SLAM 位姿子坐标系尚未核对：'+str(pose['child_frame_id']))
+                if pose and pose['tilt']>.14:raise ValueError('机身倾斜，已停止自主探索')
                 if not pose or time.monotonic()-pose['received_monotonic']>.65 or abs(pose['stamp']-data['stamp'])>.05:
-                    raise ValueError('等待与雷达同步的 SLAM 位姿')
-                if pose['child_frame_id']!='base_link' and not (pose['child_frame_id']=='' and self.slam_pose_proof):raise ValueError('SLAM 位姿子坐标系尚未核对：'+str(pose['child_frame_id']))
-                if pose['tilt']>.14:raise ValueError('机身倾斜，已停止自主探索')
-                data['pose']=[pose['PosX'],pose['PosY'],pose['Yaw']]
+                    raise ObservationSyncPending('等待与雷达同步的 SLAM 位姿','slam_pose_sync')
+                data.update(pose=[pose['PosX'],pose['PosY'],pose['Yaw']],pose_stamp=pose['stamp'],pose_source='/SLAM_ODOM',pose_frame_id=pose['frame_id'])
             else:
                 # The point-goal executor needs the localized pose belonging to
                 # this scan. Follow mode may operate without global localization,

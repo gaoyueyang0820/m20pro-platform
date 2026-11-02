@@ -9,6 +9,7 @@ import copy
 import math
 import threading
 import time
+from observation_errors import ObservationSyncPending
 
 
 class TransientObservationError(Exception):
@@ -93,10 +94,11 @@ class LatestObservationPump:
         with self.lock:
             if not self._current(generation):return
             self.last_error=str(exc);self.error_kind=('context_changed' if isinstance(exc,ObservationContextChanged)
+                                                    else 'sync_pending' if isinstance(exc,ObservationSyncPending)
                                                     else 'transport' if isinstance(exc,TransientObservationError) else 'invalidated')
             # Unknown/geometry/pose errors must not silently reuse an old scene.
             # Adapters may explicitly classify a transport-only error if useful.
-            if self.error_kind!='transport':self.latest=None
+            if self.error_kind not in ['transport','sync_pending']:self.latest=None
 
     def _run(self,generation,context,stop,fetch):
         while not stop.is_set():

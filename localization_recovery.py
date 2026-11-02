@@ -237,7 +237,7 @@ def _rigid_transform(value):
     return matrix
 
 
-def saved_slam_pose(build, sensors, active_map):
+def saved_slam_pose(build, sensors, active_map, project=None):
     """Bind the last SLAM pose to the exact completed extension session.
 
     All journal/receive times are NOS times; no comparison with the Mac clock.
@@ -251,13 +251,14 @@ def saved_slam_pose(build, sensors, active_map):
     context = start.get('context') or {}
     final_context = stop.get('context') or {}
     fusion = stop.get('fusion') or {}
+    base_map = context.get('base')
     slam = sensors.get('slam_odom') or {}
     if (build.get('phase') != 'saved' or build.get('in_progress') or
             stop.get('state') != 'command_finished' or stop.get('returncode') != 0):
         raise ValueError('尚无已完成的原图续建记录')
-    if (not active_map or context.get('workflow') != 'extension' or
-            context.get('base') != active_map or final_context.get('base') != active_map or
-            final_context.get('workflow') != 'extension' or fusion.get('base_map') != active_map or
+    if (not active_map or not base_map or context.get('workflow') != 'extension' or
+            final_context.get('base') != base_map or
+            final_context.get('workflow') != 'extension' or fusion.get('base_map') != base_map or
             final_context.get('grid_id', 0) != context.get('grid_id', 0) or
             final_context.get('anchor') != context.get('anchor')):
         raise ValueError('保存轨迹不属于当前活动地图或同一采集会话')
@@ -272,6 +273,21 @@ def saved_slam_pose(build, sensors, active_map):
     if ((structural.get('decision') or {}).get('allowed') is not True or
             not gate_alignment(structural)['allowed']):
         raise ValueError('保存地图没有通过独立结构配准检查')
+    if active_map != base_map:
+        # A published extension retains its base coordinate frame. Only the
+        # exact completed candidate, independently bound to its saved manifest,
+        # may inherit this prior; a similarly named map is not evidence.
+        sessions = (project or {}).get('sessions') or []
+        report = sessions[-1] if sessions and isinstance(sessions[-1], dict) else {}
+        if (active_map != candidate or fusion.get('includes_complete_base') is not True or
+                report.get('includes_complete_base') is not True or
+                any(report.get(k) != fusion.get(k) for k in
+                    ['base_map', 'map', 'source_map', 'created', 'grid_id']) or
+                not np.allclose(_rigid_transform(report.get('transform')),
+                                _rigid_transform(fusion.get('transform')), atol=1e-8, rtol=0) or
+                (report.get('structural_alignment') or {}).get('decision', {}).get('allowed') is not True or
+                not gate_alignment(report.get('structural_alignment') or {})['allowed']):
+            raise ValueError('活动候选地图没有确认继承本次保存轨迹的坐标系')
     try:
         began, stopping, ended, created, received, stamp = map(_stamp, [
             start['started'], stop['started'], stop['ended'], fusion['created'],
@@ -303,7 +319,8 @@ def saved_slam_pose(build, sensors, active_map):
     pose = dict(PosX=float(matrix[0, 3]), PosY=float(matrix[1, 3]),
                 PosZ=float(matrix[2, 3]), Yaw=math.atan2(matrix[1, 0], matrix[0, 0]))
     return dict(pose=pose, transform=matrix.tolist(), source_stamp=stamp,
-                received_at=received, base_map=active_map, candidate_map=candidate,
+                received_at=received, base_map=base_map, original_base_map=base_map,
+                reference_map=active_map, active_map=active_map, candidate_map=candidate,
                 source_map=source, session_key=[name, began, stopping, ended, source, candidate],
                 method='saved_slam_full_transform', requires_independent_validation=True)
 

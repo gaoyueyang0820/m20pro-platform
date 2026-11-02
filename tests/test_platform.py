@@ -25,7 +25,7 @@ from sdk_bridge import JointController
 class FakeLink:
     def __init__(self):
         self.ip='127.0.0.1';self.sent=[];self.records={};self.inhibit=False
-        self.put(1002,6,dict(BasicStatus=dict(HES=0,MotionState=17,ControlUsageMode=0,Sleep=0)))
+        self.put(1002,6,dict(BasicStatus=dict(HES=0,MotionState=17,ControlUsageMode=0,Sleep=0,Direction=0)))
         self.put(1007,2,dict(Location=0,PosX=0,PosY=0,Yaw=0))
         self.put(1007,1,dict(Value=0,Status=0,ErrorCode=0))
     def put(self,t,c,it,at=None,seq=0):
@@ -102,6 +102,19 @@ class PlatformTests(unittest.TestCase):
         with self.assertRaises(ValueError):a.set_velocity(dict(forward=.1))
         a.link.put(1002,6,dict(BasicStatus=dict(HES=1)))
         with self.assertRaises(ValueError):a.set_velocity(dict(forward=.1))
+    def test_autonomous_output_requires_fresh_head_forward_and_no_software_reverse(self):
+        a=self.live();a.set_velocity(dict(forward=.35),autonomous=True)
+        self.assertEqual(a.link.v,(.35,0,0))
+        for direction,age,reverse in [(1,0,False),(None,0,False),(0,3,False),(0,0,True)]:
+            with self.subTest(direction=direction,age=age,reverse=reverse):
+                basic=dict(HES=0,MotionState=17,ControlUsageMode=0,Sleep=0)
+                if direction is not None:basic['Direction']=direction
+                a.link.put(1002,6,dict(BasicStatus=basic),at=time.time()-age);a.reverse=reverse
+                a.velocity=[.35,0,0];a.velocity_deadline=time.monotonic()+1
+                with self.assertRaisesRegex(ValueError,'头朝前'):a.set_velocity(dict(forward=.35,yaw=.7),autonomous=True)
+                self.assertEqual(a.velocity,[0.,0.,0.]);self.assertEqual(a.link.v,(0,0,0));self.assertIsNone(a.velocity_deadline)
+        # An explicit zero always remains available even with unknown direction.
+        a.set_velocity({},autonomous=True);self.assertEqual(a.link.v,(0,0,0))
     def test_route_ack_is_not_completion(self):
         a=self.app;r=self.route(True);a.start_route(dict(id=r['id']))
         a.link.put(1003,1,dict(ErrorCode=0,Value=a.nav['value']))

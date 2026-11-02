@@ -7,6 +7,10 @@ import heapq,math,re,time
 from robot_geometry import BODY_HALF_LENGTH,BODY_HALF_WIDTH,CLEARANCE_HALF_LENGTH,CLEARANCE_HALF_WIDTH,CLEARANCE_MARGIN
 
 
+class GoalSpaceError(ValueError):
+    """The requested centre is known free, but the complete body cannot fit."""
+
+
 def pgm_pixels(raw):
     tokens=re.finditer(rb'#[^\r\n]*|[^\s#]+',raw);header=[]
     for m in tokens:
@@ -50,6 +54,7 @@ class GridPlanner:
         self.occupied_thresh=occupied_thresh;self.free_thresh=free_thresh
         self.self_projection_ignored=0;self._deadline=None;self._potential_expanded=0
         self.live_surface=None;self._live_revision=0;self._planning_revision=None
+        self.goal_tolerance=0.
         if enable_live_surface:
             from live_traversability import LiveTraversability
             occupied=np.zeros((oh,ow),bool);occupied[oh-h:,:w]=probability>occupied_thresh
@@ -312,11 +317,55 @@ class GridPlanner:
                     self_projection_ignored=self.self_projection_ignored,diagnostics=diagnostics,
                     planner='footprint_any_angle_v3',message='已生成机身包络验证的参考路径；执行器仍须依据实时观测跟踪与避障')
 
-    def plan(self,start,goal,yaw=None,budget=3.):
+    def _nearby_goal_cells(self,goal,tolerance):
+        """Stay in the clicked point's local free component, never across a wall."""
+        from collections import deque
+        gx,gy=self.cell(*goal)
+        if not (0<=gx<self.w and 0<=gy<self.h) or not self.free[gy,gx]:return []
+        todo=deque([(gx,gy)]);seen={(gx,gy)};result=[]
+        while todo:
+            self._check_time();x,y=todo.popleft();point=self.world(x,y)
+            distance=math.dist(point,goal)
+            if distance<=tolerance+1e-9:result.append((distance,x,y))
+            for nx,ny in [(x-1,y),(x+1,y),(x,y-1),(x,y+1)]:
+                if ((nx,ny) not in seen and 0<=nx<self.w and 0<=ny<self.h and self.free[ny,nx]
+                        and math.dist(self.world(nx,ny),goal)<=tolerance+self.res*.71):
+                    seen.add((nx,ny));todo.append((nx,ny))
+        return sorted(result)
+
+    def plan(self,start,goal,yaw=None,budget=3.,*,goal_tolerance=None):
+        # The per-planner setting is retained for its start-recovery adapter;
+        # callers that need an exact endpoint retain the default zero tolerance.
+        if goal_tolerance is not None:
+            value=float(goal_tolerance)
+            if not math.isfinite(value) or not 0<=value<=1.:raise ValueError('目标调整范围必须为0到1米')
+            self.goal_tolerance=value
         self._expire_live_surface();self._planning_revision=self.grid_revision
         self._deadline=time.monotonic()+max(0,float(budget));self._potential_expanded=0
         try:
-            result=self._plan(start,goal,yaw,budget)
+            try:result=self._plan(start,goal,yaw,budget)
+            except GoalSpaceError as original:
+                if self.goal_tolerance<=0:raise
+                result=None;attempts=0
+                for distance,gx,gy in self._nearby_goal_cells(goal,self.goal_tolerance):
+                    self._check_time();point=self.world(gx,gy)
+                    headings=([yaw] if yaw is not None else
+                              [math.atan2(point[1]-start[1],point[0]-start[0])]+[h*math.pi/4 for h in range(8)])
+                    if not any(self.pose_fits(*point,h) for h in headings):continue
+                    attempts+=1
+                    try:result=self._plan(start,point,yaw,max(0.,self._deadline-time.monotonic()))
+                    except ValueError:
+                        self._check_time()
+                        if attempts>=16:break
+                        continue
+                    result['requested_goal']=dict(x=float(goal[0]),y=float(goal[1]))
+                    result['goal_adjustment']=dict(applied=True,requested=dict(x=float(goal[0]),y=float(goal[1]),yaw=yaw),
+                        actual=dict(result['goal']),distance_m=round(distance,3),tolerance_m=self.goal_tolerance,
+                        reason='requested_body_does_not_fit',approach_only=True,checked_candidates=attempts)
+                    result['message']='目标附近空间不足，已规划到相距 %.2f 米的可站立位置'%distance
+                    break
+                if result is None:raise GoalSpaceError('目标及附近 %.2f 米内都没有已核验的可达站立位置'%self.goal_tolerance) from original
+            result.setdefault('goal_adjustment',dict(applied=False,distance_m=0.,tolerance_m=self.goal_tolerance))
             result['requires_live_revalidation']=self.live_surface is not None
             return result
         finally:self._deadline=None;self._planning_revision=None
@@ -337,7 +386,7 @@ class GridPlanner:
                                  (goal[0],goal[1],final_yaw)],goal,0,dict(method='continuous_direct',shortcuts=1,planning_ms=round((time.monotonic()-began)*1000,2)))
         gh=None if yaw is None else round(yaw/(math.pi/4))%8
         candidates=[h for h in range(8) if self.fits(gx,gy,h*4) and (gh is None or gh==h and self.rotation_fits(gx,gy,h*math.pi/4,yaw))]
-        if not candidates:raise ValueError('目标周围空间不足以容纳机器人，请离墙或障碍远一些')
+        if not candidates:raise GoalSpaceError('目标周围空间不足以容纳机器人，请离墙或障碍远一些')
         sh=round(start[2]/(math.pi/4))%8
         if not self.rotation_fits(sx,sy,start[2],sh*math.pi/4):
             raise ValueError('机器人起点过于靠近障碍，无法规划当前姿态；请核对定位或移到空地')
@@ -374,7 +423,7 @@ class GridPlanner:
         poses=[tuple(start),(poses[0][0],poses[0][1],start[2])]+poses
         final_yaw=poses[-1][2] if yaw is None else yaw
         if not self.segment_fits(poses[-1],goal,poses[-1][2]) or not self.world_rotation_fits(goal,poses[-1][2],final_yaw):
-            raise ValueError('目标精确位置或朝向空间不足，请选择附近已知空地')
+            raise GoalSpaceError('目标精确位置或朝向空间不足，请选择附近已知空地')
         poses.extend([(goal[0],goal[1],poses[-1][2]),(goal[0],goal[1],final_yaw)])
         raw_length=sum(math.dist(a[:2],b[:2]) for a,b in zip(poses,poses[1:]))
         # Budget includes smoothing; if little budget remains return the already

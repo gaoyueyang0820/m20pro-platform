@@ -185,13 +185,18 @@ class Hub:
         context=context if context is not None else getattr(self._operation_context,'value',None)
         with self.app.lock:
             if context is not None and not self.same_context(context):raise OperationCancelled('连接已变化，未向新连接发送旧操作')
+            observed_context=self.context()
             demo=self.app.demo;service=self.demo_maps
             if not demo:
                 target=self.connections.value['targets']['nos']
                 base,token=self.connections.endpoint('nos') if target.get('enabled') else (self.app.config.get('nos'),self.app.bridge_token)
-        if demo:return service.dispatch(path,req)
-        if context is None:return self.proxy('nos',path,req,timeout)
-        return rpc(base,path,req,timeout,token)
+        result=service.dispatch(path,req) if demo else self.proxy('nos',path,req,timeout) if context is None else rpc(base,path,req,timeout,token)
+        if path=='/maps/build/status':
+            with self.app.lock:
+                a=getattr(self.app,'autonomy',None)
+                if a is not None and self.same_context(observed_context):
+                    a._discard_capability=result.get('discard_protocol')==1
+        return result
 
     def preview(self,kind,key,progress):
         progress(.1,'正在读取点云地图')
@@ -375,7 +380,7 @@ class Hub:
                 elif result.get('demo') or (stop.get('state')=='command_finished' and stop.get('ended',0)>start.get('started',0)) or start.get('state')=='failed':
                     self.app.mapping=False
                 elif start.get('state')=='running' or stop.get('state')=='running':self.app.mapping=True
-                if result.get('phase') in ['idle','saved','interrupted'] and not result.get('in_progress'):
+                if result.get('phase') in ['idle','saved','discarded','interrupted'] and not result.get('in_progress'):
                     self.mapping_uncertain=None
                 elif (self.mapping_uncertain and result.get('phase')=='collecting'
                       and start.get('request_id')==self.mapping_uncertain['request_id']):

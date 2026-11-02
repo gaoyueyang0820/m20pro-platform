@@ -71,6 +71,21 @@ def clearance(scan, forward, yaw, side=0.):
     if not forward and not yaw and not side:
         return True, ''
     if not all(math.isfinite(float(v)) for v in [forward,side,yaw,scan.get('_speed_mps',0)]):return False,'运动参数或速度反馈无效，已停车'
+    if scan.get('geometry_version')==2:
+        # Share the follower's exact obstacle rectangles. A coarse occupied
+        # cell may touch the body while the measured points inside it do not.
+        from local_trajectory import LocalSurface
+        surface=LocalSurface(scan)
+        if surface.precise:
+            if not scan.get('floor') and not scan.get('measured_floor'):return False,'尚未收到有效地面观测，已停车'
+            magnitude=math.hypot(forward,side);speed=max(0.,float(scan.get('_speed_mps',0)))
+            ahead=max(.3,speed*.9+.1) if magnitude else 0.
+            # Retain the old rounded-up horizon, but check the continuous
+            # swept rectangle rather than rounding obstacle positions to it.
+            distance=math.ceil(ahead/RESOLUTION)*RESOLUTION
+            dx=distance*forward/magnitude if magnitude else 0.;dy=distance*side/magnitude if magnitude else 0.
+            if surface.sweep_valid(dx,dy,yaw):return True,''
+            return False,('行进方向或转身范围有障碍，已停车' if surface.last_failure=='obstacle' else '行进方向地面尚未看清，已停车')
     free = supported_cells(scan)
     blocked = {tuple(p) for p in scan['obstacles']}
     if not free:return False,'尚未收到有效地面观测，已停车'
@@ -116,6 +131,9 @@ class Explorer:
         self.recovery_episode_anchor=None;self.recovery_history=set();self.recovery_new_cells=set()
         self.recovery_measured_distance=0.;self.recovery_last_translation=None
         self.recovery_reset_reason=None;self.recovery_block_reason=None;self.actual_visited=set()
+        self.recovery_pending=False;self.recovery_stop_stamp=None;self.recovery_forced=False
+        self.recovery_tried=set();self.recovery_tried_world=[];self.recovery_outcomes=[];self.recovery_request_reason=None
+        self.recovery_candidate_failures=0
         self.plan_state='idle'
         self.distance_anchor=None
         self._current_yaw_rate=0.
@@ -239,7 +257,7 @@ class Explorer:
         actual_visited is therefore maintained only by pose observations.
         """
         anchor=self.recovery_episode_anchor
-        if anchor is None or not self.recovery_attempts:return
+        if anchor is None or not (self.recovery_attempts or self.recovery_candidate_failures):return
         pose=scan['pose'];stamp=scan.get('stamp');speed=scan.get('_speed_mps')
         known=isinstance(speed,(int,float)) and not isinstance(speed,bool) and math.isfinite(speed) and speed>=0
         has_velocity='_velocity_body' in scan;velocity=scan.get('_velocity_body')
@@ -263,6 +281,8 @@ class Explorer:
                 and self.recovery_measured_distance>=.6 and len(self.recovery_new_cells)>=3
                 and cell(*pose[:2]) not in self.recovery_history):
             self.recovery_attempts=0;self.recovery_resets+=1;self.recovery_episode_anchor=None
+            self.recovery_candidate_failures=0
+            self.recovery_tried=set();self.recovery_tried_world=[]
             self.recovery_reset_reason='已实测平移至少0.6米并进入新区域，恢复下一处受阻的退让次数'
             self.recovery_block_reason=None
 
@@ -302,24 +322,83 @@ class Explorer:
         return c*dx+s*dy,-s*dx+c*dy
 
     def _escape_candidates(self):
-        if self.recovery_attempts>=3:return []
+        if self.recovery_attempts>=3 or self.recovery_candidate_failures>=3:return []
         gx,gy=self._direct_goal();n=max(.001,math.hypot(gx,gy));scored=[]
         for f,side in [(self.forward_limit,0.),(0.,min(.25,self.forward_limit)),(0.,-min(.25,self.forward_limit)),(-min(.25,self.forward_limit),0.)]:
+            if self._recovery_was_tried(f,side,0.):continue
             if not self._inside_bound(f,side) or not clearance(self.current_scan,f,0,side=side)[0]:continue
             magnitude=math.hypot(f,side);dx=round(f/magnitude*.4/RESOLUTION);dy=round(side/magnitude*.4/RESOLUTION)
             preview=dict(self.current_scan,floor=[[a-dx,b-dy] for a,b in self.current_scan['floor']],obstacles=[[a-dx,b-dy] for a,b in self.current_scan['obstacles']],_speed_mps=0.)
+            if 'measured_floor' in self.current_scan:preview['measured_floor']=[[a-dx,b-dy] for a,b in self.current_scan['measured_floor']]
+            if 'obstacle_bounds' in self.current_scan:
+                try:preview['obstacle_bounds']=[[a-dx*RESOLUTION,b-dy*RESOLUTION,c-dx*RESOLUTION,d-dy*RESOLUTION] for a,b,c,d in self.current_scan['obstacle_bounds']]
+                except (ValueError,TypeError):pass  # malformed bounds retain conservative legacy handling
             opens_forward=clearance(preview,self.forward_limit,0)[0]
             score=(gx*f+gy*side)/(n*magnitude)+2*opens_forward-(.25 if f<0 else 0)
-            scored.append((score,f,side))
+            scored.append((score,f,side,0.))
+        for yaw in [self.yaw_limit,-self.yaw_limit]:
+            if not self._recovery_was_tried(0.,0.,yaw) and clearance(self.current_scan,0,yaw)[0]:
+                scored.append((-.2,0.,0.,yaw))
         return sorted(scored,reverse=True)
 
+    @staticmethod
+    def _recovery_direction(forward,side,yaw):
+        if abs(yaw)>max(abs(forward),abs(side)):return 'turn_left' if yaw>0 else 'turn_right'
+        if abs(side)>abs(forward):return 'left' if side>0 else 'right'
+        return 'forward' if forward>=0 else 'reverse'
+
+    def _recovery_world_direction(self,forward,side,heading=None):
+        length=math.hypot(forward,side)
+        if length<1e-9:return None
+        heading=self.last_pose[2] if heading is None else heading;c,s=math.cos(heading),math.sin(heading)
+        return ((c*forward-s*side)/length,(s*forward+c*side)/length)
+
+    def _recovery_was_tried(self,forward,side,yaw):
+        direction=self._recovery_world_direction(forward,side)
+        if direction is None:return self._recovery_direction(forward,side,yaw) in self.recovery_tried
+        return any(direction[0]*old[0]+direction[1]*old[1]>=math.cos(math.pi/6) for old in self.recovery_tried_world)
+
+    def _remember_recovery_direction(self,forward,side,yaw,heading=None):
+        self.recovery_tried.add(self._recovery_direction(forward,side,yaw))
+        direction=self._recovery_world_direction(forward,side,heading)
+        if direction is not None:self.recovery_tried_world.append(direction)
+
+    def _begin_recovery_episode(self):
+        if self.recovery_episode_anchor is not None:return
+        self.recovery_episode+=1;self.recovery_episode_anchor=tuple(self.last_pose[:2])
+        self.recovery_history=set(self.actual_visited);self.recovery_new_cells=set()
+        self.recovery_measured_distance=0.;self.recovery_last_translation=None;self.recovery_reset_reason=None
+        self.recovery_tried=set();self.recovery_tried_world=[]
+        self.recovery_candidate_failures=0
+
+    def request_recovery(self,failed_axes=(0.,0.,0.),reason='有指令但没有实际进展',failed_yaw=None):
+        """Start a bounded stuck episode; always brake before a new direction."""
+        deadline=self.current_scan.get('_valid_until')
+        if deadline is not None and (not isinstance(deadline,(int,float)) or not math.isfinite(deadline) or time.monotonic()>=deadline):
+            self.recovery_block_reason='expired_observation';self.motion_hint='感知已过期，不能启动脱困';return False
+        if self.recovery is not None or self.recovery_pending:return True
+        if self.recovery_attempts>=3:self._no_recovery();return False
+        velocity=self.current_scan.get('_velocity_body')
+        if velocity is None or len(velocity)!=2 or not all(math.isfinite(float(v)) for v in velocity):
+            self.recovery_block_reason='missing_motion_feedback';self.motion_hint='缺少新鲜运动反馈，不能启动脱困';return False
+        self._begin_recovery_episode()
+        if any(abs(v)>.1 for v in failed_axes):self._remember_recovery_direction(*failed_axes,heading=failed_yaw)
+        if not self._escape_candidates():self._no_recovery();return False
+        self.frontiers.blocked(self.goal,self.last_stamp if self.last_stamp is not None else time.monotonic(),self.obstacles,reason)
+        self.goal=None;self.path=[];self.plan_state='recovering'
+        self.recovery_pending=True;self.recovery_forced=True;self.recovery_stop_stamp=self.current_scan.get('stamp')
+        self.recovery_request_reason=reason;self.motion_hint='先请求停车，等新一帧停稳反馈后更换脱困方向'
+        return True
+
     def _no_recovery(self):
+        if self.recovery_candidate_failures>=3:
+            self.recovery_block_reason='candidates_not_issued';self.motion_hint='连续3次退让候选未能下发，等待稳定反馈或重新规划';return
         self.recovery_block_reason='attempts_exhausted' if self.recovery_attempts>=3 else 'no_verified_corridor'
         self.motion_hint=('本处退让已尝试3次，需实际走出到新区域后再试' if self.recovery_attempts>=3
                           else '当前扫描没有已确认的退让通路')
 
     def _recovery_available(self):
-        if self.recovery is not None:return True
+        if self.recovery is not None or self.recovery_pending:return True
         possible=bool(self._escape_candidates())
         if not possible:self._no_recovery()
         return possible
@@ -334,28 +413,98 @@ class Explorer:
         along=(vx*f+vy*side)/desired;across=abs(vx*side-vy*f)/desired
         return along>=0 and across<.08
 
+    def note_recovery_command(self,axes,now=None):
+        """Confirm a nonzero command actually accepted by the drive path.
+
+        This proves issuance, not mechanical execution. Only later feedback
+        proves motion. Selecting/waiting on a candidate consumes no action try.
+        """
+        move=self.recovery
+        if move is None or move.get('issued') or len(axes)!=3 or not any(axes):return False
+        if any(abs(float(v)-move[k])>1e-8 for v,k in zip(axes,['forward','side','yaw'])):return False
+        now=time.monotonic() if now is None else now
+        if self.recovery_attempts==0:
+            self.recovery_episode_anchor=tuple(self.last_pose[:2]);self.recovery_history=set(self.actual_visited)
+            self.recovery_measured_distance=0.;self.recovery_new_cells=set();self.recovery_last_translation=None
+        move.update(issued=True,issued_at=now,origin=tuple(self.last_pose[:2]),origin_yaw=self.last_pose[2],
+                    stamp=self.current_scan.get('stamp',now),deadline_monotonic=now+3.,
+                    world_direction=self._recovery_world_direction(move['forward'],move['side']))
+        self.recovery_attempts+=1;self.recovery_total_attempts+=1;self.recovery_candidate_failures=0
+        self._remember_recovery_direction(move['forward'],move['side'],move['yaw'])
+        return True
+
+    def _finish_recovery(self,reason):
+        move=self.recovery
+        if move is None:return
+        issued=bool(move.get('issued'));elapsed=max(0.,self.current_scan.get('stamp',move['stamp'])-move['stamp'])
+        travelled=math.dist(self.last_pose[:2],move['origin']) if issued else 0.
+        turned=abs(wrap(self.last_pose[2]-move['origin_yaw'])) if issued else 0.
+        progressed=issued and (travelled>=.08 or turned>=.12)
+        if not issued:self.recovery_candidate_failures+=1
+        self.recovery_outcomes.append(dict(direction=self._recovery_direction(move['forward'],move['side'],move['yaw']),
+            world_direction=move.get('world_direction'),issued=issued,reason=reason,translation=round(travelled,3),
+            rotation=round(turned,3),elapsed=round(elapsed,2),progressed=progressed))
+        self.recovery_outcomes=self.recovery_outcomes[-12:]
+        if not progressed:
+            self.frontiers.blocked(self.goal,self.last_stamp if self.last_stamp is not None else time.monotonic(),self.obstacles,reason)
+            self.goal=None
+        self.recovery=None;self.path=[]
+        self.recovery_pending=bool(self.recovery_forced and not progressed and self.recovery_attempts<3 and self.recovery_candidate_failures<3)
+        self.recovery_stop_stamp=self.current_scan.get('stamp')
+
+    def reset_recovery_context(self,verified_translation_m=0.,reason='暂停后重新核对局部动作'):
+        """Lifecycle-only reset after capture/frame identity has been verified.
+
+        A caller may credit externally observed manual translation only after
+        fresh paired poses prove it. Turning alone never refunds issued tries.
+        """
+        if self.recovery is not None:self._finish_recovery('context_reset')
+        self.recovery=None;self.recovery_pending=False;self.recovery_stop_stamp=None;self.recovery_forced=False
+        self.recovery_candidate_failures=0;self.recovery_request_reason=None
+        if (isinstance(verified_translation_m,(int,float)) and math.isfinite(verified_translation_m)
+                and verified_translation_m>=.6):
+            self.recovery_attempts=0;self.recovery_resets+=1;self.recovery_episode_anchor=None
+            self.recovery_history=set();self.recovery_new_cells=set();self.recovery_measured_distance=0.;self.recovery_last_translation=None
+            self.recovery_tried=set();self.recovery_tried_world=[];self.recovery_block_reason=None
+            self.recovery_reset_reason=reason
+
     def _recover_axes(self):
         if self.recovery is None:
+            if self.recovery_pending:
+                velocity=self.current_scan.get('_velocity_body');stamp=self.current_scan.get('stamp')
+                if (velocity is None or len(velocity)!=2 or not all(math.isfinite(float(v)) for v in velocity)
+                        or stamp is None or self.recovery_stop_stamp is None or stamp<=self.recovery_stop_stamp
+                        or math.hypot(*velocity)>=.08 or abs(self._current_yaw_rate)>=.12):
+                    self.motion_hint='先停稳再更换脱困方向';return 0.,0.,0.
             options=self._escape_candidates()
-            if not options:self._no_recovery();return 0.,0.,0.
-            if self.recovery_attempts==0:
-                self.recovery_episode+=1;self.recovery_episode_anchor=tuple(self.last_pose[:2])
-                self.recovery_history=set(self.actual_visited);self.recovery_new_cells=set()
-                self.recovery_measured_distance=0.;self.recovery_last_translation=None;self.recovery_reset_reason=None
-            _,f,side=options[0];self.recovery_attempts+=1
-            self.recovery_total_attempts+=1;self.recovery_block_reason=None
-            self.recovery=dict(forward=f,side=side,origin=self.last_pose[:2],stamp=self.current_scan.get('stamp',time.monotonic()))
+            if not options:self.recovery_pending=False;self._no_recovery();return 0.,0.,0.
+            self._begin_recovery_episode()
+            _,f,side,yaw=options[0]
+            self.recovery_pending=False;self.recovery_block_reason=None
+            self.recovery=dict(forward=f,side=side,yaw=yaw,origin=self.last_pose[:2],origin_yaw=self.last_pose[2],
+                               issued=False,world_direction=self._recovery_world_direction(f,side),stamp=self.current_scan.get('stamp',time.monotonic()),deadline_monotonic=time.monotonic()+2.)
         move=self.recovery;elapsed=self.current_scan.get('stamp',time.monotonic())-move['stamp']
         travelled=math.dist(self.last_pose[:2],move['origin'])
-        if travelled>=self.recovery_limit or elapsed>3.:
-            self.recovery=None;self.path=[];self.motion_hint='退让已结束，重新检查通路';return 0.,0.,0.
-        f,side=move['forward'],move['side']
-        if abs(self._current_yaw_rate)>.25 or not self._motion_ready(f,side):
+        turned=abs(wrap(self.last_pose[2]-move['origin_yaw']))
+        if not move.get('yaw') and turned>.35:
+            # A body-axis command would now point somewhere else in the world.
+            # End this action without refunding its attempt or old direction.
+            self._finish_recovery('heading_changed');self.motion_hint='朝向已变化，停稳后重新选择脱困方向'
+            return 0.,0.,0.
+        limit=3. if move.get('issued') else 2.
+        if (move.get('issued') and (travelled>=self.recovery_limit or move.get('yaw') and turned>=.45) or elapsed>=limit-1e-9
+                or time.monotonic()>=move['deadline_monotonic']):
+            self._finish_recovery('motion_limit' if move.get('issued') and (travelled>=self.recovery_limit or turned>=.45) else 'action_timeout' if move.get('issued') else 'candidate_not_issued_timeout')
+            self.motion_hint='本次脱困没有实际进展，停稳后换方向' if self.recovery_pending else '退让已结束，重新检查通路'
+            return 0.,0.,0.
+        f,side,yaw=move['forward'],move['side'],move.get('yaw',0.)
+        if (not yaw and abs(self._current_yaw_rate)>.25 or yaw*self._current_yaw_rate<0 and abs(self._current_yaw_rate)>.12
+                or not self._motion_ready(f,side)):
             self.motion_hint='先停稳再退让';return 0.,0.,0.
-        if not self._inside_bound(f,side) or not clearance(self.current_scan,f,0,side=side)[0]:
-            self.recovery=None;self.motion_hint='退让方向已被阻挡';return 0.,0.,0.
-        self.motion_hint='向左侧移让开' if side>0 else '向右侧移让开' if side<0 else '短距离后退脱困' if f<0 else '短距离前移重新观察'
-        return f,side,0.
+        if not self._inside_bound(f,side) or not clearance(self.current_scan,f,yaw,side=side)[0]:
+            self._finish_recovery('path_blocked');self.motion_hint='退让方向已被阻挡，已记录本次结果并重新检查通路';return 0.,0.,0.
+        self.motion_hint='小角度转向重新观察' if yaw else '向左侧移让开' if side>0 else '向右侧移让开' if side<0 else '短距离后退脱困' if f<0 else '短距离前移重新观察'
+        return f,side,yaw
 
     def command_axes(self,yaw_rate=0.,observation_age=0.):
         """Choose a checked translation or turn, with bounded local recovery.
@@ -364,9 +513,9 @@ class Explorer:
         runtime rechecks the same three-axis sweep before issuing each command.
         """
         self._current_yaw_rate=yaw_rate
+        if self.recovery is not None or self.recovery_pending:return self._recover_axes()
         if '_velocity_body' in self.current_scan and self.current_scan['_velocity_body'] is None:
             self.motion_hint='等待最新运动反馈';return 0.,0.,0.
-        if self.recovery is not None:return self._recover_axes()
         f,yaw=self.command(yaw_rate,observation_age)
         if not self.path:
             if self.goal in self.visited:
@@ -394,7 +543,10 @@ class Explorer:
                     area=round(len(self.free)*RESOLUTION**2,1),distance=round(self.distance,2),net_displacement=round(math.dist(self.last_pose[:2],self.origin),2) if self.last_pose and self.origin else 0,replans=self.replans,target_kind=self.target_kind,motion_hint=self.motion_hint,recovery_attempts=self.recovery_attempts,frontier_metrics=dict(self.frontier_metrics),
                     recovery_episode=dict(number=self.recovery_episode,total_attempts=self.recovery_total_attempts,resets=self.recovery_resets,
                         anchor=self.recovery_episode_anchor,measured_distance=round(self.recovery_measured_distance,2),new_cells=len(self.recovery_new_cells),
-                        block_reason=self.recovery_block_reason,reset_reason=self.recovery_reset_reason))
+                        block_reason=self.recovery_block_reason,reset_reason=self.recovery_reset_reason,pending=self.recovery_pending,
+                        candidate_failures=self.recovery_candidate_failures,active_issued=bool(self.recovery and self.recovery.get('issued')),
+                        tried=sorted(self.recovery_tried),tried_world=[list(v) for v in self.recovery_tried_world],
+                        outcomes=list(self.recovery_outcomes),request_reason=self.recovery_request_reason))
 
 
 class PriorMap:

@@ -108,12 +108,12 @@ class MapService:
                         files=[dict(name=p.relative_to(folder).as_posix(),size=p.stat().st_size)
                                for p in sorted(folder.rglob('*')) if p.is_file() and not p.is_symlink()][:1000])
         if path=='/maps/build/status':
-            if self.demo:return dict(ok=True,demo=True,request_protocol=1,mapping=dict(self.demo_mapping),stop_mapping=dict(self.demo_stop),**self.demo_build)
+            if self.demo:return dict(ok=True,demo=True,request_protocol=1,discard_protocol=1,mapping=dict(self.demo_mapping),stop_mapping=dict(self.demo_stop),**self.demo_build)
             start=read_job('mapping');stop=read_job('stop_mapping')
             if start.get('state') not in ['starting','running'] and stop.get('state') not in ['starting','running']:
                 external=unowned_processes(start)
-                if external:return dict(ok=True,request_protocol=1,mapping=start,stop_mapping=stop,phase='external_collecting',in_progress=True,message='检测到平台记录之外的SLAM/后处理进程，请先核对当前任务',result_maps=[],external_processes=external)
-            return dict(ok=True,request_protocol=1,mapping=start,stop_mapping=stop,**mapping_phase(start,stop,self.library()['maps']))
+                if external:return dict(ok=True,request_protocol=1,discard_protocol=1,mapping=start,stop_mapping=stop,phase='external_collecting',in_progress=True,message='检测到平台记录之外的SLAM/后处理进程，请先核对当前任务',result_maps=[],external_processes=external)
+            return dict(ok=True,request_protocol=1,discard_protocol=1,mapping=start,stop_mapping=stop,**mapping_phase(start,stop,self.library()['maps']))
         if path=='/maps/localize-auto':
             if self.demo:return dict(ok=True,demo=True,accepted=True,localized=True)
             return self.privileged('localize_auto',{})
@@ -174,20 +174,31 @@ class MapService:
             return self.privileged('apply',dict(name=folder.name))
         if path=='/maps/build':
             action=req.get('action')
-            if action not in ['start','extend','stop']:raise ValueError('建图操作无效')
+            if action not in ['start','extend','stop','discard']:raise ValueError('建图操作无效')
             identity=request_identity(req.get('request_id'));expected=request_identity(req.get('expected_start_request_id'))
+            if action=='discard' and expected is None:raise ValueError('放弃本轮需要明确的采集归属')
             if action in ['start','extend'] and identity is None:identity=uuid.uuid4().hex
             if self.demo:
-                if action=='stop' and expected is not None and self.demo_mapping.get('request_id')!=expected:raise ValueError('当前采集不属于本次请求，未发送停止命令')
-                previous=self.demo_stop if action=='stop' else self.demo_mapping
-                if identity is not None and previous.get('request_id')==identity:return dict(ok=True,delivery='already_launched',request_id=identity,message='本次请求已接收')
+                closing=action in ['stop','discard']
+                if closing and expected is not None and self.demo_mapping.get('request_id')!=expected:raise ValueError('当前采集不属于本次请求，未发送停止命令')
+                previous=self.demo_stop if closing else self.demo_mapping
+                if identity is not None and previous.get('request_id')==identity:
+                    if closing and (bool(previous.get('context',{}).get('discard'))!=(action=='discard') or previous.get('expected_start_request_id')!=expected):raise ValueError('重复请求的保存/放弃意图或采集归属不一致')
+                    return dict(ok=True,delivery='already_launched',request_id=identity,message='本次请求已接收')
+                if closing and not self.demo_build.get('in_progress') and previous.get('started',0)>self.demo_mapping.get('started',0):
+                    if bool(previous.get('context',{}).get('discard'))!=(action=='discard'):raise ValueError('本轮已经结束，不能改写保存/放弃结果')
+                    return dict(ok=True,delivery='already_finished',request_id=identity,message=self.demo_build.get('message'))
                 record=dict(state='command_finished',started=time.time(),request_id=identity,name=req.get('name'),context=dict(workflow='extension',base=req.get('base'),anchor=req.get('anchor')) if action=='extend' else {})
-                if action=='stop':self.demo_stop=record
+                if closing:record['expected_start_request_id']=expected
+                if action=='discard':record.update(context=dict(discard=True),discarded=True,expected_start_request_id=expected)
+                if closing:self.demo_stop=record
                 else:self.demo_mapping=record
-                self.demo_build=dict(phase='collecting' if action in ['start','extend'] else 'saved',in_progress=action in ['start','extend'],
-                    message='演示采集中 · 不连接真实雷达' if action in ['start','extend'] else '演示保存已完成 · 示例地图可用于体验操作',
-                    result_maps=[] if action in ['start','extend'] else ['demo-yard'])
+                self.demo_build=dict(phase='collecting' if action in ['start','extend'] else 'discarded' if action=='discard' else 'saved',in_progress=action in ['start','extend'],
+                    message='演示采集中 · 不连接真实雷达' if action in ['start','extend'] else '演示已放弃本轮 · 未生成候选，实机厂商可能保留临时观测' if action=='discard' else '演示保存已完成 · 示例地图可用于体验操作',
+                    result_maps=[] if action in ['start','extend','discard'] else ['demo-yard'])
+                if action=='discard':self.demo_build.update(discarded=True,candidate_created=False,observations_saved=False,temporary_files_retained=False,temporary_observations=[],activated=False)
                 return dict(ok=True,delivery='simulated',request_id=identity,message=self.demo_build['message'])
             if action=='extend':return self.privileged('extend_mapping',dict(base=map_name(req.get('base')),anchor=req.get('anchor'),grid_id=req.get('grid_id',0),request_id=identity))
+            if action=='discard':return self.privileged('discard_mapping',dict(request_id=identity,expected_start_request_id=expected))
             return self.privileged('mapping' if action=='start' else 'stop_mapping',dict(name=map_name(req.get('name','m20-map')),request_id=identity,expected_start_request_id=expected))
         raise ValueError('地图接口不存在')

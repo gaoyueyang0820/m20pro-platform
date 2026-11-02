@@ -16,12 +16,12 @@ LOGS = Path('/var/log/m20-platform')
 def completion_metadata(record):
     """Additive fields; old callers retain phase/state/result_maps semantics."""
     keys=['save_status','fusion_status','observations_saved','candidate_created',
-          'observation_session','requirements','next_capture']
+          'observation_session','requirements','next_capture','discarded','temporary_files_retained','temporary_observations','observation_ownership']
     return {key:record[key] for key in keys if key in record}
 
 
 def completion_message(record, fallback):
-    return record.get('message',fallback) if record.get('fusion_status')=='awaiting_evidence' else fallback
+    return record.get('message',fallback) if record.get('fusion_status') in ['awaiting_evidence','discarded'] else fallback
 
 
 def slam_processes(proc=Path('/proc')):
@@ -50,6 +50,12 @@ def mapping_phase(start,stop,maps):
         if stop.get('state')=='command_finished':return dict(phase='unconfirmed',in_progress=False,message='停止命令已结束，但没有本轮采集记录；请核对地图库中的实际结果',result_maps=[])
         return dict(phase='idle',in_progress=False,message='尚未开始建图',result_maps=[])
     newer_stop=stop.get('started',0)>since and stop.get('state') not in ['none']
+    if newer_stop and stop.get('context',{}).get('discard') is True:
+        metadata=completion_metadata(stop)
+        if stop.get('state')=='failed':return dict(phase='error',in_progress=bool(start.get('processes_alive')),message=stop.get('message','放弃本轮尚未完成'),result_maps=[],**metadata)
+        if stop.get('state')=='command_finished' and not start.get('processes_alive'):
+            return dict(phase='discarded',in_progress=False,message=stop.get('message','本轮已放弃，未发布候选'),result_maps=[],activated=False,**metadata)
+        return dict(phase='discarding',in_progress=True,message='正在停止采集并放弃本轮更新；厂商可能仍生成临时观测文件',result_maps=[],**metadata)
     candidates=[m['name'] for m in maps if m.get('modified',0)>=since and m.get('has_cloud') and m.get('grids') and (not start.get('name') or m['name'].startswith(start['name']+'-'))]
     if newer_stop and start.get('context',{}).get('workflow')=='extension':
         if stop.get('state')=='failed':return dict(phase='error',in_progress=bool(start.get('processes_alive')),message=stop.get('message','融合失败，原图与本轮扫描均已保留'),result_maps=stop.get('result_maps',[]),fusion=stop.get('fusion'),activated=False,**completion_metadata(stop))
@@ -132,6 +138,10 @@ def launch(kind, name=None, logs=LOGS, context=None, request_id=None, expected_s
     if kind not in ['mapping', 'stop_mapping']:
         raise ValueError('建图操作无效')
     request_identity(request_id);request_identity(expected_start_request_id)
+    def check_intent(record):
+        if kind=='stop_mapping' and (bool(record.get('context',{}).get('discard'))!=bool((context or {}).get('discard'))
+                or record.get('expected_start_request_id')!=expected_start_request_id):
+            raise ValueError('重复停止请求的保存/放弃意图或采集归属不一致')
     logs = Path(logs)
     logs.mkdir(mode=0o755, parents=True, exist_ok=True)
     lockfile=logs/'.launch.lock'
@@ -149,10 +159,12 @@ def launch(kind, name=None, logs=LOGS, context=None, request_id=None, expected_s
             try:history=json.loads(receipt.read_text())
             except (OSError,ValueError):history=None
             if history:
+                check_intent(history)
                 if kind=='mapping' and (history.get('name')!=name or history.get('context',{})!=(context or {})):raise ValueError('重复请求的建图参数不一致')
                 if history.get('state')=='failed':raise ValueError(history.get('message','该请求已失败'))
                 return dict(ok=True,request_id=request_id,delivery='already_launched',state=history.get('state'),result_maps=history.get('result_maps',[]),message=completion_message(history,'已从请求记录找到原操作，未重复启动'),**completion_metadata(history))
         if request_id is not None and previous.get('request_id')==request_id:
+            check_intent(previous)
             if kind=='mapping' and (previous.get('name')!=name or previous.get('context',{})!=(context or {})):
                 raise ValueError('重复请求的建图参数不一致')
             if previous.get('state')=='failed':raise ValueError(previous.get('message','本次请求已失败，请核对状态'))
@@ -161,6 +173,8 @@ def launch(kind, name=None, logs=LOGS, context=None, request_id=None, expected_s
             raise ValueError('上一轮地图仍在停止或保存，请等待完成')
         if kind=='stop_mapping' and previous.get('state')=='command_finished':
             if previous.get('started',0)>capture.get('started',0) and not capture.get('processes_alive'):
+                if bool(previous.get('context',{}).get('discard'))!=bool((context or {}).get('discard')):
+                    raise ValueError('本轮已经结束，不能将已保存和已放弃的结果相互改写')
                 return dict(ok=True,request_id=request_id,delivery='already_saved',result_maps=previous.get('result_maps',[]),message=completion_message(previous,'本轮地图已经保存'),**completion_metadata(previous))
         if previous['state'] in ['running','starting'] or kind=='mapping' and previous.get('processes_alive'):
             raise ValueError('同一建图操作仍在运行，请查看日志与状态')
@@ -222,7 +236,35 @@ def worker(kind, logs, name=None, context=None, request_id=None, expected_start_
         with logfile.open('w') as log:
             logfile.chmod(0o644)
             result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
-        if result.returncode==0 and context.get('workflow')=='extension':
+        if result.returncode==0 and kind=='stop_mapping' and context.get('discard') is True:
+            maps=Path(context['maps']);temporary=[];active=(maps/'active').resolve()
+            # drmap stop_mapping always performs vendor post-processing. Keep
+            # its own files as hidden observations; do not fuse or activate.
+            candidates=[folder for folder in maps.glob((previous.get('name') or '__no_capture__')+'-*')
+                        if not folder.is_symlink() and folder.is_dir() and folder.stat().st_mtime>=previous.get('started',0)]
+            unique=len(candidates)==1 and candidates[0].resolve()!=active
+            if unique:
+                marker=candidates[0]/'.m20-session-source.json'
+                if marker.is_symlink():unique=False
+                elif marker.exists():
+                    try:
+                        existing=json.loads(marker.read_text())
+                        unique=(existing.get('capture_id') in [None,expected_start_request_id]
+                                and all(existing.get(key)==previous.get('context',{}).get(key) for key in ['workflow','base','anchor','grid_id'] if key in existing))
+                    except (OSError,ValueError):unique=False
+            for folder in candidates:
+                temporary.append(dict(name=folder.name,path=str(folder),has_cloud=(folder/'full_cloud.pcd').is_file(),ownership_verified=unique))
+            for folder in candidates if unique else []:
+                marker=folder/'.m20-session-source.json'
+                if marker.is_symlink():raise ValueError('临时观测标记路径异常')
+                marker.write_text(json.dumps(dict(context,discarded=True,capture_id=expected_start_request_id),ensure_ascii=False))
+            state.update(discarded=True,save_status='discarded',fusion_status='discarded',candidate_created=False,
+                         observations_saved=any(p['has_cloud'] for p in temporary) if unique else None,temporary_files_retained=True if temporary else None,
+                         observation_ownership='unique' if unique else 'unconfirmed',
+                         temporary_observations=temporary,result_maps=[],activated=False,
+                         message=('本轮已停止并放弃，未生成融合候选、未切换活动地图；厂商临时观测保留，可另行清理' if unique else
+                                  '本轮已停止并放弃，未生成融合候选；临时文件归属未能唯一确认，未隐藏或删除任何目录，原活动图不改动'))
+        elif result.returncode==0 and context.get('workflow')=='extension':
             maps=Path(context['maps'])
             if kind=='mapping':
                 for folder in maps.glob(name+'-*'):
@@ -247,7 +289,7 @@ def worker(kind, logs, name=None, context=None, request_id=None, expected_start_
                 state['activated']=False
         state.update(state='command_finished' if result.returncode == 0 else 'failed',
                      returncode=result.returncode,
-                     message='厂商命令已结束，请核对新地图与后处理日志' if result.returncode == 0 else '厂商命令失败，请查看日志')
+                     message=(state.get('message') if state.get('discarded') else '厂商命令已结束，请核对新地图与后处理日志') if result.returncode == 0 else '厂商命令失败，请查看日志')
         if kind=='mapping':state['mapping_processes']=[p for pid,p in slam_processes().items() if pid not in before or p['start']!=before[pid]['start']]
     except FusionDecisionError as exc:
         report=exc.report;capture=report.get('observation_session') or {}

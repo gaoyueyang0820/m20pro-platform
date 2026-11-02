@@ -47,7 +47,7 @@ class PointNavigationRuntimeTests(unittest.TestCase):
         self.app.done=True;self.app.hub.close();cases.PlatformTests.tearDown(self)
     def ready(self,x=2.05,y=3.05,yaw=0.,mode=0,velocity=(0,0,0)):
         a=self.app
-        basic=dict(HES=0,MotionState=17,ControlUsageMode=mode,Sleep=0,Gait=0x3002)
+        basic=dict(HES=0,MotionState=17,ControlUsageMode=mode,Sleep=0,Gait=0x3002,Direction=0)
         a.link.put(1002,6,dict(BasicStatus=basic));a.basic=basic.copy()
         a.link.put(1002,4,dict(MotionStatus=dict(zip(['LinearX','LinearY','OmegaZ'],velocity))))
         a.link.put(1007,2,dict(Location=0,Confidence=.99,PosX=x,PosY=y,Yaw=yaw));a.pose=dict(Location=0,Confidence=.99,PosX=x,PosY=y,Yaw=yaw)

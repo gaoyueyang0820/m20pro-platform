@@ -86,7 +86,17 @@ class AutomaticLocalizer:
     def saved_slam_hint(self,progress,status=None,check=None):
         """Recover from this completed mapping session, not an old pose cache."""
         import numpy as np
-        from localization_recovery import saved_slam_pose,verify_transform
+        from localization_recovery import saved_slam_pose,verify_transform,match_pose,verify_pose
+        def hypothesis_for(build,sensors,active):
+            context=(build.get('mapping') or {}).get('context') or {}
+            fusion=(build.get('stop_mapping') or {}).get('fusion') or {}
+            project=None
+            if active!=context.get('base') and active==fusion.get('map'):
+                manifest=self.app.hub.remote_maps('/maps/project',dict(name=active),timeout=5)
+                if check:check()
+                if manifest.get('active') is not True:raise ValueError('活动地图已变化，停止恢复定位')
+                project=manifest.get('project')
+            return saved_slam_pose(build,sensors,active,project=project)
         if check:check()
         link=self.app.link
         if not link:raise ValueError('机器人未连接')
@@ -94,37 +104,59 @@ class AutomaticLocalizer:
         library=self.app.hub.remote_maps('/maps/list',timeout=3)
         build=self.app.hub.remote_maps('/maps/build/status',timeout=4)
         if check:check()
-        hypothesis=saved_slam_pose(build,status or self.status(),library.get('active'))
-        p=hypothesis['pose'];name=hypothesis['base_map']
+        hypothesis=hypothesis_for(build,status or self.status(),library.get('active'))
+        p=hypothesis['pose'];name=hypothesis['reference_map']
         progress(.15,'正在用本轮已保存轨迹核对当前位置')
         ref=self.app.hub.remote_maps('/maps/localization-reference',dict(name=name,center=[p['PosX'],p['PosY'],p['PosZ']]),timeout=8)
         if ref.get('map_name')!=name or ref.get('frame_id')!='map':raise ValueError('定位参考地图不一致')
         points=np.frombuffer(base64.b64decode(ref['points'],validate=True),dtype='<f4').reshape(-1,3)
         first,stamp=self.body_cloud(after=hypothesis['source_stamp'],check=check)
-        first_check=verify_transform(hypothesis['transform'],np.asarray(first['points']),points,
-            stamp=stamp,after_stamp=hypothesis['source_stamp'],frame_id=first['frame_id'])
+        method='saved_slam_full_transform';match=None;fixed_error=None
+        try:
+            first_check=verify_transform(hypothesis['transform'],np.asarray(first['points']),points,
+                stamp=stamp,after_stamp=hypothesis['source_stamp'],frame_id=first['frame_id'])
+        except ValueError as exc:
+            # Manual turning/translation after saving invalidates the exact
+            # ending pose, not the session's independently registered prior.
+            # Fit this fresh frame, then require a separate later observation.
+            if check:check()
+            self._stationary(link)
+            fixed_error=str(exc)
+            progress(.35,'保存后位置或朝向已变化，正在附近重新识别当前位置')
+            match=match_pose(np.asarray(first['points']),points,p,stamp=stamp,frame_id=first['frame_id'])
+            first_check=dict(verified=False,message=fixed_error)
+            method='saved_session_local_match'
+        if check:check()
         second,next_stamp=self.body_cloud(after=stamp,check=check)
-        verification=verify_transform(hypothesis['transform'],np.asarray(second['points']),points,
-            stamp=next_stamp,after_stamp=stamp,frame_id=second['frame_id'])
+        if match is None:
+            verification=verify_transform(hypothesis['transform'],np.asarray(second['points']),points,
+                stamp=next_stamp,after_stamp=stamp,frame_id=second['frame_id'])
+            pose=verification['initialization_pose']
+        else:
+            verification=verify_pose(match,np.asarray(second['points']),points,
+                stamp=next_stamp,frame_id=second['frame_id'])
+            pose=match['pose']
         if check:check()
         current=self.app.hub.remote_maps('/maps/list',timeout=3)
         latest=self.app.hub.remote_maps('/maps/build/status',timeout=4)
-        current_hint=saved_slam_pose(latest,self.status(),current.get('active'))
+        current_hint=hypothesis_for(latest,self.status(),current.get('active'))
         with self.app.lock:
             if check:check()
             self._stationary(link)
-            if (current_hint['session_key']!=hypothesis['session_key'] or
+            if (current_hint['reference_map']!=hypothesis['reference_map'] or
+                    current_hint['session_key']!=hypothesis['session_key'] or
                     current_hint['source_stamp']!=hypothesis['source_stamp'] or
                     not np.allclose(current_hint['transform'],hypothesis['transform'],atol=1e-8)):
                 raise ValueError('保存轨迹已变化，停止恢复定位')
             # Validation retains roll/pitch. The vendor initialization protocol
             # only accepts xyz/yaw; its running estimator supplies IMU attitude.
-            pose=verification['initialization_pose']
             link.command(2101,1,pose,'由本轮保存轨迹与新鲜结构恢复定位')
-        progress(.8,'已确认保存轨迹对应当前位置，等待定位收敛')
+        progress(.8,'新鲜结构已确认当前位置，等待定位收敛')
         self.wait_normal(12,pose,check=check)
-        return dict(ok=True,localized=True,method='saved_slam_full_transform',pose=pose,
+        return dict(ok=True,localized=True,method=method,pose=pose,
                     source_map=hypothesis['source_map'],session_key=hypothesis['session_key'],
+                    reference_map=name,original_base_map=hypothesis['original_base_map'],
+                    match=match,fixed_pose_error=fixed_error,
                     first_verification=first_check,verification=verification,
                     message='已根据本轮保存轨迹自动恢复定位')
 

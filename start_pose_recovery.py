@@ -162,7 +162,7 @@ def _knots(poses,geometry):
 
 
 def recover_start(planner,start,goal,yaw=None,scan=None,localization=None,standing=False,max_distance=.8,max_turn=math.radians(20),budget=1.2):
-    """Return a verified recovery prefix + route to the unchanged exact goal.
+    """Return a verified recovery prefix and the planner's goal policy.
 
     All outputs are planning evidence, never robot commands. Integrators must
     track the short prefix with live feedback and check_recovery_step(), then
@@ -232,6 +232,14 @@ def recover_start(planner,start,goal,yaw=None,scan=None,localization=None,standi
                 while prefix[-1]!=origin:prefix.append(parents[prefix[-1]])
                 prefix.reverse();trajectory=[start]
                 for q in prefix[1:]:trajectory.extend(edges[q])
+                # The axis lattice may discover an L-shaped escape even when
+                # one fixed-heading diagonal translation is clear. The runtime
+                # executes only a single translation: shorten this prefix only
+                # after checking its ENTIRE swept body and non-decreasing
+                # clearance, including fresh measured floor along the segment.
+                if abs(_wrap(p[2]-start[2]))<1e-8:
+                    direct=geometry.edge(start,p,relaxed=relaxed)
+                    if direct is not None:trajectory=[start]+direct
                 best_prefix=_knots(trajectory,geometry)
                 if attempts<8:
                     attempts+=1
