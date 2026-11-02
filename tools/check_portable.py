@@ -27,13 +27,14 @@ ROOT=Path(__file__).resolve().parents[1]
 MARKER='PORTABLE_WORKER_RESULT='
 GROUPS={
     'algorithms':['test_autonomy_recovery','test_exploration_frontiers','test_exploration_control_v3',
-                  'test_local_trajectory','test_control_clock','test_terrain_profiles','test_pose_monitor'],
+                  'test_local_trajectory','test_control_clock','test_terrain_profiles','test_pose_monitor',
+                  'test_greeting','test_greeting_cli'],
     'navigation':['test_navigation_planner','test_navigation_planning_v3','test_live_surface_localization',
                   'test_localization_recovery'],
     'sensing':['test_sensor_cache','test_sensor_reader','test_latest_observation','test_sensing_equivalence'],
     'maps':['test_map_change_policy','test_map_fusion','test_map_update_v3',
             'test_mapping_save_outcomes.SyntheticSavedObservationTests'],
-    'lifecycle':['test_mapping_request_identity','test_operations_lifecycle','test_delivery_boundary'],
+    'lifecycle':['test_mapping_request_identity','test_operations_lifecycle','test_delivery_boundary','test_greeting_runtime'],
     'native':['test_native_sensing'],
     'connections':['test_connection_roaming'],
     'ui':[],

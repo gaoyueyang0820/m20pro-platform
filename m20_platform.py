@@ -25,6 +25,8 @@ from urllib.parse import urlparse,parse_qs,quote
 from urllib.request import Request, urlopen
 
 import m20_console as original
+import greeting
+from greeting_runtime import GreetingSession
 from platform_core import ROOT, JOINTS, LEGS, NEUTRAL, ERRORS, RobotLink, Store, Training, number, integer, rpc, explain_error, leg_target, age_of
 from platform_hub import Hub
 from shared_access import SharedAccess, lan_addresses
@@ -86,6 +88,9 @@ class Platform:
     def __init__(self, store=None):
         self.lock = threading.RLock()
         self.instance_id=uuid.uuid4().hex
+        self._greet_busy=False
+        self.greeting=GreetingSession(self)
+        self._greet_demo=None  # (结束时刻, 'nod'/'bob', 开始时刻)：演示模式的合成问候姿态
         from pose_monitor import PoseMonitor
         self.pose_monitor=PoseMonitor()
         self.store = store or Store()
@@ -146,6 +151,7 @@ class Platform:
 
     def connect(self, req):
         with self.lock:
+            self.cancel_greeting('连接正在切换，问候已取消')
             self.autonomy.reset_context()
             self._plan_generation+=1;self.goal_plans.clear()
             self.map_learning.reset()
@@ -204,6 +210,7 @@ class Platform:
             self.nav.pop('preparation',None)
 
     def stop(self, estop=False):
+        self.cancel_greeting()
         self.invalidate_navigation_start()
         self.autonomy.pause()
         if self.nav.get('engine')=='platform':self.point_navigation.stop()
@@ -253,6 +260,9 @@ class Platform:
                     warnings=failures, message='停止请求尚未确认，请核对状态反馈' if unconfirmed else '已发停止请求；请核对状态反馈' if self.link else '演示动作已停止')
 
     def command(self, action):
+        if action=='greet' or action.startswith('greet_'):
+            return self.greet(**self._greet_args(action))
+        if action!='heartbeat':self.cancel_greeting('已切换为手动操作，问候取消')
         if not action.startswith("light_") and action!='heartbeat':
             self.invalidate_navigation_start();self.autonomy.pause("已切换为手动操作")
         if action in ['stop', 'estop']:
@@ -328,14 +338,34 @@ class Platform:
         self.add_log('command', action)
         return result
 
+    @staticmethod
+    def _greet_args(action):
+        """greet / greet_<style> / greet_nod / greet_bob → greet() 关键字参数。"""
+        suffix = action[6:]
+        if suffix in ('nod', 'bob'):
+            return dict(style='breathe', motion=suffix)
+        if suffix and suffix in greeting.LIGHT_STYLES:
+            return dict(style=suffix)
+        if suffix:
+            raise ValueError('未知打招呼动作：' + action)
+        return dict(style='breathe')
+
+    def greet(self, style='breathe', motion=None):
+        return self.greeting.start(style,motion)
+
+    def cancel_greeting(self, reason='已由操作者停止问候'):
+        self.greeting.cancel(reason)
+
     def set_velocity(self, req, autonomous=False, valid_until=None):
         if not autonomous:
+            self.cancel_greeting("已由手动驾驶接管，问候取消")
             self.invalidate_navigation_start();self.autonomy.pause("已由手动驾驶接管")
             if self.point_navigation.active:self.point_navigation.stop('paused','已由手动驾驶接管')
         v = [number(req.get(k, 0), -1, 1) for k in ['forward', 'side', 'yaw']]
         if valid_until is None and 'hold_seconds' in req:
             valid_until=time.monotonic()+number(req['hold_seconds'],0,.5)
         if any(v):
+            if autonomous and self._greet_busy:raise ValueError('问候动作持有控制权，请先停止问候')
             if self.hub.busy:raise ValueError('正在执行 '+self.hub.busy+'，暂不可移动')
             if not self.demo and self.hub.sdk_mode.get('state') in ['sdk','awaiting_handset_exit']:
                 raise ValueError('请先退出 SDK 模式再使用日常遥控')
@@ -359,6 +389,7 @@ class Platform:
             if not self.demo and not self.sdk.get('fresh'):raise ValueError('需要新鲜的 SDK 关节反馈才能预览')
             return dict(ok=True,positions=leg_target(self.positions,req.get('leg'),req.get('height')))
         if operation == 'arm':
+            if self._greet_busy:raise ValueError('请先停止问候动作，再开启关节控制')
             if self.autonomy.active:raise ValueError('请先停止自主任务')
             if self.hub.busy:raise ValueError('后台操作正在进行，请等待完成')
             if self.sdk.get('vendor_running') or (self.demo and self.hub.demo_policy.get('vendor_running')):
@@ -628,6 +659,7 @@ class Platform:
         # Stop/reconnect can invalidate it while a slow map request is pending.
         with self.lock:
             if req.get('_start_generation',self._nav_start_generation)!=self._nav_start_generation:raise ValueError('导航启动已取消')
+            if self._greet_busy:raise ValueError('请先停止问候动作，再开始导航')
             if self.autonomy.active:raise ValueError('请先停止自主任务，再开始导航')
             if self.hub.busy:raise ValueError('后台操作正在进行，请等待完成')
             if not self.demo and self.hub.sdk_mode.get('state') in ['sdk','awaiting_handset_exit']:
@@ -899,12 +931,14 @@ class Platform:
         self.store.value['history']=self.store.value['history'][-50:];self.store.save()
 
     def resume_route(self):
+        if self._greet_busy:raise ValueError('请先停止问候动作，再继续导航')
         if self.nav.get('engine')=='platform':
             if self.nav.get('status')!='paused':raise ValueError('任务不在暂停状态')
             route=self.nav['route'];point=route['points'][0]
             return self.start_goal(dict(map_id=route['map_id'],x=point['x'],y=point['y'],yaw=point['yaw'],engine='platform'))
         with self.lock:
             if self.nav['status']!='paused':raise ValueError('任务不在暂停状态')
+            if self._greet_busy:raise ValueError('请先停止问候动作，再继续导航')
             if self.nav['index']>=len(self.nav['route']['points']):raise ValueError('所有航点已完成，请重新执行路线')
             if self.hub.busy:raise ValueError('后台操作正在进行，请等待完成')
             self.live_ready()
@@ -1161,6 +1195,20 @@ class Platform:
                          GPS=dict(FixQuality=4,NumSatellites=24,Latitude=30.2741,Longitude=120.1551,HDOP=.8),
                          DevEnable=dict(Lidar=dict(Front=1,Back=1),Video=dict(Front=1,Back=1),GPS=1))
                 motion=dict(Roll=.01*math.sin(t),Pitch=.008*math.cos(t),Yaw=self.pose['Yaw'],LinearX=self.velocity[0],LinearY=self.velocity[1],OmegaZ=self.velocity[2],Height=.56)
+                # 演示模式的打招呼：用合成姿态变化让界面可预览，不含任何实机指令。
+                demo_greet=self._greet_demo
+                if demo_greet:
+                    until,mode,began=demo_greet
+                    if time.monotonic()<until:
+                        elapsed=time.monotonic()-began
+                        if mode=='nod':
+                            # 预览幅度 ±0.3 rad（约 17°），周期与实机序列一致
+                            motion['Pitch']+=.3*math.sin(2*math.pi*elapsed/greeting.NOD_PERIOD_S)
+                        else:
+                            # 预览幅度 ±0.10 m，周期与实机序列一致
+                            motion['Height']+=.10*math.sin(2*math.pi*elapsed/greeting.BOB_PERIOD_S)
+                    else:
+                        self._greet_demo=None
                 joints=[dict(j,position=self.positions[i],target=self.target[i],velocity=self.wheels[i//4] if i%4==3 else 0.,
                              torque=0.,temperature=38+i%5+math.sin(t/7),fresh=True,source='demo') for i,j in enumerate(JOINTS)]
                 sdk=dict(self.sdk,connected=True,backend='demo',fresh=True,vendor_running=self.hub.demo_policy.get('vendor_running',False))
@@ -1190,7 +1238,7 @@ class Platform:
                         poses=self.store.value['poses'],task_history=self.store.value['history'],history=self.history,
                         config={role:self.hub.connections.endpoint(role)[0] if self.hub.connections.value['targets'][role]['enabled'] else self.config.get(role,'') for role in ['sdk','nos','gos','train']}, mapping=self.mapping,server_time=now,
                         raw=self.raw,
-                        cameras=self.cameras.status(),autonomy=self.autonomy.snapshot(),map_learning=self.map_learning.snapshot(),vision_models=vision_catalog(),people_counts=self.people.status(),
+                        greeting=self.greeting.snapshot(),cameras=self.cameras.status(),autonomy=self.autonomy.snapshot(),map_learning=self.map_learning.snapshot(),vision_models=vision_catalog(),people_counts=self.people.status(),
                         background_operation=self.hub.busy,
                         ppe=original.PPE.status() if original.PPE and not self.demo else dict(enabled=False,demo=self.demo),
                         capabilities=dict(udp=True,sdk=sdk.get('connected',False),training=bool(self.config.get('train')),nos=bool(self.config.get('nos'))))
@@ -1419,6 +1467,7 @@ class Handler(original.Handler):
                 return self._json(result)
             if p=='/api/nos/action':
                 with APP.lock:
+                    if APP._greet_busy:raise ValueError('请先停止问候动作，再操作建图服务')
                     if APP.nav['status'] in ['running','cancelling'] or any(APP.velocity) or APP.sdk.get('armed'):
                         raise ValueError('请先停止运动并结束导航/关节控制')
                 result=APP.proxy('nos','/action',req,timeout=30)
@@ -1438,6 +1487,8 @@ class Handler(original.Handler):
                     APP.store.save()
                 return self._json(imported)
             with APP.lock:
+                if p in ['/api/charge','/api/sleep','/api/maintenance','/api/localize']:
+                    APP.cancel_greeting('操作者已切换设备操作，问候取消')
                 if p in ['/api/connect','/api/config']: result=APP.connect(req)
                 elif p=='/api/cmd': result=APP.command(str(req.get('action','')))
                 elif p=='/api/velocity': result=APP.set_velocity(req)
