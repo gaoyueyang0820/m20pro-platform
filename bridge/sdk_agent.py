@@ -107,6 +107,7 @@ class SDKAgent:
             if selected.is_absolute() and selected.is_dir():self.workspace=selected.resolve()
         self.calibration=Path(calibration or self.data/'calibration.json')
         self.policy=None;self.ros_error=None;self.vendor=None;self.worker=None;self.attached=False;self.lock=threading.RLock()
+        self.control_generation=0
         self.worker_url='http://127.0.0.1:8094';self.token=os.environ.get('M20_BRIDGE_TOKEN')
 
     def ros(self):
@@ -162,11 +163,24 @@ class SDKAgent:
             return dict(ready=False,stage='source_missing',message='工作区中没有 M20 SDK 源码',workspace=str(self.workspace))
         try:_,mode=ros_input_source(source.read_text())
         except ValueError as exc:return dict(ready=False,stage='entry_unrecognized',message=str(exc),workspace=str(self.workspace))
-        built=(self.workspace/'install/setup.bash').is_file()
-        return dict(ready=built and mode=='kRos2',stage='ready' if built and mode=='kRos2' else 'needs_build',
-                    input=mode,workspace=str(self.workspace),message='SDK 工程已就绪' if built and mode=='kRos2' else '需要一次编译以启用平台 ROS2 输入')
+        # setup.bash may exist after building drdds alone or a failed rebuild.
+        # Require the actual installed controller, with input source no newer
+        # than its binary. Support colcon's isolated and merged install layouts.
+        candidates=[self.workspace/'install/m20_sdk_deploy/lib/m20_sdk_deploy/rl_deploy',
+                    self.workspace/'install/lib/m20_sdk_deploy/rl_deploy']
+        executable=next((path for path in candidates if path.is_file() and os.access(path,os.X_OK)),None)
+        installed=(self.workspace/'install/setup.bash').is_file() and executable is not None
+        built=installed and executable.stat().st_mtime_ns>=source.stat().st_mtime_ns
+        ready=bool(built and mode=='kRos2')
+        message=('SDK 工程已就绪' if ready else 'SDK 控制器尚未完整安装，需要准备环境' if not installed
+                 else 'SDK 输入配置已更新，需要重新编译' if mode=='kRos2' else '需要一次编译以启用平台 ROS2 输入')
+        return dict(ready=ready,stage='ready' if ready else 'needs_build',input=mode,
+                    workspace=str(self.workspace),executable=str(executable) if executable else None,message=message)
 
     def stop(self):
+        # Cancel a connection still waiting for DDS discovery before it can
+        # attach or start a controller after the operator has pressed stop.
+        with self.lock:self.control_generation+=1
         if self.worker_alive():
             try:self.worker_rpc('/stop',{})
             except ValueError:pass
@@ -189,9 +203,13 @@ class SDKAgent:
         p=subprocess.run(['colcon','build','--packages-up-to','m20_sdk_deploy','--cmake-args','-DBUILD_PLATFORM=arm'],
                          cwd=self.workspace,capture_output=True,text=True,timeout=1200)
         if p.returncode:raise ValueError('SDK 编译失败：'+(p.stderr or p.stdout)[-10000:])
-        return dict(ok=True,output=p.stdout[-12000:],message='已编译 ROS2 输入版 SDK，请重启 SDK 服务以载入新工作区消息')
+        return dict(ok=True,changed=True,reload_required=True,output=p.stdout[-12000:],message='已编译 ROS2 输入版 SDK，请重启 SDK 服务以载入新工作区消息')
 
     def setup(self):
+        environment=self.environment_status()
+        if environment.get('ready'):
+            return dict(ok=True,changed=False,reload_required=False,workspace=str(self.workspace),
+                        environment=environment,message='SDK 工程已就绪，无需重新编译或重启')
         if self.vendor_alive() or self.worker_alive():raise ValueError('请先结束正在运行的 SDK 控制，再更新工程')
         source=self.workspace/'src/M20_sdk_deploy/main.cpp'
         compatible=False
@@ -204,7 +222,7 @@ class SDKAgent:
         if not source.is_file():self.prepare_source(dict(confirmed=True))
         result=self.build(dict(confirmed=True))
         self.selection.write_text(json.dumps(dict(workspace=str(self.workspace))));self.selection.chmod(0o600)
-        return dict(result,workspace=str(self.workspace))
+        return dict(result,changed=True,reload_required=True,workspace=str(self.workspace))
 
     def prepare_source(self,req):
         if req.get('confirmed') is not True:raise ValueError('需确认下载固定版本厂商源码')
@@ -250,11 +268,27 @@ class SDKAgent:
         if path=='/policy/setup':return self.setup()
         if path=='/policy/connect':
             if not req.get('mode_confirmed'):raise ValueError('请先在手柄开启 SDK 模式')
-            state=self.ros().status()
-            if state.get('fresh') and state.get('source')=='ros2':
-                self.attached=True
-                return dict(ok=True,attached=True,message='已连接现有 SDK 控制器，无需再次启动')
-            return self.dispatch('/policy/start',req)
+            with self.lock:
+                if self.worker_alive():raise ValueError('单关节调试正在运行，请先停止关节调试')
+                self.control_generation+=1;generation=self.control_generation
+            policy=self.ros();deadline=time.monotonic()+1.5
+            # A newly created subscription needs time for DDS discovery. A
+            # missing first frame is not evidence that no controller exists.
+            while True:
+                with self.lock:
+                    if generation!=self.control_generation:raise ValueError('SDK 连接已取消，未启动其他控制器')
+                    if self.worker_alive():raise ValueError('单关节调试正在运行，请先停止关节调试')
+                    state=policy.status()
+                    if state.get('fresh') and state.get('source')=='ros2':
+                        self.attached=True
+                        return dict(ok=True,attached=True,message='已连接现有 SDK 控制器，无需再次启动')
+                if time.monotonic()>=deadline:break
+                time.sleep(.05)
+            with self.lock:
+                if generation!=self.control_generation:raise ValueError('SDK 连接已取消，未启动其他控制器')
+                # start retains the existing JOINTS_CMD publisher check. Do not
+                # bypass an unidentified controller just because waiting ended.
+                return self.dispatch('/policy/start',req)
         if path=='/policy/start':
             if not req.get('mode_confirmed'):raise ValueError('请先确认已通过手柄进入授权的 SDK 模式')
             if self.worker_alive():raise ValueError('单关节调试正在运行，请先停止关节调试')

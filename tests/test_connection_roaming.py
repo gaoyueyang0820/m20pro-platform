@@ -63,7 +63,7 @@ class ConnectionRoamingTests(unittest.TestCase):
     def test_deleted_pin_never_silently_falls_back_to_new_address_trust(self):
         alias=self.c.value['aos_identity_alias'];lines=[s for s in self.c.known.read_text().splitlines() if not s.startswith(alias+' ')]
         self.c.known.write_text('\n'.join(lines)+'\n')
-        with self.assertRaisesRegex(ValueError,'SSH 身份'):self.c.aos_ssh()
+        with self.assertRaisesRegex(ValueError,'配对'):self.c.aos_ssh()
     def test_external_sdk_target_is_not_repointed(self):
         self.c.save(dict(targets={'sdk':dict(host='sdk.fixture',follows_aos=False)}))
         self.c.save(dict(aos_ip='198.51.100.7'))
@@ -93,7 +93,7 @@ class ConnectionRoamingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as path:
             c=Connections(path)
             try:
-                with self.assertRaisesRegex(ValueError,'SSH 身份'):c.aos_ssh()
+                with self.assertRaisesRegex(ValueError,'配对'):c.aos_ssh()
                 self.assertFalse(c.known.exists())
             finally:c.close()
     def test_windows_password_path_binds_only_the_pinned_key(self):

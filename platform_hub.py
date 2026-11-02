@@ -13,7 +13,7 @@ import zipfile
 from connection_manager import Connections,ROLES
 from map_formats import Files,inspect_package,preview_pcd,identifier
 from operations import Operations
-from platform_core import rpc,number
+from platform_core import rpc,number,age_of
 from bridge.map_service import MapService
 from localization_runtime import OperationCancelled
 
@@ -33,12 +33,13 @@ class Hub:
         self._busy_owner=None;self.preparation=None;self.mapping_uncertain=None
         self._operation_context=threading.local()
         self._context_generation=0
+        self._connection_lost_since=None;self._connection_search_at=-30.;self._connection_search=None
         self.done=False
         self._seed_demo()
 
     def _seed_demo(self):
         folder=self.demo_maps.maps/'demo-yard'
-        if folder.exists():return
+        if folder.exists() or self.demo_maps.maps.exists() and any(p.is_dir() and not p.name.startswith('.') for p in self.demo_maps.maps.iterdir()):return
         folder.mkdir(parents=True)
         w,h=320,220
         pixels=bytearray([245]*(w*h))
@@ -137,7 +138,7 @@ class Hub:
                 raise OperationCancelled('准备已取消或连接已变化，不再启动任务')
             if token.get('run_id'):
                 a=self.app.autonomy
-                if not a.active or a.run_id!=token['run_id'] or time.monotonic()-a.lease>2 or a.deadline is not None and time.monotonic()>=a.deadline:
+                if not a.active or a.run_id!=token['run_id'] or a.deadline is not None and time.monotonic()>=a.deadline:
                     token['cancelled']=True
                     raise OperationCancelled('自主任务已停止或到期，不再启动建图')
 
@@ -244,8 +245,13 @@ class Hub:
         return dict(ok=True,file=m,format=m['map_format'])
 
     def sync_map(self,req):
-        grid=self.remote_maps('/maps/grid',req)
+        context=getattr(self._operation_context,'value',None) or self.context()
+        grid=self.remote_maps('/maps/grid',req,context=context)
         with self.app.lock:
+            if not self.same_context(context):raise OperationCancelled('地图同步期间连接已变化，旧栅格未导入当前机器人')
+            if (req.get('name') not in [None,'active',grid.get('robot_map_name')]
+                    or req.get('grid_id',0)!=grid.get('grid_id',0)):
+                raise ValueError('返回地图或栅格与同步请求不一致，请重新同步')
             ip=self.app.link.ip if self.app.link else None
             matches=[m for m in self.app.store.value['maps'] if m.get('robot_map_name')==grid['robot_map_name'] and
                      m.get('grid_id',0)==grid.get('grid_id',0) and m.get('robot_ip')==ip]
@@ -254,12 +260,28 @@ class Hub:
             duplicate_ids={m['id'] for m in matches if m['id']!=selected['id'] and all(m.get(k)==selected.get(k) for k in ['origin','resolution','width','height'])}
             if grid.get('active'):
                 for m in self.app.store.value['maps']:m['verified_for_robot']=False
-            selected.update(grid_id=grid.get('grid_id',0),verified_for_robot=grid.get('active',False),robot_ip=ip,demo=self.app.demo)
+            selected.update(grid_id=grid.get('grid_id',0),verified_for_robot=grid.get('active',False),robot_ip=ip,demo=self.app.demo,archived=False)
             self.app.store.value['maps']=[m for m in self.app.store.value['maps'] if m['id'] not in duplicate_ids]
             for route in self.app.store.value['routes']:
                 if route['map_id'] in duplicate_ids:route['map_id']=selected['id']
             self.app.store.save()
             return result
+
+    def _map_routes(self,name):
+        """Saved definitions are not running jobs; retain data before hard loss."""
+        ids={m['id'] for m in self.app.store.value['maps'] if m.get('robot_map_name')==name}
+        if self.app.demo and name=='demo-yard':ids.add('demo')
+        return [r for r in self.app.store.value['routes'] if r.get('map_id') in ids]
+
+    def _require_unreferenced_map(self,name):
+        routes=self._map_routes(name)
+        if routes:
+            labels='、'.join(str(r.get('name') or r['id']) for r in routes[:5])
+            raise ValueError('本机已保存路线仍引用此地图，请先调整路线：'+labels)
+
+    def _cache_map_matches(self,cached,name,context):
+        return (cached.get('robot_map_name')==name and bool(cached.get('demo'))==context[0]
+                and (context[0] or cached.get('robot_ip')==(context[1].ip if context[1] else None)))
 
     def import_package(self,file_id,name,progress):
         self.idle()
@@ -281,6 +303,8 @@ class Hub:
         if not target.get('deployed'):raise ValueError('SDK 连接服务尚未部署，请在连接中心完成一次配置')
         if not target.get('enabled'):self.connections.save(dict(targets=dict(sdk=dict(enabled=True))))
         progress(.05,'连接 SDK 后台服务')
+        try:return self.proxy('sdk','/status',timeout=2)
+        except (ValueError,OSError):pass
         self.connections.start('sdk')
         self.connections.service(dict(role='sdk',action='start'))
         deadline=time.monotonic()+10
@@ -295,13 +319,13 @@ class Hub:
         if a.demo:
             return dict(ok=True,**self.sdk_mode,demo=True,software_switch_supported=True,
                         environment=dict(ready=True,message='演示工程就绪'),agent_ready=True,calibration_verified=True,feedback_fresh=True,posture=a.basic.get('MotionState'),
-                        note='SDK 模式流程演示，不改变实机固件')
+                        note='SDK 演示环境')
         state=dict(self.sdk_mode)
         if state.get('source')=='demo':state=dict(state='unknown',source='unavailable')
         return dict(ok=True,**state,demo=False,software_switch_supported=False,
                     environment=a.sdk.get('environment') or dict(ready=False,stage='agent_update_required' if a.sdk.get('connected') else 'disconnected',message='连接服务需更新，请在连接中心更新 SDK 服务' if a.sdk.get('connected') else '尚未连接 SDK 后台服务'),agent_ready=bool(a.sdk.get('connected')),calibration_verified=bool(a.sdk.get('calibration_verified')),
                     feedback_fresh=bool(a.sdk.get('fresh')),posture=a.basic.get('MotionState'),
-                    note='已核对的厂商资料通过手柄和授权码进入/退出固件 SDK 模式。平台管理 SDK 软件连接与控制；SDK 反馈本身不能证明固件模式已切换。')
+                    note='在手柄开启 SDK 后连接；结束平台控制后，在手柄退出 SDK。')
 
     def sdk_action(self,req):
         action=req.get('action')
@@ -361,7 +385,8 @@ class Hub:
         if path=='/api/connections':return dict(ok=True,connections=self.connections.public())
         if path=='/api/operations':return dict(ok=True,jobs=self.operations.get(query.get('id',[None])[0]))
         if path=='/api/files':return dict(ok=True,files=self.files.list())
-        if path=='/api/maps/library':return self.remote_maps('/maps/list')
+        if path=='/api/maps/library':return dict(self.remote_maps('/maps/list'),desktop_management_version=1,desktop_catalog_integrity_protocol=1,desktop_permanent_delete_supported=True)
+        if path=='/api/maps/library/trash':return self.remote_maps('/maps/trash')
         if path=='/api/nos/status':
             return dict(self.demo_maps.library(),services=dict(localization='demo',planner='demo')) if self.app.demo else self.proxy('nos','/status',timeout=12)
         if path=='/api/nos/logs':
@@ -405,8 +430,9 @@ class Hub:
                 self.ensure_sdk_service(progress)
                 progress(.1,'检查工程并准备平台所需的 ROS2 输入')
                 result=self.proxy('sdk','/policy/setup',{},timeout=1500)
-                progress(.9,'重新载入 SDK 环境')
-                self.connections.service(dict(role='sdk',action='restart'))
+                if result.get('reload_required',True):
+                    progress(.9,'载入 SDK 环境')
+                    self.connections.service(dict(role='sdk',action='restart'))
                 return dict(result,message='SDK 环境已准备好，手柄开启 SDK 后点击连接')
             return self.mutate('sdk-setup',setup)
         if path=='/api/maps/extension-plan':
@@ -623,6 +649,8 @@ class Hub:
         if path=='/api/connections/save':return self.connections.save(req)
         if path=='/api/connections/scan':return self.operations.submit('host-key-scan',lambda progress:self.connections.scan(req.get('role'),progress))
         if path=='/api/connections/trust':return self.connections.trust(req)
+        if path=='/api/connections/pair':return self.operations.submit('device-pair',lambda progress:self.connections.pair(req.get('role'),progress,replace=req.get('replace') is True))
+        if path=='/api/connections/discover':return self.operations.submit('find-robot',self.connections.discover)
         if path=='/api/connections/deploy':
             return self.mutate('deploy-'+str(req.get('role')),lambda progress:self.connections.deploy(req,progress))
         if path=='/api/connections/target':
@@ -651,6 +679,33 @@ class Hub:
         if path=='/api/maps/package/export':return self.operations.submit('map-export',lambda progress:self.export_map(req.get('name'),progress))
         if path=='/api/maps/package/import':return self.mutate('map-import',lambda progress:self.import_package(req.get('id'),req.get('name'),progress))
         if path=='/api/maps/details':return self.remote_maps('/maps/details',req)
+        if path in ['/api/maps/library/rename','/api/maps/library/delete','/api/maps/library/restore','/api/maps/library/purge']:
+            action=path.rsplit('/',1)[-1]
+            context=self.context()
+            def edit(progress):
+                if not self.same_context(context):raise OperationCancelled('地图编辑连接已变化，未向新连接提交操作')
+                if action!='rename':
+                    if self.app.mapping or self.remote_maps('/maps/build/status',context=context).get('in_progress'):raise ValueError('正在保存地图，完成后即可编辑文件')
+                    learning=self.app.map_learning.snapshot()
+                    if learning.get('enabled') or learning.get('state')=='generating':raise ValueError('地图更新正在使用文件，结束更新后即可编辑文件')
+                if action=='purge':
+                    capabilities=self.remote_maps('/maps/list',context=context)
+                    if capabilities.get('catalog_integrity_protocol')!=1:raise ValueError('请先更新 NOS 地图管理服务，再彻底删除；未发送删除命令')
+                    with self.app.lock:
+                        if not self.same_context(context):raise OperationCancelled('地图编辑连接已变化')
+                result=self.remote_maps('/maps/'+action,req,context=context)
+                with self.app.lock:
+                    if not self.same_context(context):raise OperationCancelled('连接已变化，旧机器人编辑结果未写入当前地图缓存')
+                    for cached in self.app.store.value['maps']:
+                        if self._cache_map_matches(cached,result.get('name'),context):
+                            if action=='rename':cached['name']=result['display_name']
+                            if action in ['delete','purge']:cached.update(verified_for_robot=False,archived=True)
+                            if action=='restore':cached.update(verified_for_robot=False,archived=False)
+                    self.app.store.save()
+                return result
+            # A display label does not touch map geometry or running jobs.
+            if action=='rename':return self.operations.submit('map-rename',edit)
+            return self.mutate('map-'+action,edit)
         if path=='/api/sensors/cloud':
             if self.app.demo:raise ValueError('演示环境不提供虚构的实时 ROS2 点云；请选择保存的演示地图')
             role=self.connections.value.get('sensor_source','nos')
@@ -662,15 +717,39 @@ class Hub:
                 self.get('/api/maps/build/status',{})
                 if self.app.mapping:raise ValueError('正在采集或融合地图，保存完成后再切换地图')
             self.idle()
+            context=self.context()
             def apply(progress):
+                previous_library=self.remote_maps('/maps/list',context=context) if req.get('cleanup_previous') is True else {}
+                previous=previous_library.get('active')
                 with self.app.lock:
+                    if not self.same_context(context):raise OperationCancelled('地图启用连接已变化，未向新连接提交操作')
                     for m in self.app.store.value['maps']:m['verified_for_robot']=False
                     self.app.store.save()
-                result=self.remote_maps('/maps/apply',req)
+                result=self.remote_maps('/maps/apply',req,context=context)
                 progress(.75,'活动地图已切换，正在同步导航栅格')
                 try:synced=self.sync_map(dict(name=req.get('name'),grid_id=req.get('grid_id',0)))
                 except ValueError as exc:raise ValueError('活动地图已切换，但导航栅格同步未完成：'+str(exc)+'。请点击“同步用于导航”重试')
                 if not synced['map']['verified_for_robot']:raise ValueError('活动地图在同步期间发生变化，请重新核对')
+                if previous and previous!=req.get('name'):
+                    cleaned=False
+                    try:
+                        if previous_library.get('catalog_integrity_protocol')!=1:raise ValueError('机器人地图服务尚未支持完整性核对，未自动清理')
+                        if req.get('cleanup_base')!=previous:raise ValueError('确认的旧版本与当前活动版本不一致，未自动清理')
+                        with self.app.lock:
+                            if not self.same_context(context):raise OperationCancelled('连接已变化，未清理旧图')
+                            self._require_unreferenced_map(previous)
+                        learning=self.app.map_learning.snapshot()
+                        if learning.get('enabled') or learning.get('state')=='generating':raise ValueError('行走地图更新仍在运行')
+                        result['cleanup']=self.remote_maps('/maps/cleanup-previous',dict(name=req['name'],base=previous),context=context)
+                        cleaned=True
+                    except Exception as exc:
+                        result['cleanup']=dict(ok=False,retained=True,message='新图已启用，旧图保留：'+str(exc))
+                    if cleaned:
+                        with self.app.lock:
+                            if not self.same_context(context):raise OperationCancelled('旧机器人已完成旧图归档，当前连接已变化；旧结果未写入当前缓存')
+                            for cached in self.app.store.value['maps']:
+                                if self._cache_map_matches(cached,previous,context):cached.update(verified_for_robot=False,archived=True)
+                            self.app.store.save()
                 return dict(result,map=synced['map'],navigation_ready=True)
             return self.mutate('map-apply',apply)
         if path=='/api/maps/library/sync':
@@ -738,6 +817,31 @@ class Hub:
             return self.proxy('sdk','/policy/'+operation,req,timeout=8)
         return None
 
+    def maintain_connection(self):
+        """Find the paired robot after a network move without resuming old jobs."""
+        with self.app.lock:
+            if self.done or self.app.demo or not self.app.link:
+                self._connection_lost_since=None;return
+            if age_of(self.app.link.record(1002,6))<2:
+                self._connection_lost_since=None;return
+            now=time.monotonic()
+            if self._connection_lost_since is None:self._connection_lost_since=now
+            if now-self._connection_lost_since<5 or now-self._connection_search_at<30:return
+            if self._connection_search and self._connection_search.is_alive():return
+            context=self.context();self._connection_search_at=now
+        def recover():
+            try:
+                result=self.connections.discover()
+                with self.app.lock:
+                    if result.get('found') and self.same_context(context) and not self.app.demo and age_of(self.app.link.record(1002,6))>=2:
+                        saved=self.connections.value
+                        if self.app.link.ip!=saved['aos_ip']:
+                            self.app.connect(dict(mode='live',ip=saved['aos_ip'],port=saved['aos_port']))
+                            self.app.add_log('connection','已在当前网络恢复机器人连接')
+            except Exception:pass  # Next scheduled attempt retries; the UI retains link status.
+        self._connection_search=threading.Thread(target=recover,daemon=True)
+        self._connection_search.start()
+
     def loop(self):
         while not self.done:
             if not self.app.demo and not self.busy and self.mapping_uncertain and self.same_context(self.mapping_uncertain['context']):
@@ -748,6 +852,7 @@ class Hub:
             try:self.app.map_learning.poll()
             except Exception:pass
             if not self.app.demo:
+                self.maintain_connection()
                 try:self.connections.poll_once()
                 except Exception:pass
             for _ in range(20):

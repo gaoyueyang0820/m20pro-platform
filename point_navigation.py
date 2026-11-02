@@ -56,8 +56,8 @@ class PointNavigator:
     def check(self,token):
         with self.app.lock:
             if not self.current(token):raise ValueError('导航已取消或连接已变化')
-            if time.monotonic()-self.lease>2.5 or time.monotonic()>self.deadline:
-                self.stop('paused','操作页面离线或本轮到期，已请求停车');raise ValueError('导航会话已结束')
+            if time.monotonic()>self.deadline:
+                self.stop('paused','本轮时间已到，已请求停车');raise ValueError('导航任务已结束')
 
     def start(self,route,plan,intent,client_intent=None):
         app=self.app
@@ -100,8 +100,8 @@ class PointNavigator:
 
     def tick(self):
         if self.nav is not self.app.nav:return
-        if self.active and (time.monotonic()-self.lease>2.5 or time.monotonic()>self.deadline):
-            self.stop('paused','操作页面离线或本轮到期，已请求停车');return
+        if self.active and time.monotonic()>self.deadline:
+            self.stop('paused','本轮时间已到，已请求停车');return
         if self.stop_at is None:return
         app=self.app
         if app.demo:still=True

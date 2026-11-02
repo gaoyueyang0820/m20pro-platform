@@ -8,6 +8,7 @@ import zipfile
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from map_formats import Files,map_name,inspect_package,digest
+from map_catalog import MapCatalog,catalog_lock,read_json
 try:
     from .mapping_job import launch,request_identity
 except ImportError:
@@ -20,8 +21,19 @@ def run(argv):
     return p.stdout[-12000:]
 
 
-def execute(req,maps=Path('/var/opt/robot/data/maps'),data=Path('/var/lib/m20-platform')):
+def _execute(req,maps,data):
     action=req.get('action')
+    if action in ['catalog-rename','catalog-delete','catalog-restore','catalog-purge','catalog-cleanup-previous']:
+        def busy():
+            try:from .mapping_job import read_job,mapping_phase,unowned_processes
+            except ImportError:from mapping_job import read_job,mapping_phase,unowned_processes
+            start=read_job('mapping');stop=read_job('stop_mapping')
+            available=[dict(name=p.name,modified=p.stat().st_mtime,has_cloud=(p/'full_cloud.pcd').is_file(),grids=bool(list(p.glob('occ_grid*.pgm'))))
+                       for p in maps.iterdir() if p.is_dir() and not p.is_symlink() and not p.name.startswith('.')]
+            if mapping_phase(start,stop,available).get('in_progress') or unowned_processes(start):raise ValueError('机器人正在采集或处理地图，请完成后再删除')
+            refinement=read_json(data/'refinement/state.json',{})
+            if refinement.get('enabled') or refinement.get('state')=='generating':raise ValueError('请先结束行走地图更新，再编辑地图')
+        return MapCatalog(maps,busy).execute(action[len('catalog-'):],req)
     if action=='localize_auto':
         client=Path('/opt/robot/share/localization/bin/test_reloc_client')
         if not client.is_file():raise ValueError('当前设备没有已适配的厂商全局重定位客户端')
@@ -104,6 +116,13 @@ def execute(req,maps=Path('/var/opt/robot/data/maps'),data=Path('/var/lib/m20-pl
             context=dict(capture.get('context',{}),discard=True,maps=str(maps))
         return launch('stop_mapping',context=context,request_id=req.get('request_id'),expected_start_request_id=req.get('expected_start_request_id'))
     raise ValueError('不允许此系统操作')
+
+
+def execute(req,maps=Path('/var/opt/robot/data/maps'),data=Path('/var/lib/m20-platform')):
+    # Serialize activation/producer starts with catalog edits across helper processes.
+    if req.get('action') in ['apply','mapping','extend_mapping','refine_map','import']:
+        with catalog_lock(maps):return _execute(req,maps,data)
+    return _execute(req,maps,data)
 
 
 if __name__=='__main__':

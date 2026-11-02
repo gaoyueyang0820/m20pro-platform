@@ -13,9 +13,9 @@ motion=function(){
   const quick=posture.querySelector('.card-pad>.button-row');
   if(quick&&control){quick.classList.add('drive-quick-actions');quick.remove();control.querySelector('.joystick-wrap')?.before(quick);}
  }
- const feeds=['front','rear'].map((cam,i)=>`<div class="drive-feed drive-feed-${cam}"><div class="camera-feed"><img id="camera-${cam}" alt="${i?'后置':'前置'}相机" hidden><div class="camera-placeholder" id="placeholder-${cam}">${icon('vision')}<strong>${S.mode==='demo'?'演示模式没有实机画面':'正在连接'+(i?'后置':'前置')+'相机…'}</strong><small>${i?'后视':'前视'} · RTSP / 8554</small></div><div class="camera-hud"><span>${i?'后视':'前视'}</span><span id="cam-${cam}-tag">等待画面</span></div></div><span class="drive-camera-note" id="cam-${cam}-note"></span></div>`).join('');
- const video=card('驾驶视角',`<div class="drive-camera-toolbar"><div class="segmented">${[['front','前视'],['rear','后视'],['both','双视角']].map(([v,label])=>`<button data-drive-view="${v}" class="${driveView===v?'active':''}">${label}</button>`).join('')}</div><div class="button-row">${btn('重连画面','drive-camera-retry','small')}${btn('YOLO / 视觉识别','drive-vision','small')}</div></div><div id="drive-feeds" class="drive-feeds view-${driveView}">${feeds}</div><div class="drive-camera-footer"><span id="drive-video-state">等待相机反馈</span><span>取图耗时不含相机编码与网络总延迟</span></div>`,'vision');
- return heading(btn('在这里建图','start-map-here','','maps')+cmd('停止运动','stop','danger'))+
+ const feeds=['front','rear'].map((cam,i)=>`<div class="drive-feed drive-feed-${cam}"><div class="camera-feed"><img id="camera-${cam}" alt="${i?'后置':'前置'}相机" hidden><div class="camera-placeholder" id="placeholder-${cam}">${icon('vision')}<strong>${S.mode==='demo'?'演示模式没有实机画面':'正在连接'+(i?'后置':'前置')+'相机…'}</strong><small>${i?'后视':'前视'} · 实时画面</small></div><div class="camera-hud"><span>${i?'后视':'前视'}</span><span id="cam-${cam}-tag">等待画面</span></div></div><span class="drive-camera-note" id="cam-${cam}-note"></span></div>`).join('');
+ const video=card('驾驶视角',`<div class="drive-camera-toolbar"><div class="segmented">${[['front','前视'],['rear','后视'],['both','双视角']].map(([v,label])=>`<button data-drive-view="${v}" class="${driveView===v?'active':''}">${label}</button>`).join('')}</div><div class="button-row">${btn('重连画面','drive-camera-retry','small')}${btn('YOLO / 视觉识别','drive-vision','small')}</div></div><div id="drive-feeds" class="drive-feeds view-${driveView}">${feeds}</div><div class="drive-camera-footer"><span id="drive-video-state">等待相机反馈</span><span>画面卡顿时可点击重连</span></div>`,'vision');
+ return heading(btn('停稳并建图','start-map-here','','maps')+cmd('停止运动','stop','danger'))+
  `<div class="drive-layout">
    <div class="drive-camera-panel">${video}</div>
    <div class="drive-control-panel">${control?control.outerHTML:''}</div>
@@ -130,7 +130,7 @@ function mapFlowStatus(){
  const synced=!!map?.verified_for_robot&&map.robot_ip===S.ip&&active;
  const localized=demo||active&&S.online&&S.pose.Location===0;
  const step=(n,title,detail,ok)=>`<div class="map-flow-step ${ok?'complete':''}"><span>${ok?'✓':n}</span><div><strong>${title}</strong><small>${esc(detail)}</small></div></div>`;
- return `<div class="map-flow">${step(1,demo?'演示地图':'机器人活动地图',demo?name||map?.name||mapLibrary.active:mapLibrary.active||'等待读取 NOS',active)}${step(2,'导航栅格',demo?'演示栅格':synced?'已同步 · 栅格 '+(map.grid_id||0):active?'待同步到平台':'先选择并启用地图',demo||synced)}${step(3,'定位状态',demo?'演示位置，不代表实机':localized?'定位回包正常，请核对位置与朝向':active?'定位未就绪':'启用地图后核对定位',localized)}<div class="map-flow-action">${demo||synced?'':btn(page==='navigation'?'同步用于导航':'用于导航','map-use-navigation','primary small')}</div></div>`;
+ return `<div class="map-flow">${step(1,demo?'演示地图':'机器人活动地图',demo?name||map?.name||mapLibrary.active:mapLibrary.active||'等待读取 NOS',active)}${step(2,'导航栅格',demo?'演示栅格':synced?'已同步 · 栅格 '+(map.grid_id||0):active?'待同步到平台':'先选择并启用地图',demo||synced)}${step(3,'定位状态',demo?'演示位置':localized?'定位已就绪':active?'定位未就绪':'启用地图后核对定位',localized)}<div class="map-flow-action">${demo||synced?'':btn(page==='navigation'?'同步用于导航':'用于导航','map-use-navigation','primary small')}</div></div>`;
 }
 function navigationMapReady(){
  const map=selectedMap();return S.mode==='demo'||!!(map?.verified_for_robot&&map.robot_ip===S.ip&&map.robot_map_name===mapLibrary.active);
@@ -156,22 +156,27 @@ paintMapLibrary=function(){
   badge.textContent=map.active?(synced?.verified_for_robot?'活动 · 已同步':'活动 · 待同步'):map.requires_alignment_review?'融合候选 · 待核对':'未启用';
  }
 };
+function navigationMapScope(){return typeof mapScope==='function'?mapScope():JSON.stringify([S?.mode,S?.ip,S?.server_instance,S?.connection_generation]);}
+let navigationMapSyncGeneration=0;
 async function syncNavigationMap(name,gridId=0){
- const result=await api('/api/maps/library/sync',{name,grid_id:gridId});mapId=result.map.id;
- await fetchState();await loadMapLibrary();return result;
+ const scope=navigationMapScope(),generation=++navigationMapSyncGeneration,previousId=mapId;
+ const current=()=>scope===navigationMapScope()&&generation===navigationMapSyncGeneration&&(mapId===previousId||mapId===null);
+ const result=await api('/api/maps/library/sync',{name,grid_id:gridId},true);if(!current())return null;
+ await fetchState();if(!current())return null;await loadMapLibrary();if(!current())return null;
+ mapId=result.map.id;return result;
 }
 ui['map-use-navigation']=async()=>{
  const name=page==='navigation'?selectedMap()?.robot_map_name:selectedRemote;
  if(!name)throw Error('请先选择机器人地图');
  if(mapLibrary.active!==name){selectedRemote=name;return ui['apply-selected-map']();}
- const previousId=mapId;await syncNavigationMap(name,page==='maps'?+$('#remote-grid-id').value:selectedMap()?.grid_id||0);
+ const previousId=mapId,scope=navigationMapScope();const synced=await syncNavigationMap(name,page==='maps'?+$('#remote-grid-id').value:selectedMap()?.grid_id||0);if(!synced||scope!==navigationMapScope())return;
  if(previousId!==mapId){points=[];routeId=null;}navigate('navigation');toast('活动地图已同步，请核对机器人位置后设置航点');
 };
 ui['apply-selected-map']=()=>{
  if(!selectedRemote)throw Error('请先选择地图');
  const grid=+($('#remote-grid-id')?.value||0),name=selectedRemote;
  const review=mapLibrary.maps.find(m=>m.name===name)?.requires_alignment_review;
- modal('启用地图并同步导航',`${review?'<p>这是待核对的融合候选。请先在点云和二维图中检查墙线、通道是否对齐，再决定启用。</p>':''}<p>将机器人活动地图切换为 <strong>${esc(name)}</strong>，重启定位并自动同步栅格 ${grid}。完成后请核对机器人在地图中的位置与朝向。</p>`,[{label:'切换并同步',ui:'hub-confirm-apply'}]);
+ modal('启用地图并同步导航',`${review?'<p>启用前请检查墙线与通道是否对齐。</p>':''}<p>将机器人活动地图切换为 <strong>${esc(name)}</strong>，重启定位并自动同步栅格 ${grid}。完成后请核对机器人在地图中的位置与朝向。</p>`,[{label:'切换并同步',ui:'hub-confirm-apply'}]);
  ui['hub-confirm-apply']=async()=>{
   $('#modal').close();const result=await job('/api/maps/library/apply',{name,grid_id:grid},'切换地图并同步导航');
   if(mapId!==result.map.id){points=[];routeId=null;}mapId=result.map.id;await fetchState();await loadMapLibrary();render();toast('活动地图和导航栅格已同步，可进入导航设置路线');

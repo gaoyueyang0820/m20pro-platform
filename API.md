@@ -27,6 +27,8 @@ v2.3：`/api/platform` 增加 `cameras`（解码可用性、每路 fresh/age/fra
 | GET | /api/connections | 脱敏的保存配置与连接状态，不返回代理令牌 |
 | POST | /api/connections/save | {aos_ip,aos_port,auto_connect,sensor_source,targets:{nos,gos,sdk,train}} |
 | POST | /api/connections/scan | {role}，异步扫描主机指纹 |
+| POST | /api/connections/pair | {role, replace?:true}，异步首次配对；replace 仅用于主动更换设备身份 |
+| POST | /api/connections/discover | {}，异步查找已配对机器人，返回 found、connections、message |
 | POST | /api/connections/trust | {scan_id,confirmed:true} |
 | POST | /api/connections/deploy | {role,password?,admin_password?,calibration?,confirmed:true}，异步安装 |
 | POST | /api/connections/connect | {mode:demo或live}，使用保存配置 |
@@ -75,7 +77,12 @@ POST /api/maps/details {name}                 原始 ID 映射与文件目录
 GET  /api/maps/build/status                   采集/后处理命令状态与日志
 POST /api/maps/help {}                        异步读取目标版本 drmap 帮助
 POST /api/maps/library/build {action:start|stop,name?} -> job_id
-POST /api/maps/library/apply {name}           -> job_id
+POST /api/maps/library/apply {name,grid_id?,cleanup_previous?:boolean} -> job_id
+POST /api/maps/library/rename {name,display_name} -> job_id，修改显示名，内部编号不变
+POST /api/maps/library/delete {name}          -> job_id，移入可恢复回收站，禁止删除活动图
+GET  /api/maps/library/trash                  -> {maps:[{id,name,display_name,deleted_at,reason}]}
+POST /api/maps/library/restore {id}           -> job_id，不覆盖同编号地图，不自动启用
+POST /api/maps/library/purge {id,confirmed_name} -> job_id，逐张永久删除已回收地图；名称必须匹配，不可恢复
 POST /api/maps/library/sync {name,grid_id}     栅格及真实编号同步到编辑器
 POST /api/maps/package/export {name}          -> job_id，结果含文件与 format
 POST /api/maps/package/import {id,name}       -> job_id，不覆盖/自动激活
@@ -173,7 +180,7 @@ SDK `/status` 增加 environment：ready、stage、message、workspace、input�
 
 - `GET /api/autonomy/status`：任务状态、run_id、观测栅格、路径、提示与视觉状态。也随 `/api/platform` 返回。
 - `POST /api/autonomy/start`：`mode=explore`，可选 `radius`（2–12 m）、`minutes`（0.1–20）；`extend=true, base, grid_id` 表示续建；`use_current=true` 接管当前采集。`mode=follow` 使用对应视觉响应的 `sequence, person`（从 0 起）锁定人物。
-- `POST /api/autonomy/lease`：`run_id`，可见页面每 0.4 秒续约，2 秒超时停车。旧 run_id 无效。
+- `POST /api/autonomy/lease`：兼容旧客户端的 `run_id` 心跳。已启动任务由后台执行，不依赖网页可见性；任务时限、感知有效期、连接归属与显式暂停继续生效。探索范围为 `scope: "radius" | "map"`，旧 `room/floor` 值兼容映射；按地图范围仅用于已有地图更新。
 - `POST /api/autonomy/stop`：撤销当前移动任务；探索中的地图采集保留。
 - `POST /api/autonomy/save`：停车并请求停止保存，后台核对最终地图结果后才完成。
 - `POST /api/autonomy/vision/start`：可选 `model_path`，使用服务器本机已存在的 `.pt` 文件。不会自动下载权重。
@@ -219,7 +226,7 @@ SDK `/status` 增加 environment：ready、stage、message、workspace、input�
 
 `POST /api/nav/goal` 的既有 `map_id`、`plan_id` 保留，新增 `engine: "platform" | "native"`。省略时保留原 API 的 native 行为；导航页面显式传入所选执行器，默认 platform。platform 调用电脑全局规划和实时轨迹控制，通过普通模式三轴接口驱动；native 调用原厂目标接口。任务过程中不自动切换执行器。
 
-平台任务返回 `run_id`；可见控制页面每 400 ms 调用 `POST /api/nav/lease`，体为 `{ "run_id": "..." }`。过期 2.5 秒停止，旧 run_id 不能续新任务。`/api/nav/pause`、`/api/nav/cancel`、`/api/nav/resume` 和停止按钮沿用；恢复平台任务从当前位姿重新规划。
+平台任务返回 `run_id`；`POST /api/nav/lease` 保留兼容旧客户端，后台导航不依赖浏览器续租。感知失效会停止输出，任务时限和连接切换仍生效。`/api/nav/pause`、`/api/nav/cancel`、`/api/nav/resume` 和停止按钮沿用；恢复平台任务从当前位姿重新规划。
 
 状态 `nav.engine=platform`，包括 `controller`（候选数、选中轨迹、归一化 axes、计算耗时）、`replans`、`distance_remaining` 与 `progress_detail`。完成要求到达且取得新鲜实际停稳反馈，不使用原厂旧目标 ACK。`dense_path` 中 yaw 是机身朝向，侧移/倒退时不必等于路径切线。
 

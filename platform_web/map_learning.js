@@ -1,6 +1,6 @@
 'use strict';
 function learningPanel(){
- return `<section class="card learning-panel"><div class="learning-title"><div><strong>行走中优化地图</strong><p>正常行走中积累观测，与完整旧地图融合成新版本。</p></div><label class="learning-switch"><input type="checkbox" role="switch" id="map-learning-toggle" aria-label="行走中优化地图"><span></span></label></div><div id="map-learning-message" role="status">等待状态</div><div class="learning-metrics"><span id="map-learning-count">0 帧</span><span id="map-learning-base">活动地图</span>${btn('生成本轮更新','map-learning-generate','small')}</div><div id="map-learning-revisions"></div><small>新版本＝完整旧地图＋确认有效的行走更新。由你点击启用，旧版本保留。</small></section>`;
+ return `<section class="card learning-panel"><div class="learning-title"><div><strong>行走中优化地图</strong><p>行走时采集地图更新，保存为新版本。</p></div><label class="learning-switch"><input type="checkbox" role="switch" id="map-learning-toggle" aria-label="行走中优化地图"><span></span></label></div><div id="map-learning-message" role="status">等待状态</div><div class="learning-metrics"><span id="map-learning-count">0 帧</span><span id="map-learning-base">活动地图</span>${btn('保存地图更新','map-learning-generate','small')}</div><div id="map-learning-revisions"></div><small>新版本保留旧区域；点击启用后用于导航。</small></section>`;
 }
 // The optional map-refinement switch lives below the driving workspace, not above
 // the camera or the navigation map. It remains available without crowding the
@@ -13,7 +13,7 @@ function paintLearning(){
  const r=S?.map_learning;if(!r||!$('#map-learning-toggle'))return;
  $('#map-learning-toggle').checked=!!r.enabled;
  text('map-learning-message',(r.demo?'离线演示 · ':'')+(r.message||'尚未开启'));
- text('map-learning-count',(r.total_frames??r.frames??0)+' 帧累计 · 本轮 '+(r.frames||0)+' 帧');text('map-learning-base',r.base||'开启时绑定活动地图');
+ text('map-learning-count',(r.total_frames??r.frames??0)+' 帧累计 · 本轮 '+(r.frames||0)+' 帧');text('map-learning-base',r.base||'当前活动地图');
  const button=$('[data-ui="map-learning-generate"]');if(button)button.disabled=!r.frames||r.state==='generating';
  html('map-learning-revisions',(r.revisions||[]).slice().reverse().slice(0,3).map(v=>`<div class="learning-version"><div><strong>${esc(v.name)}</strong><small>${v.report.frames} 帧 · 稳定点 ${v.report.stable_points} · 栅格更新 ${v.report.occupied_added+v.report.free_updated}</small></div><button class="btn small" data-learning-apply="${esc(v.name)}" ${S.maps.some(m=>m.verified_for_robot&&m.robot_map_name===v.name)?'disabled':''}>${S.maps.some(m=>m.verified_for_robot&&m.robot_map_name===v.name)?'当前使用':'启用此版本'}</button></div>`).join(''));
 }
@@ -22,7 +22,7 @@ document.addEventListener('change',async e=>{if(e.target.id!=='map-learning-togg
 ui['map-learning-generate']=async()=>{await api('/api/maps/refinement',{action:'generate'});await fetchState();};
 document.addEventListener('click',async e=>{const b=e.target.closest('[data-learning-apply]');if(!b)return;try{
  if(S.nav.status==='running'||S.nav.status==='cancelling'||S.velocity.some(v=>v!==0))throw Error('先结束导航并停稳，再启用地图更新');
- const r=await job('/api/maps/library/apply',{name:b.dataset.learningApply,grid_id:S.map_learning.grid_id||0},'启用地图更新');mapId=r.map.id;points=[];routeId=null;await fetchState();await loadMapLibrary();render();toast('已启用更新版本，请核对定位后继续');
+ const scope=navigationMapScope(),name=b.dataset.learningApply,grid=S.map_learning.grid_id||0;await loadMapLibrary();if(scope!==navigationMapScope())return;openMapActivation(name,grid);
  }catch(err){toast(err.message,true);}});
 
 let goalPlan=null,goalPlanKey='',goalPlanBusy=false,goalPlanError='',goalPlanGeneration=0,goalSubmitting=false;
@@ -81,7 +81,7 @@ function paintGoalPlan(){
  if(page!=='navigation'||navIntent!=='goal')return;const key=goalKey();
  const status=$('#goal-plan-status');
  if(status&&!$('#point-navigation-engine')){
-  const controls=document.createElement('div');controls.innerHTML=`<label class="field">寻路方式<select id="point-navigation-engine" aria-label="寻路方式"><option value="platform">平台自主寻路 · 实时绕行</option><option value="native">原厂导航</option></select></label><p class="help">平台模式跟踪预览通路，按新障碍重新规划；原厂模式把目的地交给机器人。新平台控制器尚待实机验收。</p>`;
+  const controls=document.createElement('div');controls.innerHTML=`<label class="field">寻路方式<select id="point-navigation-engine" aria-label="寻路方式"><option value="platform">平台自主寻路 · 实时绕行</option><option value="native">原厂导航</option></select></label><p class="help">平台寻路会根据新障碍调整路线；原厂导航由机器人规划路径。</p>`;
   status.parentNode.insertBefore(controls,status);$('#point-navigation-engine').value=pointNavigationEngine;
   $('#point-navigation-engine').addEventListener('change',e=>{pointNavigationEngine=e.target.value;invalidateGoalPlan();paintGoalPlan();drawMap();});
  }

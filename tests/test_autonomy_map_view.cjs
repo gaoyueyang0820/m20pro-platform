@@ -30,7 +30,7 @@ test('saved map is historical and never substitutes global navigation coordinate
 test('wrong frame or capture cannot be painted as a current SLAM position',()=>{
  for(const key of ['frame','capture_id']){
   const f=fixture();f.map.observation[key]='other';f.c.autoDrawMap(f.map);
-  assert.doesNotMatch(f.html(),/id="auto-robot-marker"/);assert.match(f.nodes.get('#auto-observation-status').textContent,/坐标系不匹配/);
+  assert.doesNotMatch(f.html(),/id="auto-robot-marker"/);assert.match(f.nodes.get('#auto-observation-status').textContent,/地图位置同步中/);
  }
 });
 test('waiting for a new task first scan clears old map and marker',()=>{

@@ -4,6 +4,7 @@ Only transport, sensor input, and trajectory choices are mocked; no sockets,
 8080, robot processes, or hardware commands. Worker race cases use barriers.
 """
 import base64,copy,threading,time,unittest,sys
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 import numpy as np
@@ -13,6 +14,17 @@ import point_navigation as runtime
 from navigation_planner import GridPlanner
 
 REAL_THREAD=threading.Thread
+
+@contextmanager
+def replay_clock():
+    # CPU scheduling must not age synthetic telemetry. Only explicit simulated
+    # time advances it; production freshness and stop feedback checks still run.
+    now=[100.]
+    def advance(seconds):now[0]+=seconds
+    with patch.object(runtime.time,'monotonic',side_effect=lambda:now[0]),\
+         patch.object(runtime.time,'time',side_effect=lambda:1700000000.+now[0]),\
+         patch.object(runtime.time,'sleep',side_effect=advance):
+        yield advance
 
 class RecordedLink(cases.FakeLink):
     def __init__(self):
@@ -83,15 +95,18 @@ class PointNavigationRuntimeTests(unittest.TestCase):
         return Stub
 
     def test_real_start_prepare_drive_arrival_waits_for_actual_stop(self):
-        a=self.setup_live();workers=DeferredWorkers();result=self.start(workers)
-        self.assertEqual(result['execution'],'platform_trajectory');self.assertEqual(a.nav['phase'],'preparing')
-        with patch.object(runtime,'TrajectoryFollower',self.follower([('tracking',[.35,0,0]),('arrived',[0,0,0])])):
-            workers.run()
-        self.assertTrue(any(v['v']==[.35,0,0] and v['valid_until'] for v in a.link.velocities))
-        self.assertEqual(a.nav['status'],'cancelling')
-        self.assertFalse(any(p.get('type')==1003 for p in a.link.sent))
-        self.ready(x=8.05);a.tick(.01)
-        self.assertEqual(a.nav['status'],'completed');self.assertTrue(a.nav['history_saved'])
+        with replay_clock() as advance:
+            a=self.setup_live();workers=DeferredWorkers();result=self.start(workers)
+            self.assertEqual(result['execution'],'platform_trajectory');self.assertEqual(a.nav['phase'],'preparing')
+            with patch.object(runtime,'TrajectoryFollower',self.follower([('tracking',[.35,0,0]),('arrived',[0,0,0])])):
+                workers.run()
+            self.assertTrue(any(v['v']==[.35,0,0] and v['valid_until'] for v in a.link.velocities))
+            self.assertEqual(a.nav['status'],'cancelling',a.nav)
+            self.assertEqual(a.point_navigation.after_stop,'completed',a.nav)
+            self.assertNotIn('error',a.nav);self.assertFalse(a.nav.get('cancel_confirmed',False))
+            self.assertFalse(any(p.get('type')==1003 for p in a.link.sent))
+            advance(.01);self.ready(x=8.05);a.tick(.01)
+            self.assertEqual(a.nav['status'],'completed',a.nav);self.assertTrue(a.nav['history_saved'])
 
     def test_cancel_before_preparation_does_not_late_start_or_drive(self):
         a=self.setup_live();workers=DeferredWorkers();self.start(workers)
@@ -101,12 +116,15 @@ class PointNavigationRuntimeTests(unittest.TestCase):
         self.assertFalse(any(any(v['v']) for v in a.link.velocities))
 
     def test_mode_change_is_read_back_before_first_drive(self):
-        a=self.setup_live();self.ready(mode=1);workers=DeferredWorkers();self.start(workers)
-        a.link.on_mode=lambda mode:self.ready(mode=mode)
-        with patch.object(runtime,'TrajectoryFollower',self.follower([('tracking',[.35,0,0]),('arrived',[0,0,0])])):
-            workers.run()
-        self.assertEqual([p for p in a.link.sent if 'mode' in p],[dict(mode=0)])
-        self.assertTrue(any(v['v']==[.35,0,0] for v in a.link.velocities))
+        with replay_clock() as advance:
+            a=self.setup_live();self.ready(mode=1);workers=DeferredWorkers();self.start(workers)
+            def mode_changed(mode):
+                advance(.001);self.ready(mode=mode)
+            a.link.on_mode=mode_changed
+            with patch.object(runtime,'TrajectoryFollower',self.follower([('tracking',[.35,0,0]),('arrived',[0,0,0])])):
+                workers.run()
+            self.assertEqual([p for p in a.link.sent if 'mode' in p],[dict(mode=0)])
+            self.assertTrue(any(v['v']==[.35,0,0] for v in a.link.velocities))
 
     def test_manual_takeover_stops_platform_and_cannot_be_reclaimed(self):
         a=self.setup_live();workers=DeferredWorkers();r=self.start(workers)
@@ -165,11 +183,11 @@ class PointNavigationRuntimeTests(unittest.TestCase):
         a.point_navigation._drive(r['run_id'],[.35,0,.7],dict(_valid_until=time.monotonic()-.1))
         self.assertEqual(a.link.v,(0,0,0));self.assertFalse(any(any(v['v']) for v in a.link.velocities))
 
-    def test_page_lease_loss_stops_and_blocks_restart_until_fresh_stillness(self):
+    def test_deadline_stops_and_blocks_restart_until_fresh_stillness(self):
         a=self.setup_live();workers=DeferredWorkers();r=self.start(workers)
         a.point_navigation._prepare(r['run_id'],self.map)
         a.point_navigation._drive(r['run_id'],[.35,0,0],dict(_valid_until=time.monotonic()+.5))
-        future=a.point_navigation.lease+3
+        future=a.point_navigation.deadline+.01
         with patch.object(runtime.time,'monotonic',return_value=future):
             a.point_navigation.tick()
             self.assertFalse(a.point_navigation.active);self.assertEqual(a.link.v,(0,0,0));self.assertEqual(a.nav['status'],'cancelling')
@@ -177,6 +195,17 @@ class PointNavigationRuntimeTests(unittest.TestCase):
         with patch.object(runtime.time,'monotonic',return_value=future+.1):
             self.ready();a.point_navigation.tick()
         self.assertEqual(a.nav['status'],'paused')
+
+    def test_browser_inactivity_does_not_pause_navigation_but_expired_sensing_stops_axes(self):
+        a=self.setup_live();workers=DeferredWorkers();r=self.start(workers)
+        a.point_navigation._prepare(r['run_id'],self.map)
+        a.point_navigation.lease-=30
+        a.point_navigation.check(r['run_id']);a.point_navigation.tick()
+        self.assertTrue(a.point_navigation.active)
+        a.point_navigation._drive(r['run_id'],[.35,0,0],dict(_valid_until=time.monotonic()+.1))
+        self.assertEqual(a.link.v,(.35,0,0))
+        a.velocity_deadline=time.monotonic()-.01;a.tick(.01)
+        self.assertTrue(a.point_navigation.active);self.assertEqual(a.link.v,(0,0,0))
 
     def test_new_native_task_during_control_takes_away_platform_ownership(self):
         a=self.setup_live();workers=DeferredWorkers();self.start(workers)

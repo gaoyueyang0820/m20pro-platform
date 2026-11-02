@@ -140,15 +140,33 @@ test('a new UI with an old backend cannot issue automatic preparation requests',
  assert.match(f.nodes.get('[data-ui="go-goal"]').textContent,/新版/);
  await assert.rejects(f.ctx.ui['go-goal'](),/新版/);await assert.rejects(f.ctx.runRoute('route'),/新版/);assert.equal(f.calls.length,0);
 });
-test('leaving after a final goal POST revokes exactly its ID even before the late reply',async()=>{
+test('replacing a target after a final goal POST revokes exactly its ID before the late reply',async()=>{
  const f=fixture(),gate=deferred();f.ctx.S.pose.Location=0;
  f.setResponder((path,data,options,previous)=>path==='/api/nav/goal'?gate.promise:previous(path));
  const work=f.ctx.ui['go-goal']();await tick();const start=f.calls.find(r=>r.path==='/api/nav/goal');assert.ok(start);
- f.ctx.page='motion';f.ctx.location.hash='#motion';f.ctx.update();await tick();
+ f.ctx.points[0].x=4;f.ctx.update();await tick();
  const cancel=f.calls.find(r=>r.path==='/api/nav/intent/cancel');assert.ok(cancel);
  assert.equal(cancel.data.client_intent,start.data.client_intent);assert.equal(cancel.data.server_instance,start.data.server_instance);
  assert.equal(cancel.data.connection_generation,start.data.connection_generation);assert.equal(cancel.options.keepalive,true);
  assert.equal(paths(f).includes('/api/nav/cancel'),false);gate.resolve({ok:true});await work;
+});
+test('submitted navigation continues in the background while its acknowledgement is pending',async()=>{
+ for(const action of ['hidden','page','pagehide']){
+  const f=fixture(),gate=deferred();f.ctx.S.pose.Location=0;
+  f.setResponder((path,data,options,previous)=>path==='/api/nav/goal'?gate.promise:previous(path));
+  const work=f.ctx.ui['go-goal']();await tick();assert.ok(f.calls.some(r=>r.path==='/api/nav/goal'));
+  if(action==='hidden'){f.ctx.document.hidden=true;f.emit('visibilitychange');}
+  if(action==='page'){f.ctx.page='tasks';f.ctx.location.hash='#tasks';f.ctx.render();f.emit('hashchange');}
+  if(action==='pagehide')f.emit('pagehide');
+  gate.resolve({ok:true});await work;assert.equal(f.calls.some(r=>r.path==='/api/nav/intent/cancel'),false);
+  assert.equal(f.ctx.window.M20NavigationPreparation.state,null);
+ }
+});
+test('browser request loss after a submitted task goes to background does not revoke that task',async()=>{
+ const f=fixture(),gate=deferred();f.ctx.S.pose.Location=0;
+ f.setResponder(async(path,data,options,previous)=>{if(path==='/api/nav/goal'){await gate.promise;throw Error('page unloaded');}return previous(path);});
+ const work=f.ctx.ui['go-goal']();await tick();f.emit('pagehide');gate.resolve();await work;
+ assert.equal(f.calls.some(r=>r.path==='/api/nav/intent/cancel'),false);
 });
 test('edited and saved route final POST cancellation is scoped and cannot stop another intent',async()=>{
  for(const draft of [false,true]){

@@ -3,16 +3,16 @@
 // Connection and map workflows extend the existing controls without changing the
 // supplied UDP/video/YOLO implementation.
 const hubPageOrder=['overview','motion','sdk','joints','navigation','maps','tasks','training','sensors','vision','diagnostics','settings'];
-const savedPageDefinitions={...pages,sdk:['SDK 模式与软件','SDK WORKSPACE','集中管理授权流程、SDK 编译启动、ROS2 控制和单关节调试。']};
+const savedPageDefinitions={...pages,sdk:['SDK 控制','SDK WORKSPACE','连接 SDK，切换策略状态或控制关节。']};
 savedPageDefinitions.maps=['地图与点云','MAP WORKSPACE','浏览三维点云、管理地图包，并把地图同步到导航工作区。'];
-savedPageDefinitions.settings=['连接中心','CONNECTION CENTER','首次在这里完成配置与部署，以后由平台连接、检查服务并管理后台通道。'];
+savedPageDefinitions.settings=['连接中心','CONNECTION CENTER','连接机器人，查看各主机状态并管理设备。'];
 for(const key of Object.keys(pages))delete pages[key];
 for(const key of hubPageOrder)pages[key]=savedPageDefinitions[key];
 if(pages[location.hash.slice(1)])page=location.hash.slice(1);
 paths.sdk=paths.code;
 let connections=null,mapLibrary={maps:[]},fileLibrary=[],cloudViewer=null,cloudData=null,selectedRemote=null,cloudSource=null;
 let cloudViewGeneration=0;
-let connectionLoading=false,libraryLoading=false,setupRole=null,setupGeneration=0,hostScan=null,sdkInfo=null,sdkPolicy=null,hubMode=null;
+let connectionLoading=false,libraryLoading=false,setupRole=null,setupGeneration=0,sdkInfo=null,sdkPolicy=null,hubMode=null;
 const oldMapsPage=mapsPage,baseRender=render,baseUpdate=update;
 const sizeLabel=bytes=>bytes==null?'—':bytes>=1024**3?(bytes/1024**3).toFixed(2)+' GiB':bytes>=1024**2?(bytes/1024**2).toFixed(1)+' MiB':(bytes/1024).toFixed(1)+' KiB';
 const roleNames={nos:'NOS · 地图与建图',sdk:'SDK · 模式与关节',train:'训练工作站'};
@@ -56,45 +56,42 @@ async function loadConnections(paint=false){
 }
 ui['save-connections']=async()=>{if(!$('#connections-profile-form'))return;await api('/api/connections/save',readConnections());await loadConnections();toast('配置已保存在本机，下次启动会使用这些设置');};
 ui['connect-modal']=()=>navigate('settings');
-ui['hub-connect']=async()=>{if($('#connections-profile-form'))await ui['save-connections']();await api('/api/connections/connect',{mode:'live'});session=null;await fetchState();toast('已开始连接，等待机器人和后台服务反馈');};
+ui['hub-connect']=async()=>{if($('#connections-profile-form'))await api('/api/connections/save',readConnections());await api('/api/connections/connect',{mode:'live'});session=null;await fetchState();toast('正在连接机器人');};
 ui['hub-demo']=async()=>{await api('/api/connections/connect',{mode:'demo'});session=null;await fetchState();toast('已切换演示环境');};
-async function setupWizard(role){
- if($('#connections-profile-form'))await ui['save-connections']();
- setupRole=role;setupGeneration++;hostScan=null;
- const t=connections.targets[role];
- if(!t.host)throw Error('请先填写此目标的主机地址并保存');
- modal('首次配置 · '+roleNames[role],`<p>目标：${esc(t.user)}@${esc(t.host)}。先核对主机指纹，再通过页面部署后台服务。</p><div class="setup-step"><strong>1. 核对主机身份</strong><div id="host-fingerprints" class="pre">${t.trusted?'已保存信任记录；重新部署仍可读取并核对。':'尚未信任此主机。'}</div>${btn('读取 SSH 主机指纹','setup-scan')}<label class="check section-gap"><input type="checkbox" id="trust-confirm"><span>已通过设备记录或管理员核对以下指纹</span></label>${btn('确认信任此主机','setup-trust')}</div><div class="setup-step"><strong>2. 部署连接与服务</strong>${field('SSH 登录密码 / 已配置专用公钥时可留空','setup-password','','password')}${field('管理员 sudo 密码 / 已有免密 sudo 时留空','setup-admin-password','','password')}${role==='sdk'?'<div class="field"><label for="setup-calibration">本机关节校准 JSON / 可稍后重新部署上传</label><a href="/calibration.example.json" download>下载厂商参数示例，核对本机后导入</a><input type="file" id="setup-calibration" accept=".json"></div>':''}<label class="check"><input type="checkbox" id="setup-confirm"><span>确认向此用户写入专用连接公钥，并安装 /opt/m20-platform 服务、开机配置及仅允许平台指定操作的权限规则。登录和管理员密码不会保存。</span></label>${btn('确认并部署','setup-deploy','primary wide')}<p class="help">此步骤会修改目标设备的服务配置。首次完成后，日常连接由平台管理；SDK 不会自动站起或开启关节输出。</p></div><div id="setup-message" class="help"></div>`);
+let setupInstallIntent=null,setupDeployBusy=false;
+function setupConnectionScope(role){const t=connections?.targets?.[role];return JSON.stringify([S?.server_instance,S?.connection_generation,connections?.aos_ip,t?.host,t?.ssh_port,t?.via_aos]);}
+function setupInstallCurrent(token){return setupInstallIntent===token&&setupGeneration===token.generation&&setupConnectionScope(token.role)===token.scope&&page===token.page&&$('#modal')?.open!==false&&(token.dialog===null||typeof mapDialogGeneration==='undefined'||mapDialogGeneration===token.dialog);}
+async function setupWizard(role,{reinstall=false}={}){
+ if($('#connections-profile-form')){await api('/api/connections/save',readConnections());await loadConnections();}
+ const t=connections.targets[role];if(!t?.host)throw Error('尚未找到设备地址，请先自动查找机器人');
+ if(t.deployed&&!reinstall){await api('/api/connections/target',{role,action:'start'});await loadConnections();toast('正在连接 '+roleNames[role]);return;}
+ setupRole=role;setupGeneration++;
+ modal((reinstall?'更新连接服务 · ':'首次连接 · ')+roleNames[role],`<p>设备：${esc(t.host)}。安装连接服务后，日常可直接连接。</p>${field('设备账号','setup-user',t.user||'user')}${field('设备密码','setup-password','','password')}${field('管理员密码（需要时填写）','setup-admin-password','','password')}${role==='sdk'?'<details><summary>关节校准文件（可选）</summary><a href="/calibration.example.json" download>下载校准模板</a><input type="file" id="setup-calibration" accept=".json"></details>':''}<p class="help">将安装平台连接服务并配置自动启动。密码只用于本次安装，不会保存。</p>${btn(reinstall?'更新并连接':'安装并连接','setup-deploy','primary wide')}<div id="setup-message" class="help"></div>`);
+ setupInstallIntent={role,generation:setupGeneration,scope:setupConnectionScope(role),page,dialog:typeof mapDialogGeneration==='number'?mapDialogGeneration:null,reinstall};
  for(const id of ['setup-password','setup-admin-password'])$('#'+id).autocomplete='new-password';
 }
-ui['setup-scan']=async()=>{
- const role=setupRole,generation=setupGeneration,button=$('[data-ui="setup-scan"]');
- if(button?.disabled)return;
- hostScan=null;if(button)button.disabled=true;
- text('setup-message','正在检查目标主机的 SSH 连接…');text('host-fingerprints','正在检查网络与目标主机指纹…');
- try{
-  const result=await job('/api/connections/scan',{role},'读取目标主机指纹');
-  if(generation!==setupGeneration||!$('#modal').open)return;
-  hostScan=result;
-  text('host-fingerprints',result.host+':'+result.port+'\n\n'+result.fingerprints.map(f=>f.algorithm+'\n'+f.fingerprint).join('\n\n'));
-  text('setup-message','已读取目标主机指纹，请核对后确认信任');
- }catch(error){
-  if(generation===setupGeneration){hostScan=null;text('host-fingerprints','读取失败：'+error.message);text('setup-message','连接检查已结束。请核对目标地址、SSH 端口和访问路径后重试。');}
-  throw error;
- }finally{if(button)button.disabled=false;}
-};
-ui['setup-trust']=async()=>{if(!hostScan)throw Error('请先读取主机指纹');await api('/api/connections/trust',{scan_id:hostScan.scan_id,confirmed:$('#trust-confirm').checked});hostScan=null;text('setup-message','主机身份已保存，可继续部署');await loadConnections();};
 ui['setup-deploy']=async()=>{
- const req={role:setupRole,password:$('#setup-password').value,admin_password:$('#setup-admin-password').value,confirmed:$('#setup-confirm').checked};
- if($('#setup-calibration')?.files[0])req.calibration=JSON.parse(await $('#setup-calibration').files[0].text());
- const result=await job('/api/connections/deploy',req,'部署后台服务');
- $('#setup-password').value='';$('#setup-admin-password').value='';text('setup-message',result.message||'已部署后台服务，可关闭向导并查看连接状态');await loadConnections();toast('部署任务已完成');
+ const token=setupInstallIntent;if(!token||!setupInstallCurrent(token))throw Error('连接设置已变化，请重新打开首次连接');if(setupDeployBusy)return;
+ const req={role:token.role,password:$('#setup-password').value,admin_password:$('#setup-admin-password').value,confirmed:true};
+ const button=$('[data-ui="setup-deploy"]');setupDeployBusy=true;if(button)button.disabled=true;
+ try{
+  const user=$('#setup-user').value.trim();if(!user)throw Error('请输入设备账号');
+  if($('#connections-profile-form')){const input=$('#'+token.role+'-user');if(input)input.value=user;if(token.role==='sdk'&&connections.targets.sdk.follows_aos&&$('#hub-aos-ssh-user')){$('#hub-aos-ssh-user').value=user;if(typeof paintSDKAddressFollow==='function')paintSDKAddressFollow();}await api('/api/connections/save',readConnections());}
+  if(!setupInstallCurrent(token))return;
+  if($('#setup-calibration')?.files[0])req.calibration=JSON.parse(await $('#setup-calibration').files[0].text());
+  if(!setupInstallCurrent(token))return;
+  const result=await job('/api/connections/deploy',req,'安装并连接设备',()=>setupInstallCurrent(token));
+  if(!result||!setupInstallCurrent(token))return;
+  $('#setup-password').value='';$('#setup-admin-password').value='';$('#modal').close();setupInstallIntent=null;
+  await loadConnections(true);toast(result.message||'连接服务已就绪');
+ }finally{setupDeployBusy=false;if(button?.isConnected!==false)button.disabled=false;}
 };
 
 mapsPage=function(){
  const legacy=oldMapsPage();const index=legacy.indexOf('<div class="nav-layout">');
  return heading(btn('本机 drmap 参数','map-vendor-help','','code')+btn('刷新地图库','map-library-refresh','','refresh')+btn('上传地图文件','open-map-upload','primary','plus'))+operationPanel()+
- `<div class="map-workbench"><section class="card map-library"><div class="card-header"><h2 class="card-title">${icon('maps')}机器人地图库</h2><span class="pill" id="map-library-source">${S.mode==='demo'?'演示 NOS':'NOS'}</span></div><div id="remote-map-list"></div><div class="library-footer"><span id="map-disk">—</span></div></section><section class="card"><div class="card-header"><h2 class="card-title">${icon('sensors')}三维点云地图</h2><span id="cloud-source" class="pill gray">尚未加载</span></div><div class="cloud-stage"><div id="cloud-view" class="cloud-canvas"></div><div class="cloud-overlay"><strong id="cloud-title">选择地图或上传 PCD</strong><small id="cloud-subtitle">支持 ASCII / binary / binary_compressed</small></div><div class="cloud-toolbox">${btn('复位视角','cloud-fit','small')}${btn('浅色背景','cloud-background','small')}</div><div class="cloud-empty" id="cloud-empty">${icon('maps')}<strong>点云地图工作区</strong><span>查看机器人地图，或预览电脑中的 PCD / ZIP 地图包</span></div><div class="cloud-bottom"><span>拖动旋转 · 右键平移 · 滚轮缩放</span><span>坐标单位 / m</span></div></div><div class="cloud-controls"><label>点尺寸 <input type="range" id="cloud-size" min="0.015" max="0.2" step="0.005" value="0.065"></label><label>最低高度 <input type="number" id="cloud-zmin" step="0.1" value="-1"></label><label>最高高度 <input type="number" id="cloud-zmax" step="0.1" value="10"></label><label><input id="cloud-grid" type="checkbox" checked> 网格</label><label><input id="cloud-mono" type="checkbox"> 单色</label></div><div class="live-cloud-controls"><div class="field"><label for="live-cloud-topic">实时 ROS2 点云 / 保留原话题坐标系</label><select id="live-cloud-topic"><option value="/SLAM_ALIGNED_POINTS">建图实时扫描 / SLAM_ALIGNED_POINTS</option><option value="/SLAM_ACCUMULATED_POINTS_MAP">建图累积点云 / SLAM_ACCUMULATED_POINTS_MAP</option><option value="/ALIGNED_POINTS">配准点云 / ALIGNED_POINTS</option><option value="/FULL_CLOUD_MAP">全局地图 / FULL_CLOUD_MAP</option><option value="/LOC_BODY_POINTS">机身点云 / LOC_BODY_POINTS</option><option value="/LIDAR/POINTS">原始雷达 / LIDAR/POINTS</option><option value="/LIDAR/POINTS2">后雷达 / LIDAR/POINTS2</option></select></div>${btn('查看实时点云','cloud-live','small')}${btn('暂停接收','cloud-live-stop','small')}</div><div class="cloud-metrics" id="cloud-metrics">点云预览采用采样，完整地图保存在原文件及地图包中。</div></section></div>`+
- `<div class="equal-split section-gap">${card('电脑文件与地图包',`<form class="card-pad" id="hub-upload-form"><div class="field"><label for="hub-map-file">选择 PCD 点云或 ZIP 地图包 / 支持分块上传</label><input type="file" id="hub-map-file" accept=".pcd,.zip" required></div><div class="button-row"><button class="btn primary" type="submit">上传到平台</button>${btn('刷新文件','file-library-refresh')}</div><p class="help">文件留在当前电脑。导入机器人需单独确认。ZIP 会检查路径、链接、文件数量和展开大小。</p><div id="upload-status" class="help"></div></form><div id="local-file-list"></div>`,'file')}${card('选中地图操作',`<div class="card-pad"><p class="help" id="selected-map-info">先在地图库选择一份地图。</p>${select('栅格编号','remote-grid-id',[[0,'栅格 0']])}<div class="form-grid">${btn('地图内容与栅格映射','map-details','','file')}${btn('加载三维点云','preview-selected-map','','sensors')}${btn('查看二维栅格','sync-selected-map','','maps')}${btn('导出完整地图包','export-selected-map','','download')}${btn('切换为活动地图','apply-selected-map','primary')}</div><div class="divider"></div>${field('新建地图名称','hub-map-name','m20-map')}<div class="form-grid">${btn('开始建图','hub-mapping-start')}${btn('停止并保存','hub-mapping-stop')}</div><p class="help">地图切换会重启定位。导入新地图包时不会自动覆盖或切换原活动地图。</p></div>`,'settings')}</div>`+
+ `<div class="map-workbench"><section class="card map-library"><div class="card-header"><h2 class="card-title">${icon('maps')}机器人地图库</h2><span class="pill" id="map-library-source">${S.mode==='demo'?'演示 NOS':'NOS'}</span></div><div id="remote-map-list"></div><div class="library-footer"><span id="map-disk">—</span></div></section><section class="card"><div class="card-header"><h2 class="card-title">${icon('sensors')}三维点云地图</h2><span id="cloud-source" class="pill gray">尚未加载</span></div><div class="cloud-stage"><div id="cloud-view" class="cloud-canvas"></div><div class="cloud-overlay"><strong id="cloud-title">选择地图或上传 PCD</strong><small id="cloud-subtitle">支持 ASCII / binary / binary_compressed</small></div><div class="cloud-toolbox">${btn('复位视角','cloud-fit','small')}${btn('浅色背景','cloud-background','small')}</div><div class="cloud-empty" id="cloud-empty">${icon('maps')}<strong>点云地图工作区</strong><span>查看机器人地图，或预览电脑中的 PCD / ZIP 地图包</span></div><div class="cloud-bottom"><span>拖动旋转 · 右键平移 · 滚轮缩放</span><span>坐标单位 / m</span></div></div><div class="cloud-controls"><label>点尺寸 <input type="range" id="cloud-size" min="0.015" max="0.2" step="0.005" value="0.065"></label><label>最低高度 <input type="number" id="cloud-zmin" step="0.1" value="-1"></label><label>最高高度 <input type="number" id="cloud-zmax" step="0.1" value="10"></label><label><input id="cloud-grid" type="checkbox" checked> 网格</label><label><input id="cloud-mono" type="checkbox"> 单色</label></div><div class="live-cloud-controls"><div class="field"><label for="live-cloud-topic">实时 ROS2 点云 / 保留原话题坐标系</label><select id="live-cloud-topic"><option value="/SLAM_ALIGNED_POINTS">建图实时扫描 / SLAM_ALIGNED_POINTS</option><option value="/SLAM_ACCUMULATED_POINTS_MAP">建图累积点云 / SLAM_ACCUMULATED_POINTS_MAP</option><option value="/ALIGNED_POINTS">配准点云 / ALIGNED_POINTS</option><option value="/FULL_CLOUD_MAP">全局地图 / FULL_CLOUD_MAP</option><option value="/LOC_BODY_POINTS">机身点云 / LOC_BODY_POINTS</option><option value="/LIDAR/POINTS">原始雷达 / LIDAR/POINTS</option><option value="/LIDAR/POINTS2">后雷达 / LIDAR/POINTS2</option></select></div>${btn('查看实时点云','cloud-live','small')}${btn('暂停接收','cloud-live-stop','small')}</div><div class="cloud-metrics" id="cloud-metrics">预览按需抽取点云，导出文件保留完整地图。</div></section></div>`+
+ `<div class="equal-split section-gap">${card('电脑文件与地图包',`<form class="card-pad" id="hub-upload-form"><div class="field"><label for="hub-map-file">选择 PCD 点云或 ZIP 地图包 / 支持分块上传</label><input type="file" id="hub-map-file" accept=".pcd,.zip" required></div><div class="button-row"><button class="btn primary" type="submit">上传到平台</button>${btn('刷新文件','file-library-refresh')}</div><p class="help">文件留在当前电脑。导入机器人需单独确认。</p><div id="upload-status" class="help"></div></form><div id="local-file-list"></div>`,'file')}${card('选中地图操作',`<div class="card-pad"><p class="help" id="selected-map-info">先在地图库选择一份地图。</p>${select('栅格编号','remote-grid-id',[[0,'栅格 0']])}<div class="form-grid">${btn('地图内容与栅格映射','map-details','','file')}${btn('加载三维点云','preview-selected-map','','sensors')}${btn('查看二维栅格','sync-selected-map','','maps')}${btn('导出完整地图包','export-selected-map','','download')}${btn('切换为活动地图','apply-selected-map','primary')}</div><div class="divider"></div>${field('新建地图名称','hub-map-name','m20-map')}<div class="form-grid">${btn('开始建图','hub-mapping-start')}${btn('停止并保存','hub-mapping-stop')}</div><p class="help">地图切换会重启定位。导入新地图包时不会自动覆盖或切换原活动地图。</p></div>`,'settings')}</div>`+
  `<section class="card section-gap"><div class="card-header"><h2 class="card-title">${icon('maps')}建图采集与后处理</h2>${btn('刷新建图状态','map-build-status','small')}</div><div class="card-pad" id="mapping-progress"><p class="help">读取建图进程与厂商日志…</p></div></section>`+
  `<details class="legacy-map-tools section-gap" id="grid-tools"><summary>${icon('maps')} 二维栅格与定位工具</summary><div class="section-gap">${index>=0?legacy.slice(index):legacy}</div></details>`;
 };
@@ -167,7 +164,7 @@ ui['cloud-fit']=()=>cloudViewer?.reset();
 ui['cloud-background']=()=>{cloudViewer?.style({light:$('#cloud-view')?.dataset.light!=='true'});const el=$('#cloud-view');if(el)el.dataset.light=el.dataset.light==='true'?'false':'true';};
 
 function sdkPage(){
- return heading(btn('刷新状态','sdk-refresh','small','refresh')+btn('结束 SDK 控制','sdk-exit','danger','stop'))+operationPanel()+`<section class="sdk-welcome card card-pad"><div><span class="eyebrow">SDK CONTROL</span><h2>手柄开启 SDK 后，在这里连接</h2><p>平台自动连接服务并启动或接入 SDK 策略。首次使用时准备一次环境，之后直接连接。</p><div class="button-row">${btn('手柄已开启 SDK，连接并启动','sdk-connect','primary','play')}${btn('准备 SDK 环境','sdk-setup','','code')}</div></div><div id="sdk-environment" class="sdk-environment">正在检查工程</div></section><div class="sdk-console-grid">${card('SDK 控制',`<div class="card-pad"><div id="sdk-checks"></div><div class="sdk-state-actions">${btn('站起','sdk-stand','primary')}${btn('策略行走','sdk-rl','primary')}${btn('趴下','sdk-lie')}${btn('阻尼','sdk-damping')}</div><div class="sdk-motion"><div class="dpad"><button data-sdk-velocity="0,0,0.2" aria-label="SDK 左转">↶</button><button data-sdk-velocity="0.1,0,0" aria-label="SDK 前进">↑</button><button data-sdk-velocity="0,0,-0.2" aria-label="SDK 右转">↷</button><button data-sdk-velocity="0,0.1,0" aria-label="SDK 左移">←</button><button class="center" data-ui="sdk-velocity-stop">停止</button><button data-sdk-velocity="0,-0.1,0" aria-label="SDK 右移">→</button><span></span><button data-sdk-velocity="-0.1,0,0" aria-label="SDK 后退">↓</button><span></span></div><p class="help">站起后进入策略行走，再按住方向键移动；松开停止。</p></div>${kv('策略状态','—','sdk-policy-state')}${kv('控制来源','—','sdk-policy-source')}${kv('反馈','—','sdk-policy-fresh')}</div>`,'motion')}<div class="stack">${card('返回日常驾驶',`<div class="card-pad"><p>结束平台 SDK 控制，在手柄退出 SDK 后，点击下方返回。</p>${btn('手柄已退出，返回驾驶','sdk-return','','motion')}</div>`,'motion')}${card('关节与单腿',`<div class="card-pad"><p>单独抬腿、单关节控制和姿态编辑在独立页面中。</p>${btn('打开关节控制','goto-joints','','joints')}<p class="help">独立关节调试需要本机校准，普通 SDK 策略行走不要求填写关节标定。</p></div>`,'joints')}<details class="card card-pad"><summary>工程配置与日志</summary><div class="button-row section-gap">${btn('SDK 日志','sdk-service-logs','small')}${btn('连接配置','goto-connections','small')}${btn('停止策略进程','sdk-policy-stop','small')}${btn('停止关节进程','sdk-direct-stop','small')}</div><div id="sdk-mode-observation"></div></details></div></div>`;
+ return heading(btn('刷新状态','sdk-refresh','small','refresh')+btn('结束 SDK 控制','sdk-exit','danger','stop'))+operationPanel()+`<section class="sdk-welcome card card-pad"><div><span class="eyebrow">SDK CONTROL</span><h2>SDK 控制</h2><p>先用手柄开启 SDK 模式，再连接。首次使用请安装运行环境。</p><div class="button-row">${btn('已开启 SDK，连接','sdk-connect','primary','play')}${btn('安装 SDK 环境','sdk-setup','','code')}</div></div><div id="sdk-environment" class="sdk-environment">正在检查工程</div></section><div class="sdk-console-grid">${card('SDK 控制',`<div class="card-pad"><div id="sdk-checks"></div><div class="sdk-state-actions">${btn('站起','sdk-stand','primary')}${btn('策略行走','sdk-rl','primary')}${btn('趴下','sdk-lie')}${btn('阻尼','sdk-damping')}</div><div class="sdk-motion"><div class="dpad"><button data-sdk-velocity="0,0,0.2" aria-label="SDK 左转">↶</button><button data-sdk-velocity="0.1,0,0" aria-label="SDK 前进">↑</button><button data-sdk-velocity="0,0,-0.2" aria-label="SDK 右转">↷</button><button data-sdk-velocity="0,0.1,0" aria-label="SDK 左移">←</button><button class="center" data-ui="sdk-velocity-stop">停止</button><button data-sdk-velocity="0,-0.1,0" aria-label="SDK 右移">→</button><span></span><button data-sdk-velocity="-0.1,0,0" aria-label="SDK 后退">↓</button><span></span></div><p class="help">站起后进入策略行走，再按住方向键移动；松开停止。</p></div>${kv('策略状态','—','sdk-policy-state')}${kv('控制来源','—','sdk-policy-source')}${kv('反馈','—','sdk-policy-fresh')}</div>`,'motion')}<div class="stack">${card('返回日常驾驶',`<div class="card-pad"><p>结束平台 SDK 控制，在手柄退出 SDK 后，点击下方返回。</p>${btn('手柄已退出，返回驾驶','sdk-return','','motion')}</div>`,'motion')}${card('关节与单腿',`<div class="card-pad"><p>进入关节页面可控制单腿、单关节和姿态。</p>${btn('打开关节控制','goto-joints','','joints')}<p class="help">独立关节动作需要吊架和关节校准。</p></div>`,'joints')}<details class="card card-pad"><summary>工程配置与日志</summary><div class="button-row section-gap">${btn('SDK 日志','sdk-service-logs','small')}${btn('连接配置','goto-connections','small')}${btn('停止策略进程','sdk-policy-stop','small')}${btn('停止关节进程','sdk-direct-stop','small')}</div><div id="sdk-mode-observation"></div></details></div></div>`;
 }
 async function loadSDK(){
  try{
@@ -180,12 +177,12 @@ function paintSDK(error){
  if(!sdkInfo)return;
  const q=sdkInfo,env=q.environment||{};
  html('sdk-checks',kv('连接服务',q.agent_ready?'已连接':'未连接')+kv('手柄 SDK',q.state==='sdk'?'已记录开启':'等待手柄开启'));
- html('sdk-environment',`<span class="pill ${env.ready?'':'amber'}">${q.demo?'离线演示':env.ready?'工程就绪':'需要准备'}</span><p>${esc(q.demo?'演示 SDK 流程，不连接电机':env.message||'连接服务后可读取工程状态')}</p>${env.workspace?'<small>'+esc(env.workspace)+'</small>':''}`);
+ html('sdk-environment',`<span class="pill ${env.ready?'':'amber'}">${q.demo?'离线演示':env.ready?'工程就绪':'需要准备'}</span><p>${esc(q.demo?'演示 SDK · 不控制电机':env.message||'连接服务后可读取工程状态')}</p>${env.workspace?'<small>'+esc(env.workspace)+'</small>':''}`);
  text('sdk-policy-state',({idle:'空闲 / 阻尼',stand:'站立',rl_control:'策略行走',lie_down:'趴下'})[sdkPolicy?.current_state]||sdkPolicy?.current_state||'等待启动');text('sdk-policy-source',sdkPolicy?.source||'等待反馈');text('sdk-policy-fresh',error||((sdkPolicy?.fresh&&sdkPolicy?.telemetry_fresh)?'已接收':'等待状态回报'));
  html('sdk-mode-observation',kv('模式记录来源',q.source==='operator_confirmed'?'手柄操作确认':q.source==='demo'?'演示':'未确认')+kv('硬件状态码',S.basic.MotionState??'未知'));
 }
 ui['sdk-connect']=async()=>{const r=await job('/api/sdk/connect',{},'连接 SDK');toast(r.message||'已请求启动，等待状态回报');await loadSDK();};
-ui['sdk-setup']=async()=>{const r=await job('/api/sdk/setup',{},'准备 SDK 环境');toast(r.message||'环境准备完成');await loadSDK();};
+ui['sdk-setup']=async()=>{const r=await job('/api/sdk/setup',{},'安装 SDK 环境');toast(r.message||'环境准备完成');await loadSDK();};
 ui['sdk-return']=async()=>{if(!['normal','awaiting_handset_exit'].includes(sdkInfo?.state))await api('/api/sdk/action',{action:'exit'});await api('/api/sdk/action',{action:'confirm_exit',confirmed:true});navigate('motion');};
 ui['goto-connections']=()=>navigate('settings');ui['goto-joints']=()=>navigate('joints');ui['sdk-refresh']=loadSDK;
 ui['sdk-exit']=async()=>{sdkVelocityStop();const r=await api('/api/sdk/action',{action:'exit'});toast(r.message);await loadSDK();};
@@ -215,7 +212,7 @@ update=function(){baseUpdate();if(page==='maps'&&cloudViewer&&cloudSource?.kind=
 document.addEventListener('click',async event=>{
  const button=event.target.closest('button');if(!button)return;
  try{
-  if(button.dataset.setupRole)return await setupWizard(button.dataset.setupRole);
+  if(button.dataset.setupRole)return await setupWizard(button.dataset.setupRole,{reinstall:button.dataset.setupUpdate==='true'});
   if(button.dataset.connectionRole){const role=button.dataset.connectionRole;await api('/api/connections/target',{role,action:button.dataset.connectionOperation==='disconnect'?'stop':'start'});await loadConnections();return;}
   if(button.dataset.serviceRole){await serviceOperation(button.dataset.serviceRole,button.dataset.serviceOperation);return;}
   if(button.dataset.remoteMap){selectedRemote=button.dataset.remoteMap;paintMapLibrary();await previewCloud('map',selectedRemote);return;}

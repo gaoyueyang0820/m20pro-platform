@@ -10,10 +10,11 @@
  const currentOptions=id=>{const r=S.routes?.find(r=>r.id===id);return $('#nav-mode')&&r?.id===routeId?routeOptions():r?.options||{nav_mode:1,speed:1,gait:'flat',manner:0,pause_at_point:false};};
  const selection=()=>JSON.stringify([mapId,routeId,typeof mapLibrary==='undefined'?null:mapLibrary.active]);
  const draftKey=()=>JSON.stringify([mapId,points,routeOptions(),$('#route-name')?.value||'新巡检路线']);
+ const backgroundContext=t=>t.startDispatched&&(t.background||document.hidden||page!==t.page||location.hash!==t.hash);
  function current(t){
-  return pending===t&&t.generation===generation&&page===t.page&&location.hash===t.hash&&!document.hidden&&
-   connection(S)===t.connection&&S.online!==false&&selection()===t.selection&&
-   (t.kind==='goal'?goalKey()===t.key:t.kind==='draft'?navIntent==='route'&&draftKey()===t.key:routeKey(t.id)===t.key&&JSON.stringify(currentOptions(t.id))===t.optionsKey);
+  return pending===t&&t.generation===generation&&connection(S)===t.connection&&S.online!==false&&
+   (backgroundContext(t)||page===t.page&&location.hash===t.hash&&!document.hidden&&selection()===t.selection&&
+   (t.kind==='goal'?goalKey()===t.key:t.kind==='draft'?navIntent==='route'&&draftKey()===t.key:routeKey(t.id)===t.key&&JSON.stringify(currentOptions(t.id))===t.optionsKey));
  }
  function guard(t){if(!current(t))throw cancelled();}
  async function revokeStart(t,cancelGeneration){
@@ -113,6 +114,7 @@
   catch(error){
    if(error.navigationPreparationCancelled||!current(t)){if(pending===t)cancel('连接或设置已变化，已取消后续自动开始');return;}
    if(t.kind==='goal'&&error.navigation){goalPlanError=error.message;goalPlanKey=t.key;goalPlanDiagnostics=error.navigation;}
+   if(t.startDispatched&&backgroundContext(t)){notice='启动请求已提交，请在任务中心查看执行状态';return;}
    if(t.startDispatched){cancel('启动请求结果未确认，正在撤销本次意图');throw error;}
    notice=(t.previewOnly?'路线预览尚未恢复：':t.phase==='submitting'?'开始请求未获确认，请查看任务状态或按暂停：':'未开始导航：')+error.message;throw error;
   }finally{
@@ -220,9 +222,9 @@
  document.addEventListener('click',e=>{if(e.target.closest('[data-action],[data-route-load],[data-route-delete],[data-connection-role],[data-service-role]'))cancel();},true);
  document.addEventListener('pointerdown',e=>{if(e.target.closest('#nav-map,[data-velocity]'))cancel('已手动操作，已取消后续自动开始');},true);
  document.addEventListener('keydown',e=>{if(['Space','KeyW','KeyA','KeyS','KeyD','KeyQ','KeyE'].includes(e.code)&&!e.target.matches('input,textarea,select'))cancel();},true);
- document.addEventListener('visibilitychange',()=>{if(document.hidden)cancel('页面已进入后台，已取消后续自动开始');});
+ document.addEventListener('visibilitychange',()=>{if(document.hidden){if(pending?.startDispatched)pending.background=true;else cancel('页面已进入后台，已取消尚未提交的导航准备');}});
  window.addEventListener('hashchange',()=>{if(pending&&!current(pending))cancel('已离开页面，已取消后续自动开始');});
- window.addEventListener('pagehide',()=>cancel('已离开页面，撤销本次导航准备'));
+ window.addEventListener('pagehide',()=>{if(pending?.startDispatched)pending.background=true;else cancel('已离开页面，撤销尚未提交的导航准备');});
  // Expose cancellation/status for diagnostics; no programmatic start API.
  window.M20NavigationPreparation={cancel,get state(){return pending?{kind:pending.kind,phase:pending.phase,message:pending.message}:null;}};
 })();
