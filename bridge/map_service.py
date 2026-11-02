@@ -12,6 +12,7 @@ from pathlib import Path
 import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from map_formats import Files,map_name,pack_map,unpack_package,inspect_package,preview_pcd,digest
+from map_catalog import MapCatalog,catalog_lock
 try:
     from .mapping_job import read_job,mapping_phase,request_identity,unowned_processes
 except ImportError:
@@ -44,6 +45,7 @@ class MapService:
 
     def library(self):
         active=(self.maps/'active').resolve()
+        catalog=MapCatalog(self.maps);labels=catalog.labels()
         result=[]
         if self.maps.is_dir():
             for p in sorted(self.maps.iterdir(),key=lambda p:p.name):
@@ -53,12 +55,14 @@ class MapService:
                 review=p/'.m20-alignment-review.json'
                 try:review_state=json.loads(review.read_text()).get('status','pending') if review.is_file() else None
                 except (OSError,ValueError):review_state='pending'
-                result.append(dict(name=p.name,active=p.resolve()==active,grids=grids,has_cloud=cloud.is_file(),alignment_review_status=review_state,
+                try:cleanup_base=catalog.cleanup_base(p.name)
+                except (OSError,ValueError,TypeError):cleanup_base=None
+                result.append(dict(name=p.name,display_name=labels.get(p.name,p.name),cleanup_base=cleanup_base,active=p.resolve()==active,grids=grids,has_cloud=cloud.is_file(),alignment_review_status=review_state,
                                    requires_alignment_review=(p/'.m20-alignment-review.json').is_file(),
                                    cloud_bytes=cloud.stat().st_size if cloud.is_file() else 0,
                                    modified=p.stat().st_mtime,source='demo' if self.demo else 'nos'))
         usage=shutil.disk_usage(self.maps if self.maps.exists() else self.data)
-        return dict(ok=True,maps=result,active=active.name if active.is_dir() else None,
+        return dict(ok=True,maps=result,active=active.name if active.is_dir() else None,management_version=1,trash_count=len(catalog.trash_list()),
                     disk=dict(total=usage.total,free=usage.free),demo=self.demo)
 
     def grid(self,name='active',grid_id=0):
@@ -72,7 +76,7 @@ class MapService:
         if not resolution or not origin:raise ValueError('地图配置缺少分辨率或原点')
         pgm=folder/(stem+'.pgm')
         if pgm.stat().st_size>12_000_000:raise ValueError('栅格超过 12 MB，请先降采样后编辑')
-        return dict(ok=True,name=folder.name,robot_map_name=folder.name,grid_id=grid_id,
+        return dict(ok=True,name=MapCatalog(self.maps).labels().get(folder.name,folder.name),robot_map_name=folder.name,grid_id=grid_id,
                     negate=int(re.search(r'^negate:\s*([01])',yaml,re.M)[1]) if re.search(r'^negate:\s*([01])',yaml,re.M) else 0,
                     free_thresh=float(re.search(r'^free_thresh:\s*([\d.]+)',yaml,re.M)[1]) if re.search(r'^free_thresh:\s*([\d.]+)',yaml,re.M) else .196,
                     occupied_thresh=float(re.search(r'^occupied_thresh:\s*([\d.]+)',yaml,re.M)[1]) if re.search(r'^occupied_thresh:\s*([\d.]+)',yaml,re.M) else .65,
@@ -95,6 +99,14 @@ class MapService:
     def dispatch(self,path,req):
         req=req or {}
         if path=='/maps/list':return self.library()
+        if path=='/maps/trash':return dict(ok=True,maps=MapCatalog(self.maps).trash_list())
+        if path in ['/maps/rename','/maps/delete','/maps/restore','/maps/cleanup-previous']:
+            action=path.rsplit('/',1)[-1]
+            if self.demo:
+                def busy():
+                    if self.demo_build.get('in_progress'):raise ValueError('正在采集或保存地图，请完成后再编辑')
+                return MapCatalog(self.maps,busy).execute(action,req)
+            return self.privileged('catalog-'+action,req)
         if path=='/maps/project':
             folder=self.path(req.get('name','active'));meta=folder/'.m20-project.json'
             project=json.loads(meta.read_text()) if meta.is_file() else dict(root_map=folder.name,revision=1,sessions=[])
@@ -166,10 +178,11 @@ class MapService:
             review=folder/'.m20-alignment-review.json'
             if review.is_file() and json.loads(review.read_text()).get('status')=='rejected':raise ValueError('这份候选已确认存在墙线冲突，请保留作诊断，不用于导航；请选择原图或重新生成的版本')
             if self.demo:
-                active=self.maps/'active'
-                if active.is_symlink():active.unlink()
-                elif active.exists():raise ValueError('active 必须为软链接')
-                active.symlink_to(folder.name,target_is_directory=True)
+                with catalog_lock(self.maps):
+                    active=self.maps/'active'
+                    if active.is_symlink():active.unlink()
+                    elif active.exists():raise ValueError('active 必须为软链接')
+                    active.symlink_to(folder.name,target_is_directory=True)
                 return dict(ok=True,name=folder.name,delivery='simulated')
             return self.privileged('apply',dict(name=folder.name))
         if path=='/maps/build':

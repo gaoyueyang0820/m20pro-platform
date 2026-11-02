@@ -22,7 +22,7 @@ document.addEventListener('change',async e=>{if(e.target.id!=='map-learning-togg
 ui['map-learning-generate']=async()=>{await api('/api/maps/refinement',{action:'generate'});await fetchState();};
 document.addEventListener('click',async e=>{const b=e.target.closest('[data-learning-apply]');if(!b)return;try{
  if(S.nav.status==='running'||S.nav.status==='cancelling'||S.velocity.some(v=>v!==0))throw Error('先结束导航并停稳，再启用地图更新');
- const r=await job('/api/maps/library/apply',{name:b.dataset.learningApply,grid_id:S.map_learning.grid_id||0},'启用地图更新');mapId=r.map.id;points=[];routeId=null;await fetchState();await loadMapLibrary();render();toast('已启用更新版本，请核对定位后继续');
+ await loadMapLibrary();openMapActivation(b.dataset.learningApply,S.map_learning.grid_id||0);
  }catch(err){toast(err.message,true);}});
 
 let goalPlan=null,goalPlanKey='',goalPlanBusy=false,goalPlanError='',goalPlanGeneration=0,goalSubmitting=false;

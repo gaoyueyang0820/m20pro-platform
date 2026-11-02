@@ -242,7 +242,7 @@ class Connections:
     def bundle():
         names=['slam_pose_check.py','autonomy_core.py','exploration_frontiers.py','autonomy_sensing.py','native_sensing.py','native/sensing.cpp','tools/build_native_sensing.py','robot_geometry.py','navigation_diagnostics.py','map_fusion.py','map_refinement.py','map_change_policy.py','map_registration.py','map_visibility.py','platform_core.py','m20_console.py','map_formats.py','operations.py','bridge/map_refinement_agent.py',
                'bridge/http_agent.py','bridge/sensor_agent.py','bridge/sensor_client.py','bridge/map_service.py','bridge/mapping_job.py','bridge/ros_sensors.py','bridge/nos_agent.py','bridge/gos_agent.py',
-               'bridge/sdk_bridge.py','bridge/sdk_agent.py','bridge/training_agent.py','bridge/root_actions.py',
+               'bridge/sdk_bridge.py','bridge/sdk_agent.py','bridge/training_agent.py','bridge/root_actions.py','map_catalog.py',
                'platform_web/assets/model/M20.urdf','reference/errors.md']
         buffer=io.BytesIO()
         with zipfile.ZipFile(buffer,'w',zipfile.ZIP_DEFLATED) as z:

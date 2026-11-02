@@ -75,7 +75,11 @@ POST /api/maps/details {name}                 原始 ID 映射与文件目录
 GET  /api/maps/build/status                   采集/后处理命令状态与日志
 POST /api/maps/help {}                        异步读取目标版本 drmap 帮助
 POST /api/maps/library/build {action:start|stop,name?} -> job_id
-POST /api/maps/library/apply {name}           -> job_id
+POST /api/maps/library/apply {name,grid_id?,cleanup_previous?:boolean} -> job_id
+POST /api/maps/library/rename {name,display_name} -> job_id，修改显示名，内部编号不变
+POST /api/maps/library/delete {name}          -> job_id，移入可恢复回收站，禁止删除活动图
+GET  /api/maps/library/trash                  -> {maps:[{id,name,display_name,deleted_at,reason}]}
+POST /api/maps/library/restore {id}           -> job_id，不覆盖同编号地图，不自动启用
 POST /api/maps/library/sync {name,grid_id}     栅格及真实编号同步到编辑器
 POST /api/maps/package/export {name}          -> job_id，结果含文件与 format
 POST /api/maps/package/import {id,name}       -> job_id，不覆盖/自动激活

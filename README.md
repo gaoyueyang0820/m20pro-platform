@@ -4,6 +4,8 @@
 
 初始协作快照与来源清单保留在 [PLATFORM_GUIDE.md](PLATFORM_GUIDE.md)、[docs/source-snapshot.json](docs/source-snapshot.json)。
 
+地图列表支持搜索、编辑名称、可恢复删除，以及完整续建候选确认启用后的旧版本清理。使用方式、保护条件和加载范围见 [地图编辑说明](docs/map-library.md)。
+
 当前为持续开发版本。已完成部分近距离实机测试和离线闭环验证，**不代表整层无人值守、复杂地形或长期隧道任务已经验收**。具体能力与限制见 [功能状态](docs/feature-status.md)。
 
 ![独立演示中的导航完成状态](docs/images/navigation-demo.png)
