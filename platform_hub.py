@@ -72,6 +72,7 @@ class Hub:
 
     def idle(self):
         with self.app.lock:
+            if getattr(self.app,"_greet_busy",False):raise ValueError("请先停止问候动作")
             if getattr(self.app,'autonomy',None) and self.app.autonomy.active:raise ValueError('请先停止自主任务')
             if self.app.nav['status'] in ['running','cancelling'] or any(self.app.velocity) or self.app.sdk.get('armed'):
                 raise ValueError('请先停止运动并结束导航/关节控制')

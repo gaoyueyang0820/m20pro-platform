@@ -18,6 +18,7 @@ import time
 import uuid
 import zipfile
 import platform_host
+from ssh_identity import endpoint_name,known_keys,valid_alias,write_alias
 from urllib.request import Request,urlopen
 
 ROOT=Path(__file__).resolve().parent
@@ -62,6 +63,10 @@ def target_config(role,value,old=None):
     if not isinstance(result['ros_setup'],list) or any(not isinstance(p,str) or not p.startswith('/') or '\n' in p for p in result['ros_setup']):
         raise ValueError('环境脚本需为绝对路径列表')
     if result['enabled'] and not name:raise ValueError('启用连接前请填写主机地址')
+    if role=='sdk':
+        follow=value.get('follows_aos',old.get('follows_aos'))
+        if follow is not None and not isinstance(follow,bool):raise ValueError('SDK 地址跟随选项无效')
+        result['follows_aos']=follow
     if (name,user,result['ssh_port'])!=(old.get('host'),old.get('user'),old.get('ssh_port')):result['deployed']=False
     return result
 
@@ -79,6 +84,17 @@ class Connections:
             except (ValueError,OSError):raise ValueError('连接配置读取失败，请检查 data/connections.json')
         for role in ROLES:
             self.value['targets'][role]=target_config(role,self.value['targets'].get(role,{}),self.value['targets'].get(role,{}))
+        changed=self._remember_aos_identity()
+        sdk=self.value['targets']['sdk'];hop=self._aos_target()
+        if sdk.get('follows_aos') is None and sdk.get('host'):
+            same=(sdk['host'],sdk['ssh_port'],sdk['user'])==(hop['host'],hop['ssh_port'],hop['user'])
+            # Upgrade an already-moved legacy profile only when both endpoints
+            # have the same previously trusted key and account.
+            shared=set(known_keys(self.known,endpoint_name(sdk['host'],sdk['ssh_port']))) & set(known_keys(self.known,hop.get('host_key_alias','')))
+            sdk['follows_aos']=bool(same or shared and sdk['user']==hop['user'] and sdk['ssh_port']==hop['ssh_port'])
+            if sdk['follows_aos']:sdk.update(host=hop['host'],user=hop['user'],ssh_port=hop['ssh_port'])
+            changed=True
+        if changed and self.path.exists():self.persist()
         self.askpass=self.ssh/'askpass.py'
         if not platform_host.IS_WINDOWS:
             self.askpass.write_text('#!'+sys.executable+'\nimport os,sys\nsys.stdout.write(os.environ.get("M20_SSH_PASSWORD", ""))\n')
@@ -102,6 +118,20 @@ class Connections:
             if len(ports)!=len(set(ports)):raise ValueError('不同目标不能使用相同的本地端口')
             source=req.get('sensor_source',self.value.get('sensor_source','nos'))
             if source not in ['gos','nos']:raise ValueError('ROS2 数据来源只能是 GOS 或 NOS')
+            # Pin the old, explicitly trusted AOS before replacing its address.
+            # This is local I/O only: no blocking keyscan while holding the lock.
+            self._remember_aos_identity()
+            sdk=targets['sdk'];old_sdk=self.value['targets']['sdk'];explicit=req.get('targets',{}).get('sdk',{})
+            if sdk.get('follows_aos') is None:
+                sdk['follows_aos']=(sdk['host'],sdk['ssh_port'],sdk['user']) in [
+                    (self.value['aos_ip'],self.value.get('aos_ssh_port',22),self.value.get('aos_ssh_user','user')),
+                    (ip,aos_ssh_port,aos_user)]
+            if 'follows_aos' not in explicit and explicit.get('host') not in [None,old_sdk.get('host'),ip]:sdk['follows_aos']=False
+            if sdk.get('follows_aos'):
+                same_endpoint=(old_sdk['host'],old_sdk['ssh_port'],old_sdk['user'])==(ip,aos_ssh_port,aos_user)
+                same_identity=same_endpoint or old_sdk.get('follows_aos') and self.value.get('aos_identity_alias')
+                sdk.update(host=ip,user=aos_user,ssh_port=aos_ssh_port)
+                sdk['deployed']=old_sdk.get('deployed',False) if same_identity else False
             for role,target in targets.items():
                 if self.value['targets'][role]!=target or relay_changed and target.get('via_aos'):self._terminate(role)
             self.value.update(aos_ip=ip,aos_port=port,aos_ssh_user=aos_user,aos_ssh_port=aos_ssh_port,auto_connect=bool(req.get('auto_connect',False)),sensor_source=source,targets=targets)
@@ -111,18 +141,42 @@ class Connections:
     def public(self):
         with self.lock:
             value=copy.deepcopy(self.value)
+            value.pop('aos_identity_alias',None)
+            value['aos_identity_ready']=bool(self._trusted(self._aos_target()))
             for role,target in value['targets'].items():
                 target.pop('token',None)
                 target['state']=copy.deepcopy(self.states.get(role,dict(status='idle',message='尚未连接')))
-                target['trusted']=self._trusted(self.value['targets'][role])
+                target['trusted']=self._trusted(self._effective_target(role))
                 target['url']='http://127.0.0.1:'+str(target['local_port'])
             value['key_ready']=self.key.is_file()
             return value
 
     def _trusted(self,target):
         if not target.get('host') or not self.known.exists():return False
-        name=target['host'] if target['ssh_port']==22 else '[%s]:%s'%(target['host'],target['ssh_port'])
+        name=target.get('host_key_alias') or endpoint_name(target['host'],target['ssh_port'])
         return any(line.split(' ',1)[0]==name for line in self.known.read_text().splitlines() if line and not line.startswith('#'))
+
+    def _aos_target(self):
+        hop=dict(host=self.value['aos_ip'],ssh_port=self.value.get('aos_ssh_port',22),user=self.value.get('aos_ssh_user','user'))
+        alias=self.value.get('aos_identity_alias')
+        if alias:
+            if not valid_alias(alias):raise ValueError('AOS 身份记录无效，请重新核对主机指纹')
+            hop['host_key_alias']=alias
+        return hop
+
+    def _remember_aos_identity(self):
+        if self.value.get('aos_identity_alias'):return False
+        hop=self._aos_target();keys=known_keys(self.known,endpoint_name(hop['host'],hop['ssh_port']))
+        if not keys:return False
+        alias='m20-aos-'+uuid.uuid4().hex
+        write_alias(self.known,alias,keys);self.value['aos_identity_alias']=alias
+        return True
+
+    def _effective_target(self,role):
+        target=dict(self.value['targets'][role])
+        if role=='sdk' and target.get('follows_aos'):
+            target.update(self._aos_target())
+        return target
 
     def scan(self,role,progress=None):
         if role not in ROLES:raise ValueError('无效连接目标')
@@ -174,6 +228,12 @@ class Connections:
             names={r['line'].split(' ',1)[0] for r in scan['rows']}
             lines=[l for l in old.splitlines() if l.split(' ',1)[0] not in names]
             self.known.write_text('\n'.join(lines+[r['line'] for r in scan['rows']])+'\n');self.known.chmod(0o600)
+            hop=self._aos_target()
+            if scan['role']=='sdk' and (scan['host'],scan['port'])==(hop['host'],hop['ssh_port']):
+                keys=known_keys(self.known,endpoint_name(hop['host'],hop['ssh_port']))
+                if keys:
+                    alias=self.value.get('aos_identity_alias') or 'm20-aos-'+uuid.uuid4().hex
+                    write_alias(self.known,alias,keys);self.value['aos_identity_alias']=alias;self.persist()
             self.scans.pop(req['scan_id'],None)
         return dict(ok=True)
 
@@ -184,16 +244,20 @@ class Connections:
         return self.key.with_suffix('.pub').read_text().strip()
 
     def aos_ssh(self):
-        hop=dict(host=self.value['aos_ip'],ssh_port=self.value.get('aos_ssh_port',22),user=self.value.get('aos_ssh_user','user'))
-        if not self._trusted(hop):raise ValueError('AOS 中转主机尚未配置可信 SSH 连接，请先完成 AOS 上的 SDK 连接服务首次配置')
-        return [platform_host.ssh_executable('ssh'),'-T','-p',str(hop['ssh_port']),'-o','StrictHostKeyChecking=yes',
+        with self.lock:
+            if self._remember_aos_identity():self.persist()
+            hop=self._aos_target()
+        if not self._trusted(hop):raise ValueError('尚未确认 AOS 的 SSH 身份；请在高级设置中核对 AOS/SDK 主机指纹，无需切换 SDK 模式或重新部署服务')
+        argv=[platform_host.ssh_executable('ssh'),'-T','-p',str(hop['ssh_port']),'-o','StrictHostKeyChecking=yes',
                 '-o',platform_host.ssh_path_option('UserKnownHostsFile',self.known),'-o','ConnectTimeout=5','-o','BatchMode=yes',
-                '-o','IdentitiesOnly=yes','-i',str(self.key),'-o','LogLevel=ERROR'],hop
+                '-o','IdentitiesOnly=yes','-i',str(self.key),'-o','LogLevel=ERROR']
+        if hop.get('host_key_alias'):argv+=['-o','HostKeyAlias='+hop['host_key_alias']]
+        return argv,hop
 
     def scan_via_aos(self,target,progress=None):
         argv,hop=self.aos_ssh()
         if progress:progress(.3,'通过 AOS 读取内部主机 SSH 指纹')
-        program="import json,sys,socket,subprocess;r=json.load(sys.stdin);s=socket.create_connection((r['host'],r['port']),timeout=3);s.settimeout(2);b=s.recv(256);s.close();assert b.startswith(b'SSH-'),'目标端口没有返回 SSH 标识';p=subprocess.run([platform_host.ssh_executable('ssh-keyscan'),'-T','4','-p',str(r['port']),'-t','ed25519,ecdsa,rsa',r['host']],capture_output=True,text=True,timeout=10);print(p.stdout,end='')"
+        program="import json,sys,socket,subprocess;r=json.load(sys.stdin);s=socket.create_connection((r['host'],r['port']),timeout=3);s.settimeout(2);b=s.recv(256);s.close();assert b.startswith(b'SSH-'),'目标端口没有返回 SSH 标识';p=subprocess.run(['ssh-keyscan','-T','4','-p',str(r['port']),'-t','ed25519,ecdsa,rsa',r['host']],capture_output=True,text=True,timeout=10);print(p.stdout,end='')"
         argv += [hop['user']+'@'+hop['host'],shlex.join(['/usr/bin/python3','-c',program])]
         try:r=subprocess.run(argv,input=json.dumps(dict(host=target['host'],port=target['ssh_port'])),capture_output=True,text=True,timeout=18)
         except subprocess.TimeoutExpired:raise ValueError('经 AOS 读取内部主机指纹超时')
@@ -201,10 +265,11 @@ class Connections:
         return r.stdout
 
     def ssh_command(self,role,password=None,remote=None):
-        target=self.value['targets'][role]
+        target=self._effective_target(role)
         if not self._trusted(target):raise ValueError('请先在首次配置中核对并信任此主机指纹')
         argv=[platform_host.ssh_executable('ssh'),'-T','-p',str(target['ssh_port']),'-o','StrictHostKeyChecking=yes','-o',platform_host.ssh_path_option('UserKnownHostsFile',self.known),
               '-o','ConnectTimeout=5','-o','ServerAliveInterval=5','-o','ServerAliveCountMax=2','-o','LogLevel=ERROR']
+        if target.get('host_key_alias'):argv+=['-o','HostKeyAlias='+target['host_key_alias']]
         if target.get('via_aos'):
             hop_argv,hop=self.aos_ssh()
             hop_argv+=['-W',target['host']+':'+str(target['ssh_port']),hop['user']+'@'+hop['host']]
@@ -225,8 +290,8 @@ class Connections:
         argv,env=self.ssh_command(role,password,[self.value['targets'][role]['python'],'-c',program])
         if platform_host.IS_WINDOWS and password:
             from windows_ssh import run_remote
-            target=self.value['targets'][role]
-            hop=dict(host=self.value['aos_ip'],ssh_port=self.value.get('aos_ssh_port',22),user=self.value.get('aos_ssh_user','user')) if target.get('via_aos') else None
+            target=self._effective_target(role)
+            hop=self._aos_target() if target.get('via_aos') else None
             p=run_remote(self.known,self.key,target,hop,argv[-1],json.dumps(payload),password,timeout)
         else:
             p=subprocess.run(argv,input=json.dumps(payload),capture_output=True,text=True,env=env,start_new_session=not platform_host.IS_WINDOWS,timeout=timeout)
@@ -319,6 +384,8 @@ class Connections:
                     log=self.ssh/(role+'.log')
                     try:detail=log.read_text()[-800:].strip()
                     except OSError:detail='SSH 进程已退出'
+                    if 'Host key verification failed' in detail or 'REMOTE HOST IDENTIFICATION HAS CHANGED' in detail:
+                        detail='SSH 指纹与已登记主机不符，请核对地址；确实换了机器人或重装系统时，再重新核对指纹。'
                     self.states[role]=dict(status='unreachable',message='SSH 连接未建立：'+detail,attempted=state.get('attempted',0))
                 if time.time()-state.get('attempted',0)<15:continue
                 try:self.start(role)

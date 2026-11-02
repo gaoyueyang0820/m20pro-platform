@@ -7,6 +7,18 @@ import subprocess
 import time
 
 
+def bind_host_identity(client,config):
+    """Paramiko equivalent of OpenSSH HostKeyAlias; keep RejectPolicy enabled."""
+    alias=config.get('host_key_alias')
+    if not alias:return
+    keys=client.get_host_keys();pinned=keys.lookup(alias)
+    if not pinned:raise ValueError('缺少已确认的 AOS 身份记录，请重新核对指纹')
+    address=config['host'] if config['ssh_port']==22 else '[%s]:%s'%(config['host'],config['ssh_port'])
+    # Do not let an unrelated key already associated with this DHCP address pass.
+    if address in keys:del keys[address]
+    for algorithm,key in list(pinned.items()):keys.add(address,algorithm,key)
+
+
 def run_remote(known,key,target,hop,command,payload,password,timeout=180):
     try:import paramiko
     except ImportError:raise ValueError('请先运行 Windows 依赖安装脚本，补齐 Paramiko')
@@ -14,6 +26,7 @@ def run_remote(known,key,target,hop,command,payload,password,timeout=180):
     def connect(config,secret=None,sock=None):
         client=paramiko.SSHClient();clients.append(client)
         client.load_host_keys(str(known));client.set_missing_host_key_policy(paramiko.RejectPolicy())
+        bind_host_identity(client,config)
         client.connect(config['host'],port=config['ssh_port'],username=config['user'],password=secret,
                        key_filename=None if secret else str(key),allow_agent=False,look_for_keys=False,
                        timeout=5,banner_timeout=5,auth_timeout=10,sock=sock)

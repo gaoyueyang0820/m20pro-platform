@@ -1,3 +1,5 @@
-numpy>=1.26,<2; python_version < '3.10'
-numpy>=1.26; python_version >= '3.10'
+# Video runtime only; model inference dependencies are installed separately.
+numpy==1.26.4; python_version < '3.10'
+numpy==2.2.6; python_version >= '3.10'
 opencv-python==4.11.0.86
+imageio-ffmpeg==0.6.0

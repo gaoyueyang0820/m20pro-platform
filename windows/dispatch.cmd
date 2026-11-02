@@ -33,6 +33,8 @@ exit /b 1
 :run
 if /i "%~1"=="setup" (
   %M20_PY% -X utf8 "windows\setup.py"
+) else if /i "%~1"=="video" (
+  %M20_PY% -X utf8 "windows\setup.py" --video-only
 ) else if /i "%~1"=="check" (
   %M20_PY% -X utf8 "windows\check.py"
 ) else (

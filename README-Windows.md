@@ -1,5 +1,7 @@
 # M20 Pro 操作平台 · Windows 使用说明
 
+仅安装前后视视频依赖可运行 `Setup-Video-Windows.cmd`，它会安装 OpenCV、NumPy、FFmpeg 并用合成视频验证。完整安装仍使用 `Setup-Windows.cmd`。首次联网安装；换网与首次连接说明见 [本地连接与视频](docs/local-connection-and-video.md)。
+
 这是当前平台的完整源码、已构建网页、三维模型及三份识别权重。继续使用 `m20_platform.py` 和 `http://127.0.0.1:8080/`，没有另一套平台。
 
 ## 第一次使用
