@@ -1,5 +1,7 @@
 # M20 Pro 操作平台
 
+本地安装视频依赖、首次连接及换 Wi-Fi 的操作见 [本地连接与视频说明](docs/local-connection-and-video.md)。已配置的机器人换网后，只需填写新 AOS 地址，平台继续严格核对原主机身份并恢复已有通道。
+
 面向 Deep Robotics M20 Pro 的可视化控制与开发平台，整合连接、手动驾驶、相机、YOLO、建图与地图包、导航、自主探索、SDK 软件和训练任务管理。
 
 初始协作快照与来源清单保留在 [PLATFORM_GUIDE.md](PLATFORM_GUIDE.md)、[docs/source-snapshot.json](docs/source-snapshot.json)。

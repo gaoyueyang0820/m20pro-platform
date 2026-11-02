@@ -13,10 +13,16 @@ def main():
     python=str(RUNTIME/'Scripts/python.exe');env=os.environ.copy();env['PYTHONUTF8']='1'
     def pip(*args):subprocess.run([python,'-X','utf8','-m','pip','--disable-pip-version-check',*args],env=env,check=True)
     pip('install','--upgrade','pip')
-    pip('install','torch==2.8.0','torchvision==0.23.0','--index-url','https://download.pytorch.org/whl/cpu')
-    pip('install','--only-binary=:all:','-r',str(ROOT/'requirements-windows.txt'))
-    subprocess.run([python,'-X','utf8',str(ROOT/'windows/check.py')],env=env,check=True)
-    print('\nSetup complete. Run Start-Windows.cmd. Models are already included.')
+    video_only='--video-only' in sys.argv[1:]
+    if video_only:
+        pip('uninstall','-y','opencv-python-headless')
+        pip('install','--only-binary=:all:','-r',str(ROOT/'requirements-video.txt'))
+    else:
+        pip('install','torch==2.8.0','torchvision==0.23.0','--index-url','https://download.pytorch.org/whl/cpu')
+        pip('install','--only-binary=:all:','-r',str(ROOT/'requirements-windows.txt'))
+        subprocess.run([python,'-X','utf8',str(ROOT/'windows/check.py')],env=env,check=True)
+    subprocess.run([python,'-X','utf8',str(ROOT/'tools/check_video.py'),'--bundled'],env=env,check=True)
+    print('\nVideo dependencies ready. Run Start-Windows.cmd.' if video_only else '\nSetup complete. Run Start-Windows.cmd. Models are already included.')
 
 def sysconfig_free_threaded():
     import sysconfig

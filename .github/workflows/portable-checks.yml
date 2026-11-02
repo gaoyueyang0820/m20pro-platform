@@ -65,7 +65,7 @@ jobs:
       - name: Install public development dependencies
         run: python -m pip install -r requirements-dev.txt
       - name: Guarded pure Python and Node subset
-        run: python tools/check_portable.py --groups algorithms,navigation,sensing,ui --report .artifacts/portable/report.json
+        run: python tools/check_portable.py --groups algorithms,navigation,sensing,connections,ui --report .artifacts/portable/report.json
       - name: Publish partial-scope report
         if: always()
         uses: actions/upload-artifact@v4

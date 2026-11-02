@@ -1,10 +1,8 @@
 # Windows x64, standard CPython 3.11 / 3.12 / 3.13 (not free-threaded).
 # setup.py installs matching CPU-only torch/torchvision from the official index first.
-numpy==2.2.6
-opencv-python==4.11.0.86
+-r requirements-video.txt
 ultralytics==8.4.190
 lap==0.5.12
 paramiko==4.0.0
-imageio-ffmpeg==0.6.0
 torch==2.8.0
 torchvision==0.23.0
