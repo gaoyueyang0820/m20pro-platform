@@ -1,141 +1,135 @@
-"""打招呼能力单元测试：纯逻辑，不发任何网络包。运行：python -m pytest tests/test_greeting.py -q"""
+"""Pure protocol/feedback regression tests, discovered by unittest and CI."""
+import copy
 import json
+import math
 import struct
+import unittest
 
 import greeting as g
 
 
-def parse_frame(buf):
-    assert buf[:4] == g.SYNC
-    length, seq = struct.unpack_from('<HH', buf, 4)
-    assert length == len(buf) - 16
-    assert buf[8] == 1
-    obj = json.loads(buf[16:16 + length].decode('utf-8'))
-    return obj['PatrolDevice']
+def basic(**kwargs):
+    return {'BasicStatus': dict(MotionState=17, HES=0, Sleep=False,
+                               ControlUsageMode=0, Gait=0x3002, **kwargs)}
 
 
-def test_light_on_frame_structure():
-    buf = g.frame(g.LIGHT_TYPE, g.LIGHT_CMD, g.light_on_items('breathe'), seq=7)
-    pd = parse_frame(buf)
-    assert pd['Type'] == 1101 and pd['Command'] == 14
-    items = pd['Items']
-    assert items['CustomMode'] is True
-    assert len(items['Led']) == 2                    # Led[0] 头灯 Led[1] 尾灯
-    led_type, color, cycle = g.LIGHT_STYLES['breathe']
-    assert items['Led'][0] == {'Type': led_type, 'Color': [color], 'Cycle': cycle}
-    assert items['Led'][1] == items['Led'][0]        # 缺省尾灯与头灯同款
+def motion(**kwargs):
+    result = {'LinearX': 0., 'LinearY': 0., 'OmegaZ': 0.}
+    result.update(kwargs)
+    return {'MotionStatus': result}
 
 
-def test_light_styles_are_valid_and_off_resets():
-    for style in g.LIGHT_STYLES:
-        items = g.light_on_items(style)
-        assert items['Led'][0]['Type'] in (0, 1, 2, 4, 5)
-        assert items['Led'][0]['Color'][0] in (0, 1, 2, 3)
-    off = g.light_off_items()
-    assert off == {'CustomMode': False}
+def record(items, stamp=10.):return dict(items=items, monotonic_at=stamp)
 
 
-def test_light_cycle_must_be_positive_int():
-    try:
-        g._led_entry(4, 2, 0)
-        raise AssertionError('Cycle=0 应被拒绝')
-    except ValueError:
-        pass
+class GreetingTests(unittest.TestCase):
+    def test_frame_and_light_protocol(self):
+        data = g.frame(1101, 14, g.light_on_items(), seq=7)
+        self.assertEqual(data[:4], g.SYNC)
+        self.assertEqual(struct.unpack_from('<HH', data, 4), (len(data)-16, 7))
+        self.assertEqual(data[8], 1)
+        pd = json.loads(data[16:])['PatrolDevice']
+        self.assertEqual((pd['Type'], pd['Command']), (1101, 14))
+        self.assertEqual(pd['Items']['Led'], [{'Type': 4, 'Color': [2], 'Cycle': 1}]*2)
+        for style in g.LIGHT_STYLES:self.assertEqual(len(g.light_on_items(style)['Led']), 2)
+        self.assertEqual(g.light_off_items(), {'CustomMode': False})
+
+    def test_light_entries_independent_and_strict(self):
+        items = g.light_on_items()
+        items['Led'][0]['Color'][0] = 3
+        self.assertEqual(items['Led'][1]['Color'], [2])
+        for cycle in (0, 1.5, True, float('nan'), float('inf'), 61):
+            with self.subTest(cycle=cycle), self.assertRaises(ValueError):g._led_entry(4, 2, cycle)
+        for style in ('bad', [], None):
+            with self.assertRaises(ValueError):g.light_on_items(style)
+
+    def test_waveforms_request_no_xy_or_yaw(self):
+        # Requested zeros do not assert physical immobility.
+        for make, axis, amplitude, expected in [(g.nod_plan, 'Pitch', .5, 64), (g.bob_plan, 'Z', .45, 72)]:
+            plan = make()
+            self.assertEqual(len(plan), expected)
+            self.assertAlmostEqual(plan[0][axis], 0.)
+            self.assertLessEqual(max(abs(f[axis]) for f in plan), amplitude)
+            self.assertGreater(max(abs(f[axis]) for f in plan), amplitude-.05)
+            for f in plan:self.assertTrue(all(v == 0 for k, v in f.items() if k != axis))
+        self.assertEqual(len(g.zero_plan(.2)), 4)
+        self.assertTrue(all(not any(f.values()) for f in g.zero_plan()))
+
+    def test_frame_and_plan_parameter_boundaries(self):
+        for kwargs in ({'amplitude': float('nan')}, {'amplitude': float('inf')}, {'amplitude': True},
+                       {'amplitude': 0}, {'amplitude': .8}, {'periods': 1.5}, {'periods': True},
+                       {'periods': 5}, {'period_s': 0}, {'period_s': float('nan')}, {'hz': 0}, {'hz': 21}):
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):g.nod_plan(**kwargs)
+        with self.assertRaises(ValueError):g.bob_plan(amplitude=.7)
+        with self.assertRaises(ValueError):g.frame(2, 21, {'X': float('nan')})
+        with self.assertRaises(ValueError):g.frame(True, 21, {})
+        with self.assertRaises(ValueError):g.frame(2, 21, {}, seq=65536)
+        with self.assertRaises(ValueError):g.zero_plan(float('inf'))
+
+    def test_ready_records_and_explicit_age(self):
+        self.assertTrue(g.precheck(record(basic()), record(motion()), now=10.1)[0])
+        self.assertTrue(g.precheck(basic(), motion(), basic_age=.1, motion_age=.1)[0])
+        self.assertFalse(g.precheck(basic(), motion())[0])
+
+    def test_transition_is_not_standing_authorization(self):
+        b = basic();b['BasicStatus']['MotionState'] = 1
+        ok, reason = g.precheck(record(b), record(motion()), now=10.1)
+        self.assertFalse(ok)
+        self.assertIn('过渡', reason)
+        for state in (0, 2, 3, 4, 6, 17., True):
+            b['BasicStatus']['MotionState'] = state
+            self.assertFalse(g.precheck(record(b), record(motion()), now=10.1)[0])
+
+    def test_missing_and_invalid_basic_fields_fail_closed(self):
+        for field in ('HES', 'Sleep', 'MotionState', 'ControlUsageMode', 'Gait'):
+            b = basic();del b['BasicStatus'][field]
+            self.assertFalse(g.precheck(record(b), record(motion()), now=10.1)[0], field)
+        for field, values in [('HES', [True, 0., None, 3]), ('Sleep', [None, 0., True]),
+                              ('ControlUsageMode', [1, 9, 0., False]), ('Gait', [1, 0x3002+0., True])]:
+            for value in values:
+                b = basic();b['BasicStatus'][field] = value
+                self.assertFalse(g.precheck(record(b), record(motion()), now=10.1)[0], (field,value))
+
+    def test_missing_nonfinite_and_moving_feedback_rejected(self):
+        for field in ('LinearX', 'LinearY', 'OmegaZ'):
+            for value in (None, True, float('nan'), float('inf'), '0', .3, -.3):
+                m = motion();m['MotionStatus'][field] = value
+                self.assertFalse(g.precheck(record(basic()), record(m), now=10.1)[0], (field,value))
+            m = motion();del m['MotionStatus'][field]
+            self.assertFalse(g.precheck(record(basic()), record(m), now=10.1)[0])
+
+    def test_feedback_independent_expiry_future_and_nan(self):
+        self.assertFalse(g.precheck(record(basic(), 7), record(motion()), now=10.1)[0])
+        self.assertFalse(g.precheck(record(basic()), record(motion(), 9), now=10.1)[0])
+        for stamp in (float('nan'), float('inf'), True, '10', 11):
+            self.assertFalse(g.precheck(record(basic(), stamp), record(motion()), now=10.1)[0])
+        for age in (-1, float('nan'), float('inf'), True):
+            self.assertFalse(g.precheck(basic(), motion(), basic_age=age, motion_age=0)[0])
+
+    def test_malformed_records_rejected_without_exception(self):
+        for b in (None, [], {}, {'items': []}, {'items': {'BasicStatus': []}}):
+            self.assertFalse(g.precheck(b, record(motion()), now=10.1)[0])
+            self.assertEqual(g.locomotion_snapshot(b), dict(mode=None, gait=None))
+
+    def test_snapshot_and_no_implicit_restore(self):
+        snap = g.locomotion_snapshot(record(basic()))
+        self.assertEqual(snap, {'gait': 0x3002, 'mode': 0})
+        self.assertEqual(g.restore_commands(snap), [])
+        self.assertEqual(g.restore_commands(snap, snap), [])
+        self.assertEqual(g.restore_commands(None), [])
+
+    def test_restore_requires_explicit_still_matching_owned_change(self):
+        before = {'mode': 0, 'gait': 0x3002}
+        owned = {'mode': 2, 'gait': 0x1001}
+        cmds = g.restore_commands(before, dict(owned), owned_changes=owned)
+        self.assertEqual([(c[0],c[1],c[2]) for c in cmds], [(1101,5,{'Mode':0}), (2,23,{'GaitParam':0x3002})])
+        self.assertEqual(g.restore_commands(before, {'mode':1, 'gait':0x1001}, owned_changes=owned), [])
+        self.assertEqual(g.restore_commands(before, {'mode':2, 'gait':0x1003}, owned_changes=owned), [])
+        self.assertEqual(g.restore_commands(before, dict(owned), owned_changes={'mode':2}), [])
+        self.assertEqual(g.restore_commands({'mode':0., 'gait':0x3002}, owned, owned_changes=owned), [])
+        # Restoring mode resets gait to basic; do not send a redundant gait command.
+        cmds = g.restore_commands({'mode':0,'gait':0x1001}, owned, owned_changes=owned)
+        self.assertEqual([c[1] for c in cmds], [5])
 
 
-def test_nod_plan_shape_and_bounds():
-    frames = g.nod_plan()
-    assert len(frames) == int(20 * 2 * g.NOD_PERIOD_S)   # 20Hz × 2 次 × 单周期
-    amplitudes = [f['Pitch'] for f in frames]
-    assert max(amplitudes) <= g.NOD_AMPLITUDE + 1e-9
-    assert min(amplitudes) >= -g.NOD_AMPLITUDE - 1e-9
-    assert max(amplitudes) >= g.NOD_AMPLITUDE - .05      # 幅度确实用满，不被无意缩小
-    assert abs(amplitudes[0]) < .01                      # 从零开始平滑
-    for f in frames:                                     # 全程不产生位移/转向
-        assert f['X'] == f['Y'] == f['Z'] == f['Roll'] == f['Yaw'] == 0.0
-    pd = parse_frame(g.frame(g.AXIS_TYPE, g.AXIS_CMD, frames[0]))
-    assert (pd['Type'], pd['Command']) == (2, 21)
-
-
-def test_bob_plan_uses_z_axis_only():
-    frames = g.bob_plan(periods=1)
-    assert len(frames) == int(20 * g.BOB_PERIOD_S)
-    for f in frames:
-        assert f['X'] == f['Y'] == f['Pitch'] == f['Roll'] == f['Yaw'] == 0.0
-    peak = max(abs(f['Z']) for f in frames)
-    assert peak >= g.BOB_AMPLITUDE - .05
-
-
-def test_locomotion_snapshot_and_restore_order():
-    """打招呼会切换运动模式：必须记录原步态并在结束后恢复。"""
-    snap = g.locomotion_snapshot({'BasicStatus': {'Gait': 12290, 'ControlUsageMode': 0}})
-    assert snap == {'gait': 12290, 'mode': 0}
-    cmds = g.restore_commands(snap)
-    assert [c[1] for c in cmds] == [5, 23]           # 先使用模式、后步态
-    assert cmds[0][2] == {'Mode': 0}
-    assert cmds[1][2] == {'GaitParam': 12290}
-
-
-def test_locomotion_snapshot_ignores_unknown_values():
-    snap = g.locomotion_snapshot({'BasicStatus': {'Gait': 12345, 'ControlUsageMode': 9}})
-    assert snap == {'gait': None, 'mode': None}
-    assert g.restore_commands(snap) == []
-    assert g.restore_commands(None) == []
-
-
-def test_zero_plan_all_zero():
-    frames = g.zero_plan(0.2)
-    assert len(frames) == 4                          # 20Hz × 0.2s
-    for f in frames:
-        assert all(v == 0.0 for v in f.values())
-
-
-def test_amplitude_guards():
-    for bad in (0., .8):          # 0 无效；超过 0.7 的硬上限拒绝
-        try:
-            g.nod_plan(amplitude=bad)
-            raise AssertionError('幅度 %s 应被拒绝' % bad)
-        except ValueError:
-            pass
-    for bad in (0., .7):          # 起伏硬上限 0.6
-        try:
-            g.bob_plan(amplitude=bad)
-            raise AssertionError('起伏幅度 %s 应被拒绝' % bad)
-        except ValueError:
-            pass
-
-
-def test_precheck_stand_ready():
-    ok, _ = g.precheck({'BasicStatus': {'MotionState': 1, 'HES': 0, 'Sleep': False,
-                                        'ControlUsageMode': 0}},
-                       {'MotionStatus': {'LinearX': 0., 'LinearY': 0., 'OmegaZ': 0.}})
-    assert ok
-
-
-def test_precheck_accepts_rl_control_state():
-    """MotionState=17（RL 控制）是完成站立后的正常可遥控状态，必须允许。"""
-    ok, message = g.precheck({'BasicStatus': {'MotionState': 17, 'HES': 0, 'Sleep': False,
-                                              'ControlUsageMode': 0}},
-                             {'MotionStatus': {'LinearX': 0., 'LinearY': 0., 'OmegaZ': 0.}})
-    assert ok, message
-
-
-def test_precheck_rejects_sit_estop_idle_and_moving():
-    cases = [
-        ({'MotionState': 4, 'HES': 0}, None, '趴下'),
-        ({'MotionState': 2, 'HES': 0}, None, '急停'),
-        ({'MotionState': 0, 'HES': 0}, None, '可遥控'),
-        ({'MotionState': 3, 'HES': 0}, None, '可遥控'),
-        ({'MotionState': 17, 'HES': 3}, None, 'HES'),
-        ({'MotionState': 17, 'HES': 0}, {'MotionStatus': {'LinearX': .3}}, '运动'),
-        ({'MotionState': 17, 'HES': 0, 'ControlUsageMode': 1}, None, '模式'),
-    ]
-    for basic, motion, keyword in cases:
-        ok, message = g.precheck({'BasicStatus': basic}, motion)
-        assert not ok, (basic, message)
-        assert keyword in message, (keyword, message)
-
-
-def test_precheck_missing_state():
-    ok, message = g.precheck(None)
-    assert not ok and '基础状态' in message
+if __name__ == '__main__':unittest.main()

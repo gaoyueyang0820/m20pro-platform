@@ -26,6 +26,7 @@ from urllib.request import Request, urlopen
 
 import m20_console as original
 import greeting
+from greeting_runtime import GreetingSession
 from platform_core import ROOT, JOINTS, LEGS, NEUTRAL, ERRORS, RobotLink, Store, Training, number, integer, rpc, explain_error, leg_target, age_of
 from platform_hub import Hub
 from shared_access import SharedAccess, lan_addresses
@@ -87,7 +88,8 @@ class Platform:
     def __init__(self, store=None):
         self.lock = threading.RLock()
         self.instance_id=uuid.uuid4().hex
-        self._greet_lock=threading.Lock(); self._greet_busy=False
+        self._greet_busy=False
+        self.greeting=GreetingSession(self)
         self._greet_demo=None  # (结束时刻, 'nod'/'bob', 开始时刻)：演示模式的合成问候姿态
         from pose_monitor import PoseMonitor
         self.pose_monitor=PoseMonitor()
@@ -149,6 +151,7 @@ class Platform:
 
     def connect(self, req):
         with self.lock:
+            self.cancel_greeting('连接正在切换，问候已取消')
             self.autonomy.reset_context()
             self._plan_generation+=1;self.goal_plans.clear()
             self.map_learning.reset()
@@ -207,6 +210,7 @@ class Platform:
             self.nav.pop('preparation',None)
 
     def stop(self, estop=False):
+        self.cancel_greeting()
         self.invalidate_navigation_start()
         self.autonomy.pause()
         if self.nav.get('engine')=='platform':self.point_navigation.stop()
@@ -256,6 +260,9 @@ class Platform:
                     warnings=failures, message='停止请求尚未确认，请核对状态反馈' if unconfirmed else '已发停止请求；请核对状态反馈' if self.link else '演示动作已停止')
 
     def command(self, action):
+        if action=='greet' or action.startswith('greet_'):
+            return self.greet(**self._greet_args(action))
+        if action!='heartbeat':self.cancel_greeting('已切换为手动操作，问候取消')
         if not action.startswith("light_") and action!='heartbeat':
             self.invalidate_navigation_start();self.autonomy.pause("已切换为手动操作")
         if action in ['stop', 'estop']:
@@ -325,8 +332,6 @@ class Platform:
                     if f is not None: self.lights['Front'] = f
                     if b is not None: self.lights['Back'] = b
             else:
-                if action in ('greet',) or action.startswith('greet_'):
-                    return self.greet(**self._greet_args(action))
                 raise ValueError('未知指令')
             result = dict(ok=True, delivery='sent' if self.link else 'simulated',
                           message='已发送，实际执行以状态回报为准' if self.link else '演示操作完成')
@@ -346,151 +351,21 @@ class Platform:
         return dict(style='breathe')
 
     def greet(self, style='breathe', motion=None):
-        """一键打招呼：灯语（可靠）+ 可选原地点头/起伏（实验动作，前置自检）。
+        return self.greeting.start(style,motion)
 
-        序列在后台线程执行；动作类期间持有 drive_lock，使 20Hz 保活环暂停，
-        避免 Pitch/Z 序列与保活零轴帧互相覆盖。任何异常都会恢复默认灯效并归零。
-        """
-        if style not in greeting.LIGHT_STYLES:
-            raise ValueError('未知灯语预设')
-        if motion and self.nav['status'] in ['running', 'cancelling']:
-            raise ValueError('导航任务进行中，不能执行动作类问候')
-        if self.demo:
-            # 演示环境没有真实关节反馈：合成一段姿态变化让界面可预览，
-            # 明确标注为模拟，不产生任何 UDP 运动指令。
-            label = {'nod': '点头', 'bob': '起伏'}.get(motion, '')
-            if motion:
-                with self._greet_lock:
-                    if self._greet_busy:
-                        raise ValueError('上一次打招呼还未结束，请稍候')
-                    self._greet_busy = True
-                period = greeting.NOD_PERIOD_S if motion == 'nod' else greeting.BOB_PERIOD_S
-                duration = period * 2
-                self._greet_demo = (time.time() + duration, motion, time.time())
-
-                def demo_worker():
-                    try:
-                        time.sleep(duration)
-                        self.add_log('greet', '演示问候结束：%s + 原地%s（模拟）' % (style, label))
-                    finally:
-                        self._greet_demo = None
-                        self._greet_busy = False
-                threading.Thread(target=demo_worker, daemon=True).start()
-                self.add_log('greet', '灯语问好 + 原地%s（演示模拟）:%s' % (label, style))
-                return dict(ok=True, delivery='simulated',
-                            message='演示模式：灯语 4 秒 + 原地%s已模拟（姿态为合成数据，非实机动作）' % label)
-            self.add_log('greet', '灯语问好（演示）:' + style)
-            return dict(ok=True, delivery='simulated', message='演示模式：灯语问好（%s）已模拟' % style)
-        if not self.link:
-            raise ValueError('机器人未连接：请在连接中心完成 AOS 连接并确认状态反馈后再问候')
-        link = self.link
-        # 前置检查必须在返回“进行中”之前完成：否则界面报成功、实际被静默拒绝。
-        basic_record = link.record(1002, 6)
-        motion_record = link.record(1002, 4)
-        # 动作前记录步态/使用模式：轴指令会切换运动模式，结束后要恢复。
-        locomotion_before = greeting.locomotion_snapshot(basic_record.get('items', {}))
-        if motion:
-            ok, message = greeting.precheck(basic_record.get('items', {}), motion_record.get('items', {}))
-            if not ok:
-                self.add_log('greet', '前置检查未通过：' + message)
-                raise ValueError('无法执行动作类问候：' + message)
-        elif age_of(basic_record) > 3:
-            self.add_log('greet', '基础状态超过 3 秒未更新，灯语仍会尝试下发')
-        with self._greet_lock:
-            if self._greet_busy:
-                raise ValueError('上一次打招呼还未结束，请稍候')
-            self._greet_busy = True
-
-        def cleanup():
-            try:
-                link.command(greeting.LIGHT_TYPE, greeting.LIGHT_CMD, greeting.light_off_items(), 'greet-cleanup')
-                for items in greeting.zero_plan(0.2):
-                    link.command(greeting.AXIS_TYPE, greeting.AXIS_CMD, items, 'greet-cleanup')
-            except Exception:
-                pass
-
-        def restore(snapshot, tag='greet-restore'):
-            """把步态/使用模式发回打招呼前的值，并轮询确认（轴指令会切换运动模式）。"""
-            commands = greeting.restore_commands(snapshot)
-            if not commands:
-                return
-            for type_, cmd, items, label in commands:
-                link.command(type_, cmd, items, label)
-                time.sleep(0.5)
-            deadline = time.monotonic() + 3
-            while time.monotonic() < deadline:
-                basic = link.record(1002, 6).get('items', {})
-                status = basic.get('BasicStatus') or basic
-                if status.get('Gait') == snapshot.get('gait'):
-                    self.add_log('greet', '已恢复原运行状态：步态 0x%04X' % snapshot['gait'])
-                    return
-                time.sleep(0.2)
-            basic = link.record(1002, 6).get('items', {})
-            status = basic.get('BasicStatus') or basic
-            self.add_log('greet', '步态恢复未确认（当前 0x%04X，期望 0x%04X），请手动切回' % (
-                status.get('Gait') or 0, snapshot.get('gait') or 0))
-
-        def worker():
-            try:
-                light = greeting.light_on_items(style)
-                link.command(greeting.LIGHT_TYPE, greeting.LIGHT_CMD, light, 'greet-light')
-                deadline = time.monotonic() + 4
-                while time.monotonic() < deadline:
-                    time.sleep(1)
-                    link.command(greeting.LIGHT_TYPE, greeting.LIGHT_CMD, light, 'greet-light')
-                if motion:
-                    # 灯语 4 秒期间状态可能变化：动作前再核对一次。
-                    ok2, message2 = greeting.precheck(link.record(1002, 6).get('items', {}),
-                                                      link.record(1002, 4).get('items', {}))
-                    if not ok2:
-                        self.add_log('greet', '动作已取消（状态变化）：' + message2)
-                        link.command(greeting.LIGHT_TYPE, greeting.LIGHT_CMD, greeting.light_off_items(), 'greet-light-off')
-                        return
-                    frames = greeting.nod_plan() if motion == 'nod' else greeting.bob_plan()
-                    period = 1.0 / greeting.AXIS_HZ
-                    with link.drive_lock:
-                        began = time.monotonic()
-                        for k, items in enumerate(frames):
-                            delay = began + k * period - time.monotonic()
-                            if delay > 0:
-                                time.sleep(delay)
-                            link.command(greeting.AXIS_TYPE, greeting.AXIS_CMD, items, 'greet-motion')
-                        for items in greeting.zero_plan():
-                            link.command(greeting.AXIS_TYPE, greeting.AXIS_CMD, items, 'greet-motion')
-                            time.sleep(period)
-                link.command(greeting.LIGHT_TYPE, greeting.LIGHT_CMD, greeting.light_off_items(), 'greet-light-off')
-                # 轴指令会把机器人切到标准运动模式（实机 Gait 由 0x3002 变 0x1003），
-                # 导致之后无法按原方式行走，因此动作结束后必须恢复原步态/使用模式。
-                if motion:
-                    restore(locomotion_before)
-                self.add_log('greet', '打招呼完成:%s%s' % (style, '+' + motion if motion else ''))
-            except Exception as exc:
-                cleanup()
-                if motion:
-                    try:
-                        restore(locomotion_before)
-                    except Exception:
-                        pass
-                self.add_log('greet', '打招呼异常：' + str(exc))
-            finally:
-                self._greet_busy = False
-        threading.Thread(target=worker, daemon=True).start()
-        message = '打招呼进行中：灯语 4 秒，随后自动恢复默认灯效'
-        if motion:
-            amplitude = greeting.NOD_AMPLITUDE if motion == 'nod' else greeting.BOB_AMPLITUDE
-            seconds = (greeting.NOD_PERIOD_S if motion == 'nod' else greeting.BOB_PERIOD_S) * 2
-            message = '打招呼进行中：灯语 4 秒 + 原地%s 2 次（幅度 %d%%，约 %.1f 秒，全程无位移）' % (
-                '点头' if motion == 'nod' else '起伏', round(amplitude * 100), seconds)
-        return dict(ok=True, delivery='sent', message=message)
+    def cancel_greeting(self, reason='已由操作者停止问候'):
+        self.greeting.cancel(reason)
 
     def set_velocity(self, req, autonomous=False, valid_until=None):
         if not autonomous:
+            self.cancel_greeting("已由手动驾驶接管，问候取消")
             self.invalidate_navigation_start();self.autonomy.pause("已由手动驾驶接管")
             if self.point_navigation.active:self.point_navigation.stop('paused','已由手动驾驶接管')
         v = [number(req.get(k, 0), -1, 1) for k in ['forward', 'side', 'yaw']]
         if valid_until is None and 'hold_seconds' in req:
             valid_until=time.monotonic()+number(req['hold_seconds'],0,.5)
         if any(v):
+            if autonomous and self._greet_busy:raise ValueError('问候动作持有控制权，请先停止问候')
             if self.hub.busy:raise ValueError('正在执行 '+self.hub.busy+'，暂不可移动')
             if not self.demo and self.hub.sdk_mode.get('state') in ['sdk','awaiting_handset_exit']:
                 raise ValueError('请先退出 SDK 模式再使用日常遥控')
@@ -514,6 +389,7 @@ class Platform:
             if not self.demo and not self.sdk.get('fresh'):raise ValueError('需要新鲜的 SDK 关节反馈才能预览')
             return dict(ok=True,positions=leg_target(self.positions,req.get('leg'),req.get('height')))
         if operation == 'arm':
+            if self._greet_busy:raise ValueError('请先停止问候动作，再开启关节控制')
             if self.autonomy.active:raise ValueError('请先停止自主任务')
             if self.hub.busy:raise ValueError('后台操作正在进行，请等待完成')
             if self.sdk.get('vendor_running') or (self.demo and self.hub.demo_policy.get('vendor_running')):
@@ -783,6 +659,7 @@ class Platform:
         # Stop/reconnect can invalidate it while a slow map request is pending.
         with self.lock:
             if req.get('_start_generation',self._nav_start_generation)!=self._nav_start_generation:raise ValueError('导航启动已取消')
+            if self._greet_busy:raise ValueError('请先停止问候动作，再开始导航')
             if self.autonomy.active:raise ValueError('请先停止自主任务，再开始导航')
             if self.hub.busy:raise ValueError('后台操作正在进行，请等待完成')
             if not self.demo and self.hub.sdk_mode.get('state') in ['sdk','awaiting_handset_exit']:
@@ -1054,12 +931,14 @@ class Platform:
         self.store.value['history']=self.store.value['history'][-50:];self.store.save()
 
     def resume_route(self):
+        if self._greet_busy:raise ValueError('请先停止问候动作，再继续导航')
         if self.nav.get('engine')=='platform':
             if self.nav.get('status')!='paused':raise ValueError('任务不在暂停状态')
             route=self.nav['route'];point=route['points'][0]
             return self.start_goal(dict(map_id=route['map_id'],x=point['x'],y=point['y'],yaw=point['yaw'],engine='platform'))
         with self.lock:
             if self.nav['status']!='paused':raise ValueError('任务不在暂停状态')
+            if self._greet_busy:raise ValueError('请先停止问候动作，再继续导航')
             if self.nav['index']>=len(self.nav['route']['points']):raise ValueError('所有航点已完成，请重新执行路线')
             if self.hub.busy:raise ValueError('后台操作正在进行，请等待完成')
             self.live_ready()
@@ -1320,8 +1199,8 @@ class Platform:
                 demo_greet=self._greet_demo
                 if demo_greet:
                     until,mode,began=demo_greet
-                    if now<until:
-                        elapsed=now-began
+                    if time.monotonic()<until:
+                        elapsed=time.monotonic()-began
                         if mode=='nod':
                             # 预览幅度 ±0.3 rad（约 17°），周期与实机序列一致
                             motion['Pitch']+=.3*math.sin(2*math.pi*elapsed/greeting.NOD_PERIOD_S)
@@ -1359,7 +1238,7 @@ class Platform:
                         poses=self.store.value['poses'],task_history=self.store.value['history'],history=self.history,
                         config={role:self.hub.connections.endpoint(role)[0] if self.hub.connections.value['targets'][role]['enabled'] else self.config.get(role,'') for role in ['sdk','nos','gos','train']}, mapping=self.mapping,server_time=now,
                         raw=self.raw,
-                        cameras=self.cameras.status(),autonomy=self.autonomy.snapshot(),map_learning=self.map_learning.snapshot(),vision_models=vision_catalog(),people_counts=self.people.status(),
+                        greeting=self.greeting.snapshot(),cameras=self.cameras.status(),autonomy=self.autonomy.snapshot(),map_learning=self.map_learning.snapshot(),vision_models=vision_catalog(),people_counts=self.people.status(),
                         background_operation=self.hub.busy,
                         ppe=original.PPE.status() if original.PPE and not self.demo else dict(enabled=False,demo=self.demo),
                         capabilities=dict(udp=True,sdk=sdk.get('connected',False),training=bool(self.config.get('train')),nos=bool(self.config.get('nos'))))
@@ -1588,6 +1467,7 @@ class Handler(original.Handler):
                 return self._json(result)
             if p=='/api/nos/action':
                 with APP.lock:
+                    if APP._greet_busy:raise ValueError('请先停止问候动作，再操作建图服务')
                     if APP.nav['status'] in ['running','cancelling'] or any(APP.velocity) or APP.sdk.get('armed'):
                         raise ValueError('请先停止运动并结束导航/关节控制')
                 result=APP.proxy('nos','/action',req,timeout=30)
@@ -1607,6 +1487,8 @@ class Handler(original.Handler):
                     APP.store.save()
                 return self._json(imported)
             with APP.lock:
+                if p in ['/api/charge','/api/sleep','/api/maintenance','/api/localize']:
+                    APP.cancel_greeting('操作者已切换设备操作，问候取消')
                 if p in ['/api/connect','/api/config']: result=APP.connect(req)
                 elif p=='/api/cmd': result=APP.command(str(req.get('action','')))
                 elif p=='/api/velocity': result=APP.set_velocity(req)

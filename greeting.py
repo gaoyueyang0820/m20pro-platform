@@ -1,213 +1,174 @@
-"""M20 Pro 打招呼能力：灯语与原地动作序列的纯逻辑生成。Python 3.9+。
+"""Greeting protocol helpers; no network, process, or actuator I/O.
 
-本模块不做任何 I/O：只生成待发送的协议帧与按 20Hz 采样的轴指令序列；
-发送、保活与安全仲裁由调用方完成（独立用法见 m20_greet.py）。
-
-协议依据（查证记录见 docs/greeting.md，均为官方支持站 2026-10-23 版）：
-- 自定义灯语 Type=1101 Command=14：CustomMode 开关；Led[0]=头灯 Led[1]=尾灯；
-  Led[].Type：0常亮 / 1填充流水 / 2移动流水 / 4呼吸 / 5单色闪烁；
-  Led[].Color：0黑 / 1白 / 2绿 / 3蓝；Cycle 为整数秒，仅呼吸/闪烁生效。
-  CustomMode=false 恢复默认灯效。
-- 轴指令 Type=2 Command=21：仅常规/辅助模式；各轴归一化 [-1,1]；
-  建议 20Hz；官方注明"当前开放的四种移动步态仅有 X、Y、Yaw 生效"，
-  Z/Pitch 在站立静止状态下的行为未经文档背书，相关序列仅供实机验证。
-- 超时保护：超过 500ms 未收到新的速度指令，机器人自动减速进入安全状态，
-  因此任何轴序列结束后必须跟随一段零轴帧（≥0.4s）。
-- 运动状态 MotionState：站立=1 / 关节阻尼/软急停=2 / 趴下=4 / RL控制=17。
+Custom lights are documented. Pitch/Z gestures remain experimental: the official
+M20 moving-gait interface documents only X/Y/Yaw as effective. Zero requested
+translation is not proof of zero physical displacement or unchanged posture.
 """
+import copy
 import json
 import math
 import struct
+import time
 
-SYNC = b"\xEB\x91\xEB\x90"          # 帧头（官方 SDK 源码确认：EB 91 外部用户）
-ASDU_FORMAT_JSON = 0x01
-
-AXIS_TYPE, AXIS_CMD = 2, 21          # 运动控制（轴指令）
-LIGHT_TYPE, LIGHT_CMD = 1101, 14     # 自定义灯语
-
-# MotionState 取值（Type=1002 Cmd=6 BasicStatus）
-STATE_IDLE, STATE_STAND, STATE_ESTOP, STATE_BOOT_DAMP, STATE_SIT, STATE_RL = 0, 1, 2, 3, 4, 17
-
-# 灯语预设：名称 -> (Led[].Type, Color, Cycle 整数秒)
-LIGHT_STYLES = {
-    'breathe': (4, 2, 1),   # 绿色呼吸灯（最直观的"友好"信号）
-    'flow':    (2, 3, 1),   # 蓝色移动流水灯（移动流水不依赖 Cycle）
-    'blink':   (5, 1, 1),   # 白色单色闪烁（Cycle 整数秒，最短 1s）
-    'solid':   (0, 2, 1),   # 绿色常亮
-}
-
-AXIS_HZ = 20                         # 官方建议 20Hz
-ZERO_HOLD_S = 0.4                    # 序列结束后零轴保持时长（覆盖 500ms 超时保护）
+SYNC=b'\xEB\x91\xEB\x90'
+ASDU_FORMAT_JSON=1
+AXIS_TYPE,AXIS_CMD=2,21
+LIGHT_TYPE,LIGHT_CMD=1101,14
+STATE_IDLE,STATE_STAND,STATE_ESTOP,STATE_BOOT_DAMP,STATE_SIT,STATE_RL=0,1,2,3,4,17
+LIGHT_STYLES={'breathe':(4,2,1),'flow':(2,3,1),'blink':(5,1,1),'solid':(0,2,1)}
+AXIS_HZ=20
+ZERO_HOLD_S=.4  # Repeated zero requests; neither an ACK nor proof of a physical stop.
+NOD_AMPLITUDE=.5
+NOD_PERIOD_S=1.6
+BOB_AMPLITUDE=.45
+BOB_PERIOD_S=1.8
+GAITS=(0x1001,0x1003,0x3002,0x3003)
 
 
-def frame(type_, command, items, seq=0, at=None):
-    """组 16 字节协议头 + JSON ASDU 的完整 UDP 帧。"""
-    import time as _time
-    body = json.dumps(
-        {"PatrolDevice": {"Type": type_, "Command": command,
-                          "Time": at or _time.strftime("%Y-%m-%d %H:%M:%S"),
-                          "Items": items}},
-        separators=(",", ":")).encode("utf-8")
-    if len(body) > 65535:
-        raise ValueError("ASDU 过长")
-    header = SYNC + struct.pack("<HH", len(body), seq & 0xFFFF) \
-        + bytes([ASDU_FORMAT_JSON]) + b"\x00" * 7
-    return header + body
+def _number(value,name,low,high):
+    if isinstance(value,bool) or not isinstance(value,(int,float)) or not math.isfinite(value) or not low<=value<=high:
+        raise ValueError('%s 必须是 [%s,%s] 内的有限数值'%(name,low,high))
+    return float(value)
 
 
-def _led_entry(led_type, color, cycle):
-    if led_type not in (0, 1, 2, 4, 5):
-        raise ValueError("灯光模式 Type 只能是 0/1/2/4/5")
-    if color not in (0, 1, 2, 3):
-        raise ValueError("灯光颜色 Color 只能是 0/1/2/3")
-    if led_type in (4, 5) and int(cycle) < 1:
-        raise ValueError("呼吸/闪烁的 Cycle 必须是 ≥1 的整数秒")
-    return {"Type": led_type, "Color": [color], "Cycle": int(cycle)}
+def _integer(value,name,low,high):
+    if isinstance(value,bool) or not isinstance(value,int) or not low<=value<=high:
+        raise ValueError('%s 必须是 [%s,%s] 内的整数'%(name,low,high))
+    return value
 
 
-def light_on_items(style='breathe', tail=None):
-    """打招呼灯语 Items（Type=1101 Command=14）。tail 缺省与头灯同款。"""
-    if style not in LIGHT_STYLES:
-        raise ValueError("灯语预设必须是 %s" % '/'.join(LIGHT_STYLES))
-    led_type, color, cycle = LIGHT_STYLES[style]
-    head = _led_entry(led_type, color, cycle)
-    tail_entry = head if tail is None else _led_entry(*tail)
-    return {"CustomMode": True, "Led": [head, tail_entry]}
+def frame(type_,command,items,seq=0,at=None):
+    _integer(type_,'Type',0,65535);_integer(command,'Command',0,65535);_integer(seq,'seq',0,65535)
+    if not isinstance(items,dict):raise ValueError('Items 必须是对象')
+    body=json.dumps({'PatrolDevice':{'Type':type_,'Command':command,'Time':at or time.strftime('%Y-%m-%d %H:%M:%S'),'Items':items}},separators=(',',':'),allow_nan=False).encode('utf-8')
+    if len(body)>65535:raise ValueError('ASDU 过长')
+    return SYNC+struct.pack('<HH',len(body),seq)+bytes([ASDU_FORMAT_JSON])+b'\0'*7+body
 
 
-def light_off_items():
-    """退出自定义灯语，恢复默认灯效。"""
-    return {"CustomMode": False}
+def _led_entry(led_type,color,cycle):
+    _integer(led_type,'灯光 Type',0,5);_integer(color,'灯光 Color',0,3);_integer(cycle,'Cycle',1,60)
+    if led_type not in (0,1,2,4,5):raise ValueError('灯光 Type 只能是 0/1/2/4/5')
+    return {'Type':led_type,'Color':[color],'Cycle':cycle}
 
 
-def _axis_items(x=0., y=0., z=0., roll=0., pitch=0., yaw=0.):
-    values = dict(X=x, Y=y, Z=z, Roll=roll, Pitch=pitch, Yaw=yaw)
-    for name, value in values.items():
-        if not -1.0 <= value <= 1.0:
-            raise ValueError("轴 %s 超出 [-1,1]：%s" % (name, value))
-    return {k: round(v, 3) for k, v in values.items()}
+def light_on_items(style='breathe',tail=None):
+    if not isinstance(style,str) or style not in LIGHT_STYLES:raise ValueError('未知灯语预设')
+    head=_led_entry(*LIGHT_STYLES[style])
+    if tail is not None and (not isinstance(tail,(list,tuple)) or len(tail)!=3):raise ValueError('尾灯配置需要 Type/Color/Cycle')
+    return {'CustomMode':True,'Led':[head,copy.deepcopy(head) if tail is None else _led_entry(*tail)]}
 
 
-# 动作幅度（归一化 [-1,1]，表示相对最大速度的比例）。
-# 2026-11-02 按用户要求放大，同时放慢周期：幅度大 + 周期短 会让机身甩得太急。
-NOD_AMPLITUDE = .5      # 俯仰点头幅度（旧 .25）
-NOD_PERIOD_S = 1.6      # 单次点头周期（旧 1.0）
-BOB_AMPLITUDE = .45     # 升降起伏幅度（旧 .2）
-BOB_PERIOD_S = 1.8      # 单次起伏周期（旧 1.2）
+def light_off_items():return {'CustomMode':False}
 
 
-def nod_plan(amplitude=NOD_AMPLITUDE, periods=2, period_s=NOD_PERIOD_S, hz=AXIS_HZ):
-    """站立状态下用 Pitch 轴"点头"的 20Hz 轴指令帧序列（实验性）。
+def _axis_items(x=0.,y=0.,z=0.,roll=0.,pitch=0.,yaw=0.):
+    return {k:round(_number(v,k,-1,1),3) for k,v in dict(X=x,Y=y,Z=z,Roll=roll,Pitch=pitch,Yaw=yaw).items()}
 
-    官方注明移动步态下 Z/Pitch 不生效；站立静止状态未获文档背书，
-    上线前必须在实机按 docs/greeting.md 的验证清单确认。
-    默认幅度 0.5（50% 最大俯仰角速度）、单周期 1.6s，全程 X=Y=Z=Roll=Yaw=0，
-    不产生任何位移或转向。
+
+def _plan(axis,amplitude,maximum,periods,period_s,hz):
+    amplitude=_number(amplitude,'幅度',.001,maximum);period_s=_number(period_s,'单周期秒数',.5,5.)
+    _integer(periods,'周期次数',1,4);_integer(hz,'采样频率',AXIS_HZ,AXIS_HZ)
+    return [_axis_items(**{axis:amplitude*math.sin(2*math.pi*(k/hz)/period_s)}) for k in range(math.ceil(hz*periods*period_s))]
+
+
+def nod_plan(amplitude=NOD_AMPLITUDE,periods=2,period_s=NOD_PERIOD_S,hz=AXIS_HZ):
+    """Pitch-only requested axes, experimental; not a no-displacement promise."""
+    return _plan('pitch',amplitude,.7,periods,period_s,hz)
+
+
+def bob_plan(amplitude=BOB_AMPLITUDE,periods=2,period_s=BOB_PERIOD_S,hz=AXIS_HZ):
+    return _plan('z',amplitude,.6,periods,period_s,hz)
+
+
+def zero_plan(seconds=ZERO_HOLD_S,hz=AXIS_HZ):
+    seconds=_number(seconds,'零轴时长',.001,2.);_integer(hz,'采样频率',AXIS_HZ,AXIS_HZ)
+    return [_axis_items() for _ in range(math.ceil(seconds*hz))]
+
+
+def feedback(packet,age=None,now=None):
+    """Return Items and receive age; raw Items require an explicit trusted age.
+
+    Full records prefer monotonic_at. Future/non-finite timestamps are invalid;
+    unrelated heartbeat traffic cannot make an old state record fresh.
     """
-    if not 0 < amplitude <= .7:
-        raise ValueError("点头幅度限制在 (0, 0.7]")
-    if not 0 < periods <= 4:
-        raise ValueError("点头次数限制在 (0, 4]")
-    total = hz * periods * period_s
-    frames = []
-    for k in range(int(total)):
-        t = k / hz
-        frames.append(_axis_items(pitch=amplitude * math.sin(2 * math.pi * t / period_s)))
-    return frames
+    if not isinstance(packet,dict):return {},math.inf
+    items=packet.get('items',packet)
+    if not isinstance(items,dict):return {},math.inf
+    if age is None:
+        if 'monotonic_at' in packet:
+            stamp=packet['monotonic_at'];clock=time.monotonic() if now is None else now
+        elif 'at' in packet:stamp=packet['at'];clock=time.time()
+        else:return items,math.inf
+        if isinstance(stamp,bool) or not isinstance(stamp,(int,float)) or not math.isfinite(stamp):return items,math.inf
+        age=clock-stamp
+    if isinstance(age,bool) or not isinstance(age,(int,float)) or not math.isfinite(age) or age<0:return items,math.inf
+    return items,float(age)
 
 
-def bob_plan(amplitude=BOB_AMPLITUDE, periods=2, period_s=BOB_PERIOD_S, hz=AXIS_HZ):
-    """站立状态下用 Z 轴"起伏蹲起"的 20Hz 轴指令帧序列（实验性）。"""
-    if not 0 < amplitude <= .6:
-        raise ValueError("起伏幅度限制在 (0, 0.6]")
-    if not 0 < periods <= 4:
-        raise ValueError("起伏次数限制在 (0, 4]")
-    total = hz * periods * period_s
-    frames = []
-    for k in range(int(total)):
-        t = k / hz
-        frames.append(_axis_items(z=amplitude * math.sin(2 * math.pi * t / period_s)))
-    return frames
-
-
-def zero_plan(seconds=ZERO_HOLD_S, hz=AXIS_HZ):
-    """零轴保持帧：任何动作序列结束后发送，触发机器人安全减速停稳。"""
-    count = max(1, int(seconds * hz))
-    return [_axis_items() for _ in range(count)]
-
-
-GAITS = (0x1001, 0x1003, 0x3002, 0x3003)   # 基础 / 标准楼梯 / 敏捷平地 / 敏捷楼梯
+def _basic(packet):
+    if not isinstance(packet,dict):return {}
+    items=packet.get('items',packet)
+    status=items.get('BasicStatus',items) if isinstance(items,dict) else {}
+    return status if isinstance(status,dict) else {}
 
 
 def locomotion_snapshot(basic):
-    """打招呼前记录运行状态，供动作结束后恢复。
+    """Observed mode/gait only; does not attribute changes to this operation."""
+    status=_basic(basic);gait=status.get('Gait');mode=status.get('ControlUsageMode')
+    return dict(gait=gait if isinstance(gait,int) and not isinstance(gait,bool) and gait in GAITS else None,
+                mode=mode if isinstance(mode,int) and not isinstance(mode,bool) and mode in (0,1,2) else None)
 
-    实机现象（2026-11-02）：下发 Z/Pitch 轴指令后，机器人从敏捷平地（0x3002）
-    变成 0x1003（标准运动模式楼梯），此后按原方式行走失效——标准运动模式不走
-    RL 步态。因此必须记住步态与使用模式，动作结束后显式发回去。
+
+def restore_commands(snapshot,current=None,*,owned_changes=None):
+    """Restore only explicitly owned, still-matching changes, never guessed ones.
+
+    Caller must additionally hold operation ownership and require fresh stopped
+    feedback before EACH send/readback. owned_changes is the complete expected
+    current {'mode':..., 'gait':...} state written by that operation. A differing
+    field means an operator/other source may have intervened: return no commands.
+    Greetings do not themselves change mode/gait, so their default is no restore.
     """
-    status = (basic or {}).get('BasicStatus') or basic or {}
-    gait = status.get('Gait')
-    mode = status.get('ControlUsageMode')
-    return dict(gait=gait if gait in GAITS else None,
-                mode=mode if mode in (0, 1, 2) else None)
-
-
-def restore_commands(snapshot):
-    """生成"恢复原运行状态"的指令表 [(Type, Command, Items, label)]。
-
-    顺序：先使用模式、再步态——官方说明切换使用模式会把步态重置为基础步态，
-    所以步态必须最后发。调用方负责按顺序发送并留出确认时间。
-    """
-    out = []
-    if not isinstance(snapshot, dict):
-        return out
-    mode = snapshot.get('mode')
-    if mode in (0, 1, 2):
-        out.append((1101, 5, {"Mode": mode}, "恢复使用模式 %d" % mode))
-    gait = snapshot.get('gait')
-    if gait in GAITS:
-        out.append((2, 23, {"GaitParam": gait}, "恢复步态 0x%04X" % gait))
+    if not all(isinstance(v,dict) for v in [snapshot,current,owned_changes]):return []
+    if set(owned_changes)!={'mode','gait'}:return []
+    current=current if 'mode' in current and 'gait' in current else locomotion_snapshot(current)
+    if any(current.get(k)!=owned_changes[k] for k in ['mode','gait']):return []
+    if any(isinstance(v,bool) or not isinstance(v,int) for d in [snapshot,current,owned_changes] for v in [d.get('mode'),d.get('gait')]):return []
+    if any(d['mode'] not in (0,1,2) or d['gait'] not in GAITS for d in [current,owned_changes]):return []
+    mode,gait=snapshot.get('mode'),snapshot.get('gait')
+    if mode not in (0,1,2) or gait not in GAITS:return []
+    out=[]
+    if current.get('mode')!=mode:
+        out.append((1101,5,{'Mode':mode},'恢复本操作拥有的使用模式'))
+        # Documented mode switching resets gait to basic; gait follows readback.
+        if gait!=0x1001:out.append((2,23,{'GaitParam':gait},'恢复本操作拥有的步态'))
+    elif current.get('gait')!=gait:out.append((2,23,{'GaitParam':gait},'恢复本操作拥有的步态'))
     return out
 
 
-def precheck(basic, motion=None):
-    """打招呼前置安全检查。
+def precheck(basic,motion=None,*,basic_age=None,motion_age=None,now=None):
+    """Require current RL(17), known control flags and finite stopped feedback.
 
-    basic/motion 为 Type=1002 Cmd=6 / Cmd=4 回报中的 Items（平台 record 的
-    items 或独立脚本的 snapshots）。返回 (ok, message)。
-    灯语本身不依赖运动状态（趴着也能亮灯），但点头/起伏必须可遥控且无故障。
-
-    状态语义（与平台既有判据一致）：
-    - **17 = RL 控制**：完成站立后进入的正常可遥控状态（标准/敏捷运动模式）。
-      平台 `platform_core._velocity_tick` 正是要求 MotionState==17 才下发轴指令，
-      `point_navigation` 也要求 ==17 才允许导航。**这是打招呼允许的状态。**
-    - 1 = 站立（起立过渡/站立态），允许。
-    - 0 空闲 / 2 关节阻尼软急停 / 3 开机阻尼 / 4 趴下：不允许动作类问候。
+    State 1 is a standing transition, not authorization for sustained axes.
+    This is not a substitute for caller-owned navigation/SDK/task arbitration.
     """
-    if not isinstance(basic, dict):
-        return False, '未收到基础状态（1002/6），无法确认机器人状态'
-    basic_status = basic.get('BasicStatus') or basic
-    state = basic_status.get('MotionState')
-    if basic_status.get('HES') not in (0, None):
-        return False, '急停/故障标志 HES 非 0，先排除故障再打招呼'
-    if basic_status.get('Sleep'):
-        return False, '机器人处于休眠状态，先唤醒'
-    if state == STATE_SIT:
-        return False, '机器人正趴下（MotionState=4）：请先起立，或只用灯语问好'
-    if state == STATE_ESTOP:
-        return False, '机器人处于关节阻尼/软急停（MotionState=2），禁止动作类问候'
-    if state in (STATE_IDLE, STATE_BOOT_DAMP):
-        return False, '机器人未进入可遥控状态（MotionState=%s），请先起立' % state
-    if state not in (STATE_RL, STATE_STAND):
-        return False, '机器人未确认站立/可遥控（MotionState=%s），动作类问候不安全' % state
-    if motion is not None and isinstance(motion, dict):
-        motion_status = motion.get('MotionStatus') or motion
-        moving = any(abs(motion_status.get(k, 0) or 0) > limit
-                     for k, limit in (('LinearX', .08), ('LinearY', .08), ('OmegaZ', .12)))
-        if moving:
-            return False, '机器人仍在运动，请停稳后再打招呼'
-    mode = basic_status.get('ControlUsageMode')
-    if mode not in (0, 2, None):
-        return False, '当前使用模式（%s）下轴指令无效，请切回常规模式' % mode
-    return True, '就绪'
+    b,ba=feedback(basic,basic_age,now);m,ma=feedback(motion,motion_age,now)
+    if not b or ba>2.:return False,'未收到新鲜基础状态（1002/6）'
+    b=b.get('BasicStatus',b)
+    if not isinstance(b,dict):return False,'基础状态格式无效'
+    if type(b.get('HES')) is not int or b['HES']!=0:return False,'HES 未明确为 0，禁止动作类问候'
+    if type(b.get('Sleep')) not in (int,bool) or b['Sleep'] not in (0,False):return False,'休眠状态未知或尚未唤醒'
+    state=b.get('MotionState')
+    if type(state) is not int or state!=STATE_RL:
+        return False,'等待起立过渡完成并读回 MotionState=17' if state==STATE_STAND else '机器人未处于可遥控 RL 状态（MotionState=%s）'%state
+    mode=b.get('ControlUsageMode')
+    if type(mode) is not int or mode not in (0,2):return False,'使用模式未知或不允许轴指令，请确认常规/辅助模式'
+    gait=b.get('Gait')
+    if type(gait) is not int or gait not in GAITS:return False,'步态反馈未知，不能执行实验性姿态轴'
+    if not m or ma>.5:return False,'未收到新鲜运动反馈（1002/4）'
+    m=m.get('MotionStatus',m)
+    if not isinstance(m,dict):return False,'运动反馈格式无效'
+    for key,limit in [('LinearX',.08),('LinearY',.08),('OmegaZ',.12)]:
+        value=m.get(key)
+        if isinstance(value,bool) or not isinstance(value,(int,float)) or not math.isfinite(value):return False,'运动反馈 %s 缺失或无效'%key
+        if abs(value)>=limit:return False,'机器人仍在运动，请停稳后再打招呼'
+    return True,'已收到新鲜的可遥控与静止反馈；姿态轴效果仍需实机验证'

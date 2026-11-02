@@ -1,35 +1,20 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-DEEP Robotics Lynx M20 Pro —— 打招呼脚本（灯语 + 可选点头/起伏）
+"""Standalone M20 greeting CLI; LEDs by default, explicit experimental axes.
 
-只用 Python 标准库，在 PC 上执行（与机器人同网段）：
-    python m20_greet.py                    # 灯语问好（绿色呼吸 4s，最安全档）
-    python m20_greet.py --style flow       # 蓝色流水灯
-    python m20_greet.py --style blink      # 白色闪烁
-    python m20_greet.py --nod              # 灯语 + 俯仰点头（实验性，需实机验证）
-    python m20_greet.py --bob              # 灯语 + 升降起伏（实验性，需实机验证）
-    python m20_greet.py --status           # 只看状态不动作
-可选：
-    --ip 10.21.31.103  --port 30000  --seconds 4  --stand（趴下时先自动起立）
-
-安全设计（依据官方《软件开发指南》/ basic_server 运动控制文档，见 docs/greeting.md）：
-  1. 动作类问候前强制自检：MotionState=站立(1)、HES=0、未休眠、非 RL 接管、已停稳。
-  2. 全程不产生位移：点头/起伏序列 X=Y=Yaw=Roll=0，原地执行。
-  3. 轴指令 20Hz 连续下发，结束后零轴保持 0.4s（官方 500ms 超时保护兜底）。
-  4. Ctrl+C / 异常退出时立即恢复默认灯效并归零所有轴。
-  5. 点头/起伏依赖 Z/Pitch 轴，官方注明移动步态下不生效，站立状态下需实机验证。
+Requires exclusive operator control: this UDP client cannot arbitrate another
+client. Zero axes request stopping; they do not prove physical immobility.
 """
 import argparse
+import copy
+import ipaddress
 import json
 import socket
+import struct
 import sys
 import threading
 import time
 
 import greeting as g
-
-MP_STAND = 1
 
 
 def apdu(type_, command, items, seq):
@@ -40,263 +25,251 @@ def heartbeat():
     return g.frame(100, 100, {}, 0)
 
 
-def switch_motion(param):
-    return g.frame(2, 22, {"MotionParam": param}, 0)
-
-
-def switch_mode(mode):
-    return g.frame(1101, 5, {"Mode": mode}, 0)
-
-
 class Link:
-    """极简 UDP 链路：发指令 + 收状态快照（独立于平台，便于现场排障时单独使用）。"""
-
+    """UDP receive records are independently timed and keyed by (Type, Command)."""
     def __init__(self, ip, port):
-        self.ip, self.port = ip, port
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.sock.bind(("0.0.0.0", 0))
-        self.sock.settimeout(0.2)
+        self.ip, self.port = str(ipaddress.IPv4Address(ip)), port
+        g._integer(port, 'port', 1, 65535)
         self.lock = threading.Lock()
         self.seq = 0
-        self.snapshots = {}      # Command -> Items
-        self.last_rx = 0.
-        self._stop = False
-        threading.Thread(target=self._rx, daemon=True).start()
-        self._hb_until = 0.
-
-    def _next_seq(self):
-        with self.lock:
-            self.seq = (self.seq + 1) & 0xFFFF
-            return self.seq
+        self.snapshots = {}
+        self.error = None
+        self.axes_sent = self.light_sent = False
+        self.stop = threading.Event()
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            self.sock.bind(('0.0.0.0', 0))
+            self.sock.settimeout(.2)
+        except BaseException:
+            self.sock.close()
+            raise
+        self.threads = [threading.Thread(target=self._rx, daemon=True),
+                        threading.Thread(target=self._hb, daemon=True)]
+        for thread in self.threads:thread.start()
 
     def send(self, buf):
         self.sock.sendto(buf, (self.ip, self.port))
 
     def command(self, type_, cmd, items):
-        self.send(apdu(type_, cmd, items, self._next_seq()))
+        with self.lock:
+            self.seq = (self.seq + 1) & 0xffff
+            seq = self.seq
+        self.send(apdu(type_, cmd, items, seq))
 
     def _hb(self):
-        """打招呼期间维持心跳 ≥1Hz，让机器人持续回报状态。"""
-        while time.time() < self._hb_until and not self._stop:
-            self.send(heartbeat())
-            time.sleep(0.33)
-
-    def _rx(self):
-        while not self._stop:
+        while not self.stop.is_set():
             try:
-                data, addr = self.sock.recvfrom(65535)
-            except socket.timeout:
-                continue
-            except OSError:
+                self.command(100, 100, {})
+                self.command(1002, 6, {})
+                self.command(1002, 4, {})
+            except OSError as exc:
+                self.error = str(exc)
                 return
-            if addr[0] != self.ip:
-                continue
-            msg = self._parse(data)
-            if not msg:
-                continue
-            pd = msg.get("PatrolDevice", {})
-            if not isinstance(pd.get("Items"), dict):
-                continue
-            with self.lock:
-                self.snapshots[pd.get("Command")] = pd["Items"]
-                self.last_rx = time.time()
+            self.stop.wait(.25)
 
     @staticmethod
     def _parse(data):
-        if len(data) < 16 or data[:4] != g.SYNC:
-            return None
+        if len(data) < 16 or data[:4] != g.SYNC or data[8] != 1:return None
+        if struct.unpack_from('<H', data, 4)[0] != len(data)-16:return None
         try:
             obj = json.loads(data[16:])
-        except Exception:
-            return None
-        pd = obj.get("PatrolDevice")
-        if not isinstance(pd, dict):
-            return None
+            pd = obj.get('PatrolDevice') if isinstance(obj, dict) else None
+            if not isinstance(pd, dict) or not isinstance(pd.get('Items'), dict):return None
+            for key in ('Type', 'Command'):
+                g._integer(pd.get(key), key, 0, 65535)
+        except (ValueError, TypeError, UnicodeError):return None
         return obj
 
-    def record(self, cmd):
+    def _accept(self, data, addr):
+        # Never let an unrelated UDP peer freshen the robot's feedback.
+        if addr[0] != self.ip:return
+        obj = self._parse(data)
+        if obj is None:return
+        pd = obj['PatrolDevice']
         with self.lock:
-            return self.snapshots.get(cmd)
+            self.snapshots[(pd['Type'], pd['Command'])] = dict(
+                items=copy.deepcopy(pd['Items']), at=time.time(), monotonic_at=time.monotonic())
 
-    def fresh(self, max_age=2.0):
-        return self.last_rx and time.time() - self.last_rx < max_age
+    def _rx(self):
+        while not self.stop.is_set():
+            try:data, addr = self.sock.recvfrom(65535)
+            except socket.timeout:continue
+            except OSError as exc:
+                if not self.stop.is_set():self.error = str(exc)
+                return
+            self._accept(data, addr)
+
+    def record(self, type_, cmd):
+        with self.lock:return copy.deepcopy(self.snapshots.get((type_, cmd), {}))
 
     def close(self):
-        self._stop = True
-        try:
-            self.sock.close()
-        except OSError:
-            pass
+        self.stop.set()
+        self.sock.close()
+        for thread in self.threads:thread.join(timeout=.35)
 
 
 def wait_state(link, seconds=2.5):
-    t0 = time.time()
-    while time.time() - t0 < seconds:
-        basic = link.record(6)
-        if basic and link.fresh():
-            return basic, link.record(4)
-        time.sleep(0.05)
-    return None, None
+    deadline = time.monotonic()+seconds
+    while time.monotonic() < deadline:
+        if link.error:raise RuntimeError('连接异常：'+link.error)
+        basic = link.record(1002, 6)
+        if basic and g.feedback(basic)[1] <= 2:return basic, link.record(1002, 4)
+        time.sleep(.05)
+    return {}, {}
+
+
+def _signature(basic):
+    status = g._basic(basic)
+    return (status.get('ControlUsageMode'), status.get('Gait'), status.get('Direction'))
+
+
+def ready(link, before=None):
+    if link.error:raise RuntimeError('连接异常：'+link.error)
+    basic, motion = link.record(1002, 6), link.record(1002, 4)
+    ok, reason = g.precheck(basic, motion)
+    if not ok:raise RuntimeError(reason)
+    if before is not None and _signature(basic) != before:
+        raise RuntimeError('使用模式、步态或方向已变化；取消问候并保留当前设置')
+    return basic, motion
 
 
 def ensure_stand(link, args):
-    """确认站立；趴下时可 --stand 自动起立并等待。返回 (ok, message)。"""
+    """Only explicit --stand may request standing; never changes mode/gait."""
     basic, motion = wait_state(link)
-    if basic is None:
-        return False, '未收到机器人状态回报：请核对 IP/网段，并确认已打开手柄或已上电'
-    basic_status = basic.get("BasicStatus") or basic
-    state = basic_status.get("MotionState")
-    print("  当前状态: MotionState=%s HES=%s Mode=%s" % (
-        state, basic_status.get("HES"), basic_status.get("ControlUsageMode")))
-    if state == MP_STAND:
-        return True, "站立"
-    if state == 4 and getattr(args, "stand", False):
-        print("  正趴下 → 下发起立指令，等待约 8s ...")
-        link.command(1101, 5, {"Mode": 0})
-        time.sleep(0.1)
-        link.command(2, 22, {"MotionParam": MP_STAND})
-        t0 = time.time()
-        while time.time() - t0 < 10:
-            time.sleep(0.4)
-            basic, _ = wait_state(link, 0.5)
-            if basic and (basic.get("BasicStatus") or basic).get("MotionState") == MP_STAND:
-                return True, "已起立"
-        return False, "起立未确认，放弃动作类问候"
-    ok, message = g.precheck(basic, motion)
-    return ok, message
+    state = g._basic(basic).get('MotionState')
+    if state == g.STATE_RL:return g.precheck(basic, motion)
+    if state == g.STATE_SIT and args.stand:
+        candidate = copy.deepcopy(basic)
+        status = g._basic(candidate)
+        status['MotionState'] = g.STATE_RL
+        ok, reason = g.precheck(candidate, motion)
+        if not ok:return False, reason
+        before = _signature(basic)
+        sent = time.monotonic()
+        link.command(2, 22, {'MotionParam': 1})
+    elif state == g.STATE_STAND:
+        before = _signature(basic)
+        sent = time.monotonic()
+    else:return g.precheck(basic, motion)
+    deadline = time.monotonic()+10
+    while time.monotonic() < deadline:
+        time.sleep(.05)
+        basic, motion = link.record(1002, 6), link.record(1002, 4)
+        status = g._basic(basic)
+        if link.error:return False, '连接异常：'+link.error
+        if g.feedback(basic)[1] > 2:return False, '起立时基础反馈过期'
+        if _signature(basic) != before:return False, '起立时模式、步态或方向变化；保留当前设置'
+        if status.get('HES') != 0 or status.get('Sleep') not in (0, False):return False, '起立期间急停或休眠状态变化'
+        if status.get('MotionState') == g.STATE_RL and basic.get('monotonic_at', 0) > sent:
+            return g.precheck(basic, motion)
+        if status.get('MotionState') not in (g.STATE_SIT, g.STATE_STAND):return False, '起立被其他状态中断'
+    return False, '未读回新鲜 MotionState=17，未发送问候轴指令'
 
 
-def run_light(link, style, seconds):
-    """灯语：每秒重发一次保活，结束后恢复默认灯效。"""
-    print("  灯语 [%s] 持续 %ss ..." % (style, seconds))
+def run_light(link, style, seconds, before=None):
     items = g.light_on_items(style)
-    deadline = time.time() + seconds
-    while time.time() < deadline:
-        link.command(g.LIGHT_TYPE, g.LIGHT_CMD, items)
-        time.sleep(1.0)
+    deadline = time.monotonic()+seconds
+    next_send = 0.
+    while time.monotonic() < deadline:
+        if link.error:raise RuntimeError(link.error)
+        if before is not None:ready(link, before)
+        if time.monotonic() >= next_send:
+            link.light_sent = True
+            link.command(g.LIGHT_TYPE, g.LIGHT_CMD, items)
+            next_send = time.monotonic()+1
+        time.sleep(min(.05, max(0., deadline-time.monotonic())))
     link.command(g.LIGHT_TYPE, g.LIGHT_CMD, g.light_off_items())
-    print("  灯语已恢复默认")
+    link.light_sent = False
 
 
-def run_frames(link, frames):
-    """按 20Hz 发送轴指令帧序列，随后零轴保持。"""
-    period = 1.0 / g.AXIS_HZ
+def run_frames(link, frames, before):
     began = time.monotonic()
-    for k, items in enumerate(frames):
-        target = began + k * period
-        delay = target - time.monotonic()
-        if delay > 0:
-            time.sleep(delay)
+    for k, items in enumerate(list(frames)+g.zero_plan()):
+        target = began+k/g.AXIS_HZ
+        time.sleep(max(0., target-time.monotonic()))
+        if time.monotonic()-target > .15:raise RuntimeError('发送节拍延迟，取消问候，不追发积压动作')
+        ready(link, before)
+        link.axes_sent = True  # Mark before I/O: a send failure does not prove no delivery.
         link.command(g.AXIS_TYPE, g.AXIS_CMD, items)
-    for items in g.zero_plan():
-        link.command(g.AXIS_TYPE, g.AXIS_CMD, items)
-        time.sleep(period)
-
-
-def restore(link, before):
-    """动作结束后把步态/使用模式发回原值并确认（轴指令会切换到标准运动模式）。"""
-    commands = g.restore_commands(before)
-    if not commands:
-        return
-    for type_, cmd, items, label in commands:
-        link.command(type_, cmd, items)
-        print("  已发送：" + label)
-        time.sleep(0.5)
-    deadline = time.time() + 3
-    while time.time() < deadline:
-        basic = link.record(6) or {}
-        gait = (basic.get("BasicStatus") or basic).get("Gait")
-        if gait == before.get("gait"):
-            print("  ✓ 步态已恢复 0x%04X" % gait)
+    last_zero = time.monotonic()
+    deadline = last_zero+1
+    while time.monotonic() < deadline:
+        basic, motion = ready(link, before)
+        if motion.get('monotonic_at', 0) > last_zero:
+            link.axes_sent = False
             return
-        time.sleep(0.2)
-    basic = link.record(6) or {}
-    gait = (basic.get("BasicStatus") or basic).get("Gait")
-    print("  ⚠ 步态恢复未确认（当前 0x%04X，期望 0x%04X），请手动切回" % (gait or 0, before.get("gait") or 0))
+        time.sleep(.05)
+    raise RuntimeError('已请求零轴，但没有更新的静止反馈，不能确认停止')
 
 
-def main():
-    p = argparse.ArgumentParser(description="M20 Pro 打招呼")
-    p.add_argument("--ip", default="10.21.31.103")
-    p.add_argument("--port", type=int, default=30000)
-    p.add_argument("--style", default="breathe", choices=sorted(g.LIGHT_STYLES))
-    p.add_argument("--seconds", type=float, default=4.0, help="灯语持续秒数")
-    p.add_argument("--nod", action="store_true", help="附加俯仰点头（实验性）")
-    p.add_argument("--bob", action="store_true", help="附加升降起伏（实验性）")
-    p.add_argument("--stand", action="store_true", help="趴下时先自动起立")
-    p.add_argument("--status", action="store_true", help="只看状态不动作")
-    args = p.parse_args()
+def cleanup(link):
+    """Best effort for effects this invocation actually sent; never mode/gait."""
+    failures = []
+    if link.axes_sent:
+        # One immediate stop request on cancellation; do not keep overwriting
+        # an operator's new command stream for another 0.4 seconds.
+        try:link.command(g.AXIS_TYPE, g.AXIS_CMD, g._axis_items())
+        except (Exception, KeyboardInterrupt) as exc:failures.append('零轴请求失败：'+str(exc))
+        link.axes_sent = False
+    if link.light_sent:
+        try:link.command(g.LIGHT_TYPE, g.LIGHT_CMD, g.light_off_items())
+        except (Exception, KeyboardInterrupt) as exc:failures.append('默认灯效请求失败：'+str(exc))
+        link.light_sent = False
+    return failures
 
-    link = Link(args.ip, args.port)
-    link._hb_until = time.time() + 600
-    threading.Thread(target=link._hb, daemon=True).start()
 
-    def cleanup():
-        link.command(g.LIGHT_TYPE, g.LIGHT_CMD, g.light_off_items())
-        for items in g.zero_plan(0.2):
-            link.command(g.AXIS_TYPE, g.AXIS_CMD, items)
-
+def main(argv=None):
+    p = argparse.ArgumentParser(description='M20 Pro 灯语与显式实验问候；请先停止其他控制客户端')
+    p.add_argument('--ip', default='10.21.31.103')
+    p.add_argument('--port', type=int, default=30000)
+    p.add_argument('--style', default='breathe', choices=sorted(g.LIGHT_STYLES))
+    p.add_argument('--seconds', type=float, default=4.)
+    p.add_argument('--nod', action='store_true', help='实验性 Pitch 序列')
+    p.add_argument('--bob', action='store_true', help='实验性 Z 序列')
+    p.add_argument('--stand', action='store_true', help='仅实验动作前，允许从趴下请求起立')
+    p.add_argument('--status', action='store_true', help='只读状态，不发送灯光或运动命令')
+    args = p.parse_args(argv)
     try:
-        # 1) 先发三次心跳建立回报通道
-        for _ in range(3):
-            link.send(heartbeat())
-            time.sleep(0.05)
-
+        ipaddress.IPv4Address(args.ip)
+        g._integer(args.port, 'port', 1, 65535)
+        g._number(args.seconds, 'seconds', .05, 60.)
+    except ValueError as exc:p.error(str(exc))
+    link = None
+    code = 0
+    try:
+        link = Link(args.ip, args.port)
         basic, motion = wait_state(link)
+        if not basic:raise RuntimeError('未收到基础状态，请核对 IP 与网络')
         if args.status:
-            print("BasicStatus:", basic)
-            print("MotionStatus:", motion)
-            return
-        if basic is None:
-            print("✗ 未收到状态回报（检查 IP 是否为 %s、PC 是否同网段）" % args.ip)
-            return
-
-        want_motion = args.nod or args.bob
-        ok, message = ensure_stand(link, args)
-        if not ok:
-            print("✗ 前置检查未通过：%s" % message)
-            if not want_motion:
-                print("  → 灯语不依赖运动状态，改用纯灯语问好")
-                run_light(link, args.style, args.seconds)
-            cleanup()
-            return
-        print("✓ 前置检查通过：%s" % message)
-
-        # 记下原始步态/使用模式：轴指令会把机器人切到标准运动模式，动作后要恢复
-        before = g.locomotion_snapshot(link.record(6))
-        if before.get("gait"):
-            print("  原始步态 0x%04X，打招呼结束后会恢复" % before["gait"])
-
-        # 2) 灯语问好（最可靠的打招呼方式）
-        run_light(link, args.style, args.seconds)
-
-        # 3) 可选动作类问候（站立静止状态下执行，全程原地）
-        if args.nod:
-            print("  点头（实验性，移动步态下 Pitch 不生效，请观察实机反应）...")
-            run_frames(link, g.nod_plan())
-        if args.bob:
-            print("  起伏（实验性，移动步态下 Z 不生效，请观察实机反应）...")
-            run_frames(link, g.bob_plan())
-        if want_motion:
-            restore(link, before)
-            print("✓ 打招呼完成，已归零、恢复默认灯效与原始步态")
+            print('BasicStatus:', basic)
+            print('MotionStatus:', motion)
         else:
-            print("✓ 灯语问好完成")
+            before = None
+            if args.nod or args.bob:
+                ok, reason = ensure_stand(link, args)
+                if not ok:raise RuntimeError(reason)
+                before = _signature(ready(link)[0])
+            run_light(link, args.style, args.seconds, before)
+            if args.nod:run_frames(link, g.nod_plan(), before)
+            if args.bob:run_frames(link, g.bob_plan(), before)
+            print('问候序列已结束；灯效请求已恢复默认，动作实际效果以反馈为准')
     except KeyboardInterrupt:
-        print("\n[中断] 正在恢复灯效并归零 ...")
-        cleanup()
+        print('已中断；只清理本次已发送的灯效/轴请求，不切换模式或步态')
+        code = 130
     except Exception as exc:
-        print("✗ 异常：%s（正在清理）" % exc)
-        cleanup()
-        raise
+        print('问候未完成：'+str(exc), file=sys.stderr)
+        code = 1
     finally:
-        time.sleep(0.2)
-        link.close()
+        if link:
+            failures = cleanup(link)
+            for failure in failures:print(failure, file=sys.stderr)
+            if failures and code == 0:code = 1
+            try:link.close()
+            except Exception as exc:
+                print('关闭连接失败：'+str(exc), file=sys.stderr)
+                if code == 0:code = 1
+    return code
 
 
-if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        sys.exit(130)
+if __name__ == '__main__':
+    sys.exit(main())
