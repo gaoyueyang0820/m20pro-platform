@@ -8,6 +8,9 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from connection_manager import Connections,target_config
 class RelayTests(unittest.TestCase):
     def setUp(self):
+        # Connection-policy tests do not invoke Windows account/ACL tools.
+        self.acl=patch('platform_host.private_file',lambda path:None);self.acl.start();self.addCleanup(self.acl.stop)
+        self.executables=patch('platform_host.ssh_executable',side_effect=lambda name:name);self.executables.start();self.addCleanup(self.executables.stop)
         self.tmp=tempfile.TemporaryDirectory();self.c=Connections(self.tmp.name)
         self.c.save(dict(aos_ip='172.20.10.14',targets=dict(nos=dict(host='10.21.31.106',enabled=True,via_aos=True))))
         self.c.known.write_text('172.20.10.14 ssh-ed25519 AAAA\n10.21.31.106 ssh-ed25519 AAAA\n')
