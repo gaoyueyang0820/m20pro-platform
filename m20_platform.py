@@ -562,6 +562,9 @@ class Platform:
                                   gait=gait,manner=integer(options.get('manner',0),0,1),pause_at_point=options.get('pause_at_point',False),disconnect_policy=options.get('disconnect_policy','stop'))
             from navigation_disconnect import POLICIES
             if value['options']['disconnect_policy'] not in POLICIES:raise ValueError('断联策略无效')
+            if 'engine' in options:
+                if options['engine'] not in ['platform','native']:raise ValueError('未知寻路方式')
+                value['options']['engine']=options['engine']
         if persist:
             self.store.value['routes'] = [r for r in self.store.value['routes'] if r['id'] != value['id']] + [value]
             self.store.save()
@@ -616,6 +619,8 @@ class Platform:
         if '_valid_until' in scan:scan['age']=max(0.,.65+time.monotonic()-scan['_valid_until'])
         loc=dict(normal=pose.get('Location')==0,confidence=pose.get('Confidence',0),age=age_of(record),
                  pose=[pose.get('PosX'),pose.get('PosY'),pose.get('Yaw')],epoch='%s:%s:%s'%(map_id,self._plan_generation,id(link)))
+        motion_record=link.record(1002,4);motion=motion_record.get('items',{}).get('MotionStatus',{})
+        loc.update(velocity_body=[motion.get('LinearX'),motion.get('LinearY')],yaw_rate=motion.get('OmegaZ',0),motion_age=age_of(motion_record))
         return scan,loc
 
     def plan_goal(self, req):
@@ -660,7 +665,7 @@ class Platform:
                     qx,qy,qz,qw=pp[3:];pyaw=math.atan2(2*(qw*qz+qx*qy),1-2*(qy*qy+qz*qz))
                     if abs(math.atan2(math.sin(pyaw-start[2]),math.cos(pyaw-start[2])))<.1:body_pose=start
             except (ValueError,KeyError,TypeError):obstacle_note='当前无可用的实时障碍快照；按地图规划，行走中由机器人实时避障'
-        planner=GridPlanner(raw,map_['resolution'],map_['origin'],map_.get('negate',0),map_.get('free_thresh',.196),map_.get('occupied_thresh',.65),obstacles,robot_pose=body_pose,enable_live_surface=not self.demo and engine=='platform')
+        planner=GridPlanner(raw,map_['resolution'],map_['origin'],map_.get('negate',0),map_.get('free_thresh',.196),map_.get('occupied_thresh',.65),obstacles,robot_pose=body_pose,enable_live_surface=not self.demo and engine=='platform',soft_static_speckles=engine=='platform')
         latest_surface=None
         if not self.demo and engine=='platform':
             deadline=time.monotonic()+2.5;seen=set();last_error=None
@@ -672,6 +677,7 @@ class Platform:
                     scan,loc=self.navigation_surface(map_['id']);report=planner.update_live_surface(scan,loc)
                     if report.get('accepted'):
                         seen.add(scan.get('stamp'));latest_surface=(scan,loc)
+                        if report.get('body_projection_cells',0) and planner.pose_fits(*scan['pose']):break
                     if len(seen)>=3 and report.get('state')!='waiting_evidence':break
                 except ValueError as exc:last_error=str(exc)
                 time.sleep(.04)
@@ -733,7 +739,7 @@ class Platform:
         if not req.get('plan_id'):req=dict(req,plan_id=self.plan_goal(req)['plan_id'])
         return self._start_planned_goal(req,intent,client_intent)
 
-    def _start_planned_goal(self, req,intent=None,client_intent=None):
+    def _start_planned_goal(self, req,intent=None,client_intent=None,route_override=None,start_index=0):
         with self.lock:
             self.navigation_intents.check(client_intent,self.instance_id,self._plan_generation)
             intent=self._nav_start_generation if intent is None else intent
@@ -747,13 +753,18 @@ class Platform:
             if math.hypot(self.pose['PosX']-plan['start'][0],self.pose['PosY']-plan['start'][1])>.3 or abs(math.atan2(math.sin(self.pose['Yaw']-plan['start'][2]),math.cos(self.pose['Yaw']-plan['start'][2])))>.3:
                 raise ValueError('机器人位置或朝向已变化，请重新规划')
             result=copy.deepcopy(plan['result']);point=result['goal']
-            route=self.route_save(dict(name='前往目标',map_id=req.get('map_id'),points=[point],
-                options=dict(nav_mode=1,speed=1,gait='flat',manner=0,pause_at_point=False,disconnect_policy=req.get('disconnect_policy','stop'))),persist=False)['route']
-            route.update(temporary=True,preview_start=list(plan['start']),preview_source=plan['source'],preview_fingerprint=plan['fingerprint'],preview_path=result['path'])
+            if route_override is None:
+                route=self.route_save(dict(name='前往目标',map_id=req.get('map_id'),points=[point],
+                    options=dict(nav_mode=1,speed=1,gait='flat',manner=0,pause_at_point=False,disconnect_policy=req.get('disconnect_policy','stop'))),persist=False)['route']
+                route['temporary']=True
+            else:route=copy.deepcopy(route_override)
+            route.update(preview_start=list(plan['start']),preview_source=plan['source'],preview_fingerprint=plan['fingerprint'],preview_path=result['path'])
         engine=req.get('engine','native')
         if engine not in ['native','platform']:raise ValueError('未知导航执行器')
         if req.get('disconnect_policy','stop')!='stop' and engine!='native':raise ValueError('断联执行需使用机器人端寻路，请重新规划')
-        if engine=='platform':return self.point_navigation.start(route,plan,intent,client_intent)
+        if engine=='platform':
+            if start_index:return self.point_navigation.start(route,plan,intent,client_intent,start_index=start_index)
+            return self.point_navigation.start(route,plan,intent,client_intent)
         started=self.start_route(dict(nav_mode=1,speed=1,gait='flat',pause_at_point=False,disconnect_policy=req.get('disconnect_policy','stop'),_start_generation=intent),goal=route,client_intent=client_intent)
         with self.lock:
             if self.nav.get('route',{}).get('id')==route['id']:self.nav['plan']=result
@@ -761,7 +772,41 @@ class Platform:
         if self.demo:message='演示任务已开始；未向机器人发送指令'
         return dict(started,goal=point,planner=result['planner'],execution='native_single_goal',demo=self.demo,message=message)
 
+    def _start_platform_route(self,req,client_intent=None,route=None,start_index=0):
+        with self.lock:
+            intent=self._nav_start_generation
+            if req.get('_start_generation',intent)!=intent:raise ValueError('导航启动已取消')
+            if client_intent is None:client_intent=self.navigation_intents.register(req,self.instance_id,self._plan_generation)
+            route=copy.deepcopy(route or next((r for r in self.store.value['routes'] if r['id']==req.get('id')),None))
+            if not route or not 0<=start_index<len(route.get('points',[])):raise ValueError('路线不存在或没有待执行点位')
+            point=route['points'][start_index]
+            query=dict(map_id=route['map_id'],x=point['x'],y=point['y'],yaw=point.get('yaw') if start_index==len(route['points'])-1 else None,engine='platform')
+            cached=self.goal_plans.get(req.get('plan_id'))
+            target=(cached or {}).get('result',{}).get('requested_goal') or (cached or {}).get('result',{}).get('goal',{})
+            same_yaw=(target.get('yaw') is None and query['yaw'] is None or
+                isinstance(target.get('yaw'),(int,float)) and isinstance(query['yaw'],(int,float)) and
+                abs(math.atan2(math.sin(target['yaw']-query['yaw']),math.cos(target['yaw']-query['yaw'])))<1e-6)
+            reusable=(cached and cached.get('map_id')==route['map_id'] and cached.get('execution_engine')=='platform'
+                and time.monotonic()-cached['at']<60 and cached.get('connection_generation')==self._plan_generation
+                and cached.get('link') is self.link and cached.get('demo')==self.demo
+                and same_yaw and all(abs(target.get(k,float('inf'))-query[k])<1e-6 for k in ['x','y'])
+                and math.hypot(self.pose['PosX']-cached['start'][0],self.pose['PosY']-cached['start'][1])<=.3
+                and abs(math.atan2(math.sin(self.pose['Yaw']-cached['start'][2]),math.cos(self.pose['Yaw']-cached['start'][2])))<=.3
+                and hashlib.sha256(Path(cached['source']).read_bytes()).hexdigest()==cached['fingerprint'])
+        plan_id=req['plan_id'] if reusable else self.plan_goal(query)['plan_id']
+        return self._start_planned_goal(dict(query,plan_id=plan_id),intent,client_intent,route,start_index)
+
     def start_route(self, req, goal=None,client_intent=None):
+        if goal is None and 'engine' not in req:
+            with self.lock:stored=next((r for r in self.store.value['routes'] if r['id']==req.get('id')),None)
+            if stored and stored.get('options',{}).get('engine'):req=dict(req,engine=stored['options']['engine'])
+        if goal is None and req.get('engine')=='platform':
+            with self.lock:stored=next((r for r in self.store.value['routes'] if r['id']==req.get('id')),None)
+            policy=req.get('disconnect_policy',(stored or {}).get('options',{}).get('disconnect_policy','stop'))
+            if stored and policy=='stop' and not any(p.get('type')==3 for p in stored.get('points',[])):
+                return self._start_platform_route(req,client_intent)
+            # Docking remains on the robot's dedicated charging workflow.
+            req=dict(req,engine='native')
         # Reserve an intent before remote reads, then release the state lock.
         # Stop/reconnect can invalidate it while a slow map request is pending.
         with self.lock:
@@ -1054,8 +1099,8 @@ class Platform:
         if self._greet_busy:raise ValueError('请先停止问候动作，再继续导航')
         if self.nav.get('engine')=='platform':
             if self.nav.get('status')!='paused':raise ValueError('任务不在暂停状态')
-            route=self.nav['route'];point=route['points'][0]
-            return self.start_goal(dict(map_id=route['map_id'],x=point['x'],y=point['y'],yaw=point['yaw'],engine='platform'))
+            route=copy.deepcopy(self.nav['route']);index=self.nav.get('index',0)
+            return self._start_platform_route(dict(id=route['id'],engine='platform'),route=route,start_index=index)
         with self.lock:
             if self.nav['status']!='paused':raise ValueError('任务不在暂停状态')
             if self._greet_busy:raise ValueError('请先停止问候动作，再继续导航')

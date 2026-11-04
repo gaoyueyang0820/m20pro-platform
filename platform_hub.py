@@ -286,6 +286,96 @@ class Hub:
         return (cached.get('robot_map_name')==name and bool(cached.get('demo'))==context[0]
                 and (context[0] or cached.get('robot_ip')==(context[1].ip if context[1] else None)))
 
+    def _activation_guard(self,context,generation):
+        if not self.same_context(context):raise OperationCancelled('连接已变化，地图定位接续已停止')
+        if self.app.localizer.generation!=generation:raise OperationCancelled('地图定位接续已取消')
+        self.normal_mode();self.idle()
+        if not context[0]:self.app.localizer._stationary(context[1])
+
+    def _save_activation(self,record):
+        file=self.data/'map-activation.json';temporary=file.with_suffix('.tmp')
+        temporary.write_text(json.dumps(record,ensure_ascii=False,indent=2));temporary.replace(file)
+
+    def _activation_pose(self,context,generation,source):
+        if context[0]:return None
+        try:
+            self._activation_guard(context,generation)
+            status=self.app.localizer.status()
+            if not self.app.localizer.good(status):return None
+            record=context[1].record(1007,2);values=record.get('items',{})
+            pose={key:number(values.get(key)) for key in ['PosX','PosY','PosZ','Yaw']}
+            self._activation_guard(context,generation)
+            return dict(pose=pose,source_map=source,captured_at=time.time())
+        except OperationCancelled:raise
+        except (ValueError,KeyError):return None
+
+    def _wait_activation_localization(self,target,context,generation,after,*,expected=None,restart_at=None,seconds=12):
+        """Require new post-initialization feedback, not pre-restart cached good."""
+        deadline=time.monotonic()+seconds
+        while time.monotonic()<deadline:
+            self._activation_guard(context,generation)
+            began=time.monotonic()
+            try:status=self.app.localizer.status()
+            except OperationCancelled:raise
+            except ValueError:time.sleep(.2);continue
+            elapsed=time.monotonic()-after['monotonic'];round_trip=time.monotonic()-began
+            record=context[1].record(1007,2);pose=record.get('items',{})
+            stamp=record.get('monotonic_at')
+            newer=stamp>=after['monotonic'] if isinstance(stamp,(int,float)) else record.get('at',0)>=after['wall']
+            updated=all(0<=(status.get(key) or {}).get('age',99)+round_trip<=elapsed+.02 for key in ['localization_quality','matching_quality'])
+            odom=status.get('odom') or {}
+            if restart_at is not None:updated=updated and odom.get('received_at',0)>=restart_at
+            close=expected is None or (all(isinstance(pose.get(k),(int,float)) for k in ['PosX','PosY','Yaw']) and
+                math.hypot(pose['PosX']-expected['PosX'],pose['PosY']-expected['PosY'])<.35 and
+                abs(math.atan2(math.sin(pose['Yaw']-expected['Yaw']),math.cos(pose['Yaw']-expected['Yaw'])))<.25)
+            if newer and updated and close and self.app.localizer.good(status):
+                self._activation_guard(context,generation)
+                if self.remote_maps('/maps/list',context=context).get('active')!=target:raise OperationCancelled('活动地图已变化，未采用旧图定位结果')
+                self._activation_guard(context,generation)
+                self.app.localizer.remember(status)
+                self._activation_guard(context,generation)
+                return dict(localized=True,ready=True,message='定位已就绪')
+            time.sleep(.2)
+        raise ValueError('新地图定位尚未就绪')
+
+    def _restore_activation_localization(self,target,previous,proof,applied,seed,context,generation,progress):
+        if context[0]:return dict(localized=True,ready=True,demo=True,method='simulated',message='演示地图已就绪')
+        check=lambda:self._activation_guard(context,generation)
+        after=dict(wall=time.time(),monotonic=time.monotonic())
+        restart=applied.get('localization_restart_completed_at')
+        confirmed=applied.get('activation_context') or {}
+        inherited=(seed is not None and proof.get('protocol')==1 and proof.get('same_frame') is True and
+            proof.get('source_map')==previous and proof.get('target_map')==target and
+            confirmed.get('same_frame') is True and confirmed.get('source_map')==previous and
+            confirmed.get('target_map')==target and confirmed.get('project_sha256')==proof.get('project_sha256'))
+        seed_error=None
+        if inherited:
+            progress(.82,'正在接续当前位置')
+            # No ICP or extra scan votes: a proved complete version keeps base
+            # coordinates. Do NOT apply the new-session registration matrix.
+            for attempt in range(2):
+                try:
+                    check()
+                    if self.remote_maps('/maps/list',context=context).get('active')!=target:raise OperationCancelled('活动地图已变化，停止定位接续')
+                    with self.app.lock:
+                        check();after=dict(wall=time.time(),monotonic=time.monotonic())
+                        context[1].command(2101,1,seed['pose'],'接续更新地图的当前位置')
+                    result=self._wait_activation_localization(target,context,generation,after,expected=seed['pose'],restart_at=restart,seconds=3 if attempt==0 else 9)
+                    return dict(result,method='inherited_map_pose',source_map=previous)
+                except OperationCancelled:raise
+                except ValueError as exc:seed_error=str(exc)
+            # Do not turn the fast same-frame handoff into a long full-map
+            # search. The applied map is retained and reported as not ready.
+            raise ValueError('已接续原位置，定位尚未收敛：'+str(seed_error))
+        else:progress(.82,'正在识别新地图中的当前位置')
+        check()
+        result=self.app.localizer.recover(lambda amount,message:progress(.82+.16*amount,message),check=check,verify_current=True)
+        check()
+        # Even an old service's accepted search is not enough: the readiness
+        # readback must belong to the newly activated map's sensor epoch.
+        ready=self._wait_activation_localization(target,context,generation,after,restart_at=restart)
+        return dict(result,**ready,previous_pose_used=False,prior_initialization_error=seed_error)
+
     def import_package(self,file_id,name,progress):
         self.idle()
         meta=self.files.get(file_id)
@@ -727,21 +817,43 @@ class Hub:
                 if self.app.mapping:raise ValueError('正在采集或融合地图，保存完成后再切换地图')
             self.idle()
             context=self.context()
+            localization_generation=self.app.localizer.generation
             def apply(progress):
-                previous_library=self.remote_maps('/maps/list',context=context) if req.get('cleanup_previous') is True else {}
+                previous_library=self.remote_maps('/maps/list',context=context)
                 previous=previous_library.get('active')
+                target=req.get('name')
+                try:proof=self.remote_maps('/maps/activation-context',dict(name=target),context=context)
+                except ValueError:proof={}
+                seed=self._activation_pose(context,localization_generation,previous)
+                record=dict(state='preparing',requested_map=target,previous_map=previous,
+                            robot=context[1].ip if context[1] else None,created=time.time(),prior_pose=seed,coordinate_evidence=proof)
                 with self.app.lock:
                     if not self.same_context(context):raise OperationCancelled('地图启用连接已变化，未向新连接提交操作')
+                    self._activation_guard(context,localization_generation)
+                    self._save_activation(record)
                     for m in self.app.store.value['maps']:m['verified_for_robot']=False
                     self.app.store.save()
-                result=self.remote_maps('/maps/apply',req,context=context)
+                payload=dict(req,expected_active=previous)
+                if proof.get('protocol')==1:payload['expected_project_sha256']=proof['project_sha256']
+                result=self.remote_maps('/maps/apply',payload,context=context)
                 progress(.75,'活动地图已切换，正在同步导航栅格')
                 try:synced=self.sync_map(dict(name=req.get('name'),grid_id=req.get('grid_id',0)))
                 except ValueError as exc:raise ValueError('活动地图已切换，但导航栅格同步未完成：'+str(exc)+'。请点击“同步用于导航”重试')
                 if not synced['map']['verified_for_robot']:raise ValueError('活动地图在同步期间发生变化，请重新核对')
-                if previous and previous!=req.get('name'):
+                try:
+                    localization=self._restore_activation_localization(target,previous,proof,result,seed,context,localization_generation,progress)
+                except (ValueError,OperationCancelled) as exc:
+                    if not self.same_context(context):raise
+                    localization=dict(ready=False,localized=False,state='cancelled' if isinstance(exc,OperationCancelled) else 'waiting',message=str(exc))
+                ready=localization.get('ready') is True
+                with self.app.lock:
+                    if not self.same_context(context):raise OperationCancelled('连接已变化，未保存旧地图的定位结果')
+                    record.update(state='ready' if ready else 'localization_pending',applied=True,localization=localization,finished=time.time())
+                    self._save_activation(record)
+                if req.get('cleanup_previous') is True and previous and previous!=target:
                     cleaned=False
                     try:
+                        if not ready:raise ValueError('新地图定位尚未就绪，原地图保留')
                         if previous_library.get('catalog_integrity_protocol')!=1:raise ValueError('机器人地图服务尚未支持完整性核对，未自动清理')
                         if req.get('cleanup_base')!=previous:raise ValueError('确认的旧版本与当前活动版本不一致，未自动清理')
                         with self.app.lock:
@@ -759,7 +871,8 @@ class Hub:
                             for cached in self.app.store.value['maps']:
                                 if self._cache_map_matches(cached,previous,context):cached.update(verified_for_robot=False,archived=True)
                             self.app.store.save()
-                return dict(result,map=synced['map'],navigation_ready=True)
+                message='地图已启用，定位已就绪' if ready else '地图已启用，定位尚未就绪：'+localization.get('message','等待定位反馈')
+                return dict(result,map=synced['map'],navigation_ready=ready,localization=localization,message=message)
             return self.mutate('map-apply',apply)
         if path=='/api/maps/library/sync':
             return self.sync_map(req)

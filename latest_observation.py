@@ -9,7 +9,7 @@ import copy
 import math
 import threading
 import time
-from observation_errors import ObservationSyncPending
+from observation_errors import ObservationSyncPending,GroundObservationPending,BridgeTransportError
 
 
 class TransientObservationError(Exception):
@@ -24,7 +24,7 @@ class LatestObservationPump:
     def __init__(self,fetch,*,clock=time.monotonic,poll_interval=.02,error_interval=.04):
         self.fetch=fetch;self.clock=clock;self.poll_interval=max(.001,float(poll_interval));self.error_interval=max(.001,float(error_interval))
         self.lock=threading.RLock();self.generation=0;self.running=False;self.thread=None;self.stop_event=None
-        self.latest=None;self.sequence=0;self.last_stamp=None;self.last_error=None;self.error_kind=None
+        self.latest=None;self.sequence=0;self.last_stamp=None;self.last_error=None;self.error_kind=None;self.reason_code=None
         self.counts=dict(received=0,published=0,duplicates=0,reordered=0,expired=0,rejected=0,late_results=0)
 
     def start(self,context=None):
@@ -37,7 +37,7 @@ class LatestObservationPump:
         with self.lock:
             if self.stop_event is not None:self.stop_event.set()
             self.generation+=1;generation=self.generation;stop=threading.Event();self.stop_event=stop
-            self.running=True;self.latest=None;self.sequence=0;self.last_stamp=None;self.last_error=None;self.error_kind=None
+            self.running=True;self.latest=None;self.sequence=0;self.last_stamp=None;self.last_error=None;self.error_kind=None;self.reason_code=None
             thread=threading.Thread(target=self._run,args=(generation,captured,stop,self.fetch),daemon=True,name='m20-observation-'+str(generation))
             self.thread=thread
         try:thread.start()
@@ -73,7 +73,7 @@ class LatestObservationPump:
                 return self._reject('observation lacks finite source stamp or original deadline')
             if deadline>received+.65+1e-6:return self._reject('observation deadline exceeds the 650 ms source budget')
             if deadline<=received:
-                self.counts['expired']+=1;self.last_error='received observation already expired';self.error_kind='temporal';return False
+                self.counts['expired']+=1;self.last_error='received observation already expired';self.error_kind='temporal';self.reason_code=None;return False
             if self.last_stamp is not None and stamp<self.last_stamp:
                 self.counts['reordered']+=1;return False
             if self.last_stamp is not None and stamp==self.last_stamp:
@@ -84,18 +84,21 @@ class LatestObservationPump:
                     self.latest['_valid_until']=min(self.latest['_valid_until'],deadline)
                 return False
             self.latest=copy.deepcopy(packet);self.latest['_pump_received_monotonic']=received
-            self.sequence+=1;self.last_stamp=stamp;self.counts['published']+=1;self.last_error=None;self.error_kind=None
+            self.sequence+=1;self.last_stamp=stamp;self.counts['published']+=1;self.last_error=None;self.error_kind=None;self.reason_code=None
             return True
 
     def _reject(self,message):
-        self.counts['rejected']+=1;self.latest=None;self.last_error=message;self.error_kind='invalidated';return False
+        self.counts['rejected']+=1;self.latest=None;self.last_error=message;self.error_kind='invalidated';self.reason_code=None;return False
 
     def _error(self,exc,generation):
         with self.lock:
             if not self._current(generation):return
             self.last_error=str(exc);self.error_kind=('context_changed' if isinstance(exc,ObservationContextChanged)
+                                                    else 'ground_pending' if isinstance(exc,GroundObservationPending)
                                                     else 'sync_pending' if isinstance(exc,ObservationSyncPending)
-                                                    else 'transport' if isinstance(exc,TransientObservationError) else 'invalidated')
+                                                    else 'transport' if isinstance(exc,(TransientObservationError,BridgeTransportError)) else 'invalidated')
+            self.reason_code=exc.reason_code if isinstance(exc,GroundObservationPending) else None
+            # Incomplete ground must not retain a pre-occlusion action scene.
             # Unknown/geometry/pose errors must not silently reuse an old scene.
             # Adapters may explicitly classify a transport-only error if useful.
             if self.error_kind not in ['transport','sync_pending']:self.latest=None
@@ -119,7 +122,7 @@ class LatestObservationPump:
         """
         with self.lock:
             now=self.clock();result=dict(generation=self.generation,sequence=self.sequence,observation=None,
-                                         error=self.last_error,error_kind=self.error_kind,remaining_s=0.)
+                                         error=self.last_error,error_kind=self.error_kind,reason_code=self.reason_code,remaining_s=0.)
             if generation is not None and generation!=self.generation:return dict(result,state='generation_changed')
             if not self.running:return dict(result,state='cancelled')
             if self.latest is None:return dict(result,state=self.error_kind if self.error_kind in ['invalidated','context_changed'] else 'waiting')
@@ -137,5 +140,5 @@ class LatestObservationPump:
     def status(self):
         with self.lock:
             return dict(running=self.running,generation=self.generation,sequence=self.sequence,last_stamp=self.last_stamp,
-                        error=self.last_error,error_kind=self.error_kind,worker_alive=bool(self.thread and self.thread.is_alive()),
+                        error=self.last_error,error_kind=self.error_kind,reason_code=self.reason_code,worker_alive=bool(self.thread and self.thread.is_alive()),
                         counters=dict(self.counts))

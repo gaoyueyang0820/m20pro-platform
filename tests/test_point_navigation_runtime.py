@@ -73,7 +73,7 @@ class PointNavigationRuntimeTests(unittest.TestCase):
         a.proxy=lambda *args,**kwargs:dict(active='runtime-test',maps=[dict(name='runtime-test',grids=[0])],phase='idle',in_progress=False)
         a.hub.remote_maps=lambda *args,**kwargs:dict(active='runtime-test',maps=[dict(name='runtime-test',grids=[0])],phase='idle',in_progress=False)
         self.map=map_;self.scans=0
-        def scan(mapping=False):
+        def scan(mapping=False,**kwargs):
             self.scans+=1
             return dict(pose=[a.pose[k] for k in ['PosX','PosY','Yaw']],floor=[[x,y] for x in range(-20,21) for y in range(-20,21)],
                 measured_floor=[[x,y] for x in range(-20,21) for y in range(-20,21)],obstacles=[],obstacle_bounds=[],geometry_version=2,protocol=1,

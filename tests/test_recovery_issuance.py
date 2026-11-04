@@ -51,15 +51,15 @@ class RecoveryIssuanceTests(unittest.TestCase):
         e.plan_state='recovering';self.assertEqual(e.command_axes(),(0,0,0))
         self.assertEqual(e.recovery_block_reason,'candidates_not_issued')
 
-    def test_disconnected_initial_path_stops_replans_and_resumes_on_new_frame(self):
+    def test_disconnected_initial_path_replans_and_uses_current_valid_frame(self):
         e=Explorer(3);data=dict(scan(stamp=1),_speed_mps=0.,_velocity_body=[0.,0.]);e.ingest(data)
         e.path=[(8,0),(9,0)];e.goal=(9,0);e.plan_state='planned';f=TrajectoryFollower()
         result=exploration_step(e,f,data,new_scan=True)
-        self.assertEqual(result['path_repair_state'],'replanned');self.assertEqual(result['axes'],[0,0,0])
+        self.assertEqual(result['path_repair_state'],'replanned');self.assertTrue(any(result['axes']),result)
         self.assertLessEqual(((e.path[0][0]*.2)**2+(e.path[0][1]*.2)**2)**.5,.35)
         with patch.object(e,'plan',side_effect=AssertionError('same source frame cannot replan')):
             repeated=exploration_step(e,f,data,new_scan=True)
-        self.assertEqual(repeated['axes'],[0,0,0]);self.assertEqual(f.path_repair_attempts,1)
+        self.assertTrue(any(repeated['axes']),repeated);self.assertEqual(f.path_repair_attempts,0)
         newer=dict(data,stamp=2);e.ingest(newer);result=exploration_step(e,f,newer,new_scan=True)
         self.assertTrue(any(result['axes']),result)
 
@@ -71,7 +71,11 @@ class RecoveryIssuanceTests(unittest.TestCase):
                 data=dict(scan(stamp=stamp),_speed_mps=0.,_velocity_body=[0.,0.]);e.ingest(data)
                 e.path=[(8,0),(9,0)];e.goal=(9,0)
                 result=exploration_step(e,f,data,new_scan=True);self.assertEqual(result['axes'],[0,0,0])
-        self.assertEqual(len(calls),3);self.assertEqual(result['path_repair_state'],'exhausted')
+        self.assertEqual(len(calls),3);self.assertEqual(result['path_repair_state'],'needs_recovery');self.assertTrue(result['needs_recovery'])
+        self.assertEqual(e.path,[]);self.assertIsNone(e.goal)
+        self.assertTrue(e.request_recovery((.35,0,0)))
+        newer=dict(scan(stamp=6),_speed_mps=0.,_velocity_body=[0.,0.]);e.ingest(newer)
+        axes=e.command_axes();self.assertTrue(any(axes),e.motion_hint);self.assertTrue(axes[0]<0 or abs(axes[1])>.1 or abs(axes[2])>.1)
 
     def test_consumed_prefix_keeps_existing_continuous_path_instead_of_false_disconnect(self):
         e=Explorer(3);e.ingest(dict(scan(stamp=1),_speed_mps=.2,_velocity_body=[.2,0.]))

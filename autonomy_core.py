@@ -75,7 +75,7 @@ def clearance(scan, forward, yaw, side=0.):
         # Share the follower's exact obstacle rectangles. A coarse occupied
         # cell may touch the body while the measured points inside it do not.
         from local_trajectory import LocalSurface
-        surface=LocalSurface(scan)
+        surface=LocalSurface.cached(scan)
         if surface.precise:
             if not scan.get('floor') and not scan.get('measured_floor'):return False,'尚未收到有效地面观测，已停车'
             magnitude=math.hypot(forward,side);speed=max(0.,float(scan.get('_speed_mps',0)))
@@ -117,8 +117,9 @@ def clearance(scan, forward, yaw, side=0.):
 
 
 class Explorer:
-    def __init__(self, radius=8, forward_limit=.35, yaw_limit=.70):
+    def __init__(self, radius=8, forward_limit=.35, yaw_limit=.70, *, expand=False):
         self.radius = radius
+        self.expand=expand
         self.forward_limit=forward_limit
         self.yaw_limit=yaw_limit
         self.free = set(); self.obstacles = set(); self.path = []
@@ -200,6 +201,10 @@ class Explorer:
         within = lambda p: math.hypot(p[0]*RESOLUTION-self.origin[0],p[1]*RESOLUTION-self.origin[1]) <= self.radius+1
         self.free = {p for p in self.free if within(p)}
         self.obstacles = {p for p in self.obstacles if within(p)}
+        # Map-based exploration follows newly observed passages instead of
+        # treating the initial map extent as a permanent task radius.
+        if self.expand and self.radius<100 and any(math.hypot(p[0]*RESOLUTION-self.origin[0],p[1]*RESOLUTION-self.origin[1])>=self.radius-.8 for p in self.free):
+            self.radius=min(100,self.radius+6)
 
     def plan(self):
         start = cell(*self.last_pose[:2])
@@ -234,7 +239,10 @@ class Explorer:
         self.frontier_metrics=dict(self.frontiers.last)
         if selected is None:
             self.path=[];self.goal=None
-            self.plan_state='blocked' if self.frontier_metrics.get('deferred_regions',0) else 'exhausted'
+            status=self.frontier_metrics.get('search_status')
+            self.plan_state=('searching' if status=='searching' else
+                             'recovering' if status in ['maneuver','local_space'] and self._recovery_available() else
+                             'blocked' if status in ['maneuver','local_space','deferred'] else 'exhausted')
             return self.plan_state
         self.goal=selected['goal'];self.path=selected['path'];self.target_kind=selected['kind']
         self.plan_state='planned'
@@ -395,7 +403,7 @@ class Explorer:
             self.recovery_block_reason='candidates_not_issued';self.motion_hint='连续3次退让候选未能下发，等待稳定反馈或重新规划';return
         self.recovery_block_reason='attempts_exhausted' if self.recovery_attempts>=3 else 'no_verified_corridor'
         self.motion_hint=('本处退让已尝试3次，需实际走出到新区域后再试' if self.recovery_attempts>=3
-                          else '当前扫描没有已确认的退让通路')
+                          else '正在等待通路恢复')
 
     def _recovery_available(self):
         if self.recovery is not None or self.recovery_pending:return True

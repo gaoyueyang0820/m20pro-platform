@@ -8,10 +8,13 @@ All candidate footprints stay on currently measured floor. No actuator I/O.
 import math
 import time
 import copy
+import threading
+from collections import OrderedDict
 import numpy as np
 from robot_geometry import CLEARANCE_HALF_LENGTH, CLEARANCE_HALF_WIDTH, BODY_HALF_LENGTH, BODY_HALF_WIDTH
 
 RES=.2
+_SURFACES=threading.local()
 
 
 def wrap(a):return math.atan2(math.sin(a),math.cos(a))
@@ -23,6 +26,25 @@ class PathConnectionError(ValueError):
 
 class LocalSurface:
     """Continuous rectangular footprint against a discrete live surface."""
+    @classmethod
+    def cached(cls,scan):
+        # Geometry only: pose, speed and command expiry are checked by callers.
+        # A full content key also invalidates in-place point/bounds changes and
+        # translated recovery previews, even if their source stamp is identical.
+        try:
+            key=(scan.get('geometry_version'),*(tuple(tuple(p) for p in scan.get(name,[]))
+                  for name in ['floor','obstacles','measured_floor','obstacle_bounds']))
+            hash(key)
+        except (TypeError,ValueError):return cls(scan)
+        cache=getattr(_SURFACES,'cache',None)
+        if cache is None:cache=_SURFACES.cache=OrderedDict()
+        surface=cache.get(key)
+        if surface is None:
+            surface=cls(scan);cache[key]=surface
+            if len(cache)>8:cache.popitem(last=False)
+        else:cache.move_to_end(key)
+        return surface
+
     def __init__(self,scan):
         from autonomy_core import supported_cells, disk
         self.free=supported_cells(scan)|set(disk(.55))
@@ -30,20 +52,31 @@ class LocalSurface:
         try:bounds=np.asarray(scan.get('obstacle_bounds',[]),float).reshape(-1,4)
         except (ValueError,TypeError):bounds=np.empty((0,4),float)
         self.precise=scan.get('geometry_version')==2 and len(bounds)==len(scan['obstacles']) and np.isfinite(bounds).all() and bool(np.all(bounds[:,2:]>=bounds[:,:2]))
-        self.bounds=bounds
+        self.bounds=bounds.copy()
+        self.centers=(self.bounds[:,:2]+self.bounds[:,2:])/2
+        self.halfsize=(self.bounds[:,2:]-self.bounds[:,:2])/2+.005
         if self.precise:self.free.update(tuple(p) for p in scan.get('measured_floor',[]))
-        self.cache={}
+        self.cache={};self.sweeps={}
         self.last_failure=None
 
     def valid(self,x,y,yaw,*,padding=(0.,0.)):
+        key=(x,y,yaw,*padding)
+        previous=self.cache.get(key)
+        if previous is not None:
+            value,self.last_failure=previous;return value
+        value=self._valid_uncached(x,y,yaw,padding=padding)
+        if len(self.cache)>=4096:self.cache.clear()
+        self.cache[key]=(value,self.last_failure)
+        return value
+
+    def _valid_uncached(self,x,y,yaw,*,padding=(0.,0.)):
         # SAT rectangle/cell intersection, with sub-cell translation retained.
         self.last_failure=None
         c,s=math.cos(yaw),math.sin(yaw);a,b=abs(c),abs(s);half=RES/2
         hx,hy=CLEARANCE_HALF_LENGTH+padding[0],CLEARANCE_HALF_WIDTH+padding[1]
         support_x,support_y=BODY_HALF_LENGTH+padding[0],BODY_HALF_WIDTH+padding[1]
         if self.precise and len(self.bounds):
-            centers=(self.bounds[:,:2]+self.bounds[:,2:])/2
-            halfsize=(self.bounds[:,2:]-self.bounds[:,:2])/2+.005
+            centers=self.centers;halfsize=self.halfsize
             dx,dy=centers[:,0]-x,centers[:,1]-y
             hit=(abs(dx)<hx*a+hy*b+halfsize[:,0])&(abs(dy)<hx*b+hy*a+halfsize[:,1])
             hit&=(abs(c*dx+s*dy)<hx+halfsize[:,0]*a+halfsize[:,1]*b)&(abs(-s*dx+c*dy)<hy+halfsize[:,0]*b+halfsize[:,1]*a)
@@ -69,6 +102,16 @@ class LocalSurface:
         checking interval midpoints cannot miss an in-between rotation contact.
         Default valid() geometry and its 3 cm clearance margin are unchanged.
         """
+        key=(dx,dy,math.copysign(1.,turn) if turn else 0.)
+        previous=self.sweeps.get(key)
+        if previous is not None:
+            value,self.last_failure=previous;return value
+        value=self._sweep_uncached(dx,dy,turn)
+        if len(self.sweeps)>=256:self.sweeps.clear()
+        self.sweeps[key]=(value,self.last_failure)
+        return value
+
+    def _sweep_uncached(self,dx,dy,turn=0.):
         if turn:
             step=math.pi/36;radius=math.hypot(CLEARANCE_HALF_LENGTH,CLEARANCE_HALF_WIDTH)
             angular_pad=2*radius*math.sin(step/4)
@@ -197,7 +240,7 @@ class TrajectoryFollower:
         look=max(.65,min(1.4,.65+speed*.8))
         target=local[min(len(local)-1,int(np.searchsorted(arc,look)))]
         desired=wrap(goal_yaw-pose[2]) if at_goal and goal_yaw is not None else math.atan2(target[1],target[0])
-        surface=LocalSurface(scan)
+        surface=LocalSurface.cached(scan)
         f=self.forward_limit;t=self.yaw_limit
         terminal=remaining_path<.9
         if terminal:
@@ -264,6 +307,14 @@ class TrajectoryFollower:
             target_velocity[turn_done,2]=0
             if k==0:
                 candidates[turn_done,2]=0;velocities[turn_done,2]=0
+                # Finite-turn/terminal braking can make several sampled inputs
+                # identical. Their complete future motion is then identical,
+                # so validate and score only the first still-valid candidate.
+                seen=set()
+                for i in np.flatnonzero(valid):
+                    key=tuple(candidates[i])
+                    if key in seen:valid[i]=False
+                    else:seen.add(key)
             change=np.clip(target_velocity-velocity,[-.7*dt,-.7*dt,-1.8*dt],[.7*dt,.7*dt,1.8*dt])
             change[terminal_braking,:2]=np.clip(target_velocity[terminal_braking,:2]-velocity[terminal_braking,:2],-deceleration*dt,deceleration*dt)
             velocity+=change
@@ -317,7 +368,7 @@ class TrajectoryFollower:
         return dict(self.last)
 
 
-def _repair_exploration_path(explorer,follower,scan,new_scan):
+def _repair_exploration_path(explorer,follower,scan,new_scan,yaw_rate=0.):
     began=time.perf_counter();stamp=scan.get('stamp');pose=scan['pose']
     follower.last['zero_reason']='path_repair_stop'
     status='waiting_new_scan';reason='观察路径已落后于当前位置，停车等待新扫描重建通路'
@@ -328,7 +379,7 @@ def _repair_exploration_path(explorer,follower,scan,new_scan):
     if new_scan and fresh and matched and stamp!=follower.path_repair_stamp:
         follower.path_repair_stamp=stamp
         if follower.path_repair_attempts>=3:
-            status='exhausted';reason='当前位置连续重建通路仍未成功，已停车等待核对定位和通路'
+            status='needs_recovery';reason='正在调整位置，重新连接探索通路'
         else:
             follower.path_repair_attempts+=1
             if follower.path_repair_anchor is None:follower.path_repair_anchor=tuple(pose[:2])
@@ -338,13 +389,23 @@ def _repair_exploration_path(explorer,follower,scan,new_scan):
                 if outcome=='planned' and explorer.path:
                     key=tuple(explorer.path)
                     follower.set_path([(x*RES,y*RES) for x,y in key],terminal=False,start_pose=pose)
-                    follower.plan_key=key;status='replanned';reason='已从当前位置重建通路，停稳后继续'
+                    follower.plan_key=key
+                    allowed=lambda x,y,a:math.dist((x,y),explorer.origin)<=explorer.radius
+                    result=follower.command(scan,yaw_rate,allowed_pose=allowed)
+                    follower.path_repair_stamp=None;follower.path_repair_attempts=0;follower.path_repair_anchor=None
+                    result.update(path_repair_state='replanned',path_repair_attempts=0)
+                    if result['state']=='blocked':result['needs_recovery']=True
+                    return result
                 else:status='waiting_route';reason='正在从当前位置重新检查可通行方向，当前保持停车'
             except ValueError:
                 explorer.path=[];follower.plan_key=None;status='waiting_route'
                 reason='当前观测尚不能形成连续通路，保持停车等待下一帧'
+    if follower.path_repair_attempts>=3 and status!='replanned':
+        status='needs_recovery';reason='正在调整位置，重新连接探索通路'
+        explorer.path=[];explorer.goal=None;follower.plan_key=None
     result=follower._result([0.,0.,0.],'braking',reason,[],began)
     result.update(path_repair_state=status,path_repair_attempts=follower.path_repair_attempts)
+    if status=='needs_recovery' and new_scan and fresh and matched:result['needs_recovery']=True
     return result
 
 
@@ -360,7 +421,7 @@ def exploration_step(explorer,follower,scan,yaw_rate=0.,*,new_scan=True):
             and math.dist(scan['pose'][:2],follower.path_repair_anchor)>=.5):
         follower.path_repair_attempts=0;follower.path_repair_anchor=None
     if follower.path_repair_stamp is not None and scan.get('stamp')==follower.path_repair_stamp:
-        return _repair_exploration_path(explorer,follower,scan,False)
+        return _repair_exploration_path(explorer,follower,scan,False,yaw_rate)
     key=tuple(explorer.path)
     if key!=follower.plan_key:
         old_key=follower.plan_key
@@ -372,11 +433,13 @@ def exploration_step(explorer,follower,scan,yaw_rate=0.,*,new_scan=True):
         # route still passes through this pose; do not discard that connection.
         if not (suffix and connected_old):
             try:follower.set_path([(x*RES,y*RES) for x,y in key],terminal=False,start_pose=scan['pose'])
-            except PathConnectionError:return _repair_exploration_path(explorer,follower,scan,new_scan)
+            except PathConnectionError:return _repair_exploration_path(explorer,follower,scan,new_scan,yaw_rate)
         follower.plan_key=key
     before_previous=follower.previous.copy();before_gain=follower.gain.copy()
     allowed=lambda x,y,a:math.dist((x,y),explorer.origin)<=explorer.radius
     result=follower.command(scan,yaw_rate,allowed_pose=allowed)
+    deadline=scan.get('_valid_until')
+    if new_scan and result['state']=='blocked' and (deadline is None or time.monotonic()<deadline):result['needs_recovery']=True
     if not new_scan or not result.get('needs_continuation') or explorer.goal is None:return result
     pose=scan['pose']
     if follower.last_handoff_pose is not None and math.dist(pose[:2],follower.last_handoff_pose)<.3:

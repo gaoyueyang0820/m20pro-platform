@@ -4,6 +4,7 @@ Pure planning, no actuator I/O. Concepts reviewed against Nav2 Smac and Theta*
 (Apache-2.0); this NumPy/Python implementation is independently written.
 """
 import heapq,math,re,time
+from contextlib import contextmanager
 from robot_geometry import BODY_HALF_LENGTH,BODY_HALF_WIDTH,CLEARANCE_HALF_LENGTH,CLEARANCE_HALF_WIDTH,CLEARANCE_MARGIN
 
 
@@ -29,6 +30,63 @@ def pgm_pixels(raw):
     return w,h,pixels
 
 
+def _components(mask):
+    """Eight-connected labels/stats; OpenCV is the installed fast path."""
+    import numpy as np
+    try:
+        import cv2
+        count,labels,stats,_=cv2.connectedComponentsWithStats(mask.astype(np.uint8),connectivity=8)
+        return labels,stats[1:]
+    except ImportError:
+        labels=np.zeros(mask.shape,np.int32);rows=[];h,w=mask.shape;label=0
+        for y,x in zip(*np.nonzero(mask)):
+            if labels[y,x]:continue
+            label+=1;todo=[(int(x),int(y))];labels[y,x]=label
+            lo_x=hi_x=int(x);lo_y=hi_y=int(y);area=0
+            while todo:
+                xx,yy=todo.pop();area+=1;lo_x=min(lo_x,xx);hi_x=max(hi_x,xx);lo_y=min(lo_y,yy);hi_y=max(hi_y,yy)
+                for dy in (-1,0,1):
+                    for dx in (-1,0,1):
+                        nx,ny=xx+dx,yy+dy
+                        if 0<=nx<w and 0<=ny<h and mask[ny,nx] and not labels[ny,nx]:
+                            labels[ny,nx]=label;todo.append((nx,ny))
+            rows.append((lo_x,lo_y,hi_x-lo_x+1,hi_y-lo_y+1,area))
+        return labels,np.asarray(rows,dtype=np.int32).reshape(-1,5)
+
+
+def _dilate_cells(mask,steps):
+    import numpy as np
+    result=mask.copy()
+    for _ in range(steps):
+        padded=np.pad(result,1,constant_values=False)
+        result=np.logical_or.reduce([padded[dy:dy+mask.shape[0],dx:dx+mask.shape[1]] for dy in range(3) for dx in range(3)])
+    return result
+
+
+def _static_speckles(probability,resolution,free_thresh,occupied_thresh):
+    """Small isolated saved-map components become cost, not asserted free space.
+
+    The decision concerns an old 2D map only. It cannot identify a person or
+    prove a live object is absent. Live obstacles always override this layer.
+    Continuous walls, boundary fragments and unobserved cells stay hard.
+    """
+    import numpy as np
+    occupied=probability>occupied_thresh;unknown=(probability>=free_thresh)&~occupied
+    labels,stats=_components(occupied)
+    eligible=np.zeros(len(stats)+1,bool)
+    if len(stats):
+        eligible[1:]=(stats[:,4]*resolution**2<=.08000001)&(np.maximum(stats[:,2],stats[:,3])*resolution<=.45000001)
+    small=eligible[labels]
+    # Keep fragments attached/adjacent to a larger wall or an unknown boundary.
+    boundary=unknown|(occupied&~small);boundary=boundary.copy()
+    boundary[0]=True;boundary[-1]=True;boundary[:,0]=True;boundary[:,-1]=True
+    near=_dilate_cells(boundary,max(1,round(.10/resolution)))
+    touched=np.unique(labels[near&small]);eligible[touched]=False
+    soft=eligible[labels]&occupied
+    return soft,dict(enabled=True,components=int(eligible[1:].sum()),source_cells=int(soft.sum()),
+                     max_component_area_m2=.08,max_component_extent_m=.45,persistent_map_changed=False)
+
+
 class GridPlanner:
     """Heading lattice plus continuous, footprint-checked any-angle paths.
 
@@ -36,12 +94,16 @@ class GridPlanner:
     cells and diagonal corner-cutting are blocked. Turn checks sample at most
     5 degrees and include a sweep margin for the interval between samples.
     """
-    def __init__(self,raw,resolution,origin,negate=0,free_thresh=.196,occupied_thresh=.65,obstacles=(),robot_pose=None,enable_live_surface=False):
+    def __init__(self,raw,resolution,origin,negate=0,free_thresh=.196,occupied_thresh=.65,obstacles=(),robot_pose=None,enable_live_surface=False,soft_static_speckles=False):
         import numpy as np
         w,h,pixels=pgm_pixels(raw)
         probability=np.frombuffer(pixels,np.uint8).reshape(h,w).astype(float)/255
         if not negate:probability=1-probability
         free=probability<free_thresh
+        self.soft_static_speckles=bool(soft_static_speckles)
+        if self.soft_static_speckles:
+            speckles,self.static_speckles=_static_speckles(probability,resolution,free_thresh,occupied_thresh)
+        else:speckles=np.zeros_like(free);self.static_speckles=dict(enabled=False,components=0,source_cells=0,persistent_map_changed=False)
         self.original=probability;self.original_res=resolution;self.origin=origin
         factor=max(1,math.ceil(.10/resolution));self.res=resolution*factor
         # Preserve the world origin, padding on the top/right of the image only.
@@ -49,7 +111,20 @@ class GridPlanner:
         padded=np.zeros((oh,ow),bool);padded[oh-h:,:w]=free
         self.free=padded.reshape(oh//factor,factor,ow//factor,factor).all(axis=(1,3))
         self.h,self.w=self.free.shape
-        self.base_free=self.free.copy();self.overlay=set();self.grid_revision=0
+        self.base_free=self.free.copy()
+        planning=np.zeros((oh,ow),bool);planning[oh-h:,:w]=free|speckles
+        self.planning_free=planning.reshape(oh//factor,factor,ow//factor,factor).all(axis=(1,3))
+        self.soft_cells=self.planning_free&~self.base_free
+        self.free=self.planning_free.copy();self.soft_cost=np.zeros_like(self.free,dtype=float)
+        # Cost covers the body vicinity; the centre should prefer passing away
+        # from uncertain residue when another known corridor is readily usable.
+        grown=self.soft_cells.copy();rings=max(1,math.ceil(.55/self.res))
+        if np.any(grown):
+            for ring in range(rings+1):
+                self.soft_cost=np.maximum(self.soft_cost,grown*(2.0*(1-ring/(rings+1))))
+                grown=_dilate_cells(grown,1)
+        self.static_speckles.update(planning_cells=int(self.soft_cells.sum()),cost_radius_m=round(rings*self.res,3))
+        self.overlay=set();self.grid_revision=0
         self.masks={};self._rotations={};self._potential_cache={}
         self.occupied_thresh=occupied_thresh;self.free_thresh=free_thresh
         self.self_projection_ignored=0;self._deadline=None;self._potential_expanded=0
@@ -81,7 +156,7 @@ class GridPlanner:
             if not math.isfinite(x) or not math.isfinite(y):continue
             ix,iy=self.cell(x,y)
             if not (0<=ix<self.w and 0<=iy<self.h):continue
-            if robot_pose is not None:
+            if robot_pose is not None and not self.soft_static_speckles:
                 dx,dy=x-robot_pose[0],y-robot_pose[1];c,s=math.cos(robot_pose[2]),math.sin(robot_pose[2])
                 if abs(c*dx+s*dy)<BODY_HALF_LENGTH and abs(-s*dx+c*dy)<BODY_HALF_WIDTH:
                     if self.base_free[iy,ix]:ignored+=1
@@ -95,7 +170,7 @@ class GridPlanner:
 
     def _rebuild_layers(self):
         import numpy as np
-        current=self.base_free.copy()
+        current=self.planning_free.copy()
         if self.live_surface:
             for x,y in self.live_surface.free_cells:current[y,x]=True
             for x,y in self.live_surface.blocked_cells:current[y,x]=False
@@ -113,6 +188,33 @@ class GridPlanner:
         report=self.live_surface.update(scan,localization,now)
         if self.live_surface.revision!=self._live_revision:self._rebuild_layers()
         return dict(report,enabled=True,grid_revision=self.grid_revision)
+
+    @contextmanager
+    def planning_snapshot(self,prepare=None):
+        """Pin one working-map revision for computation, never for execution.
+
+        prepare may admit a fresh scan before the snapshot is pinned. In
+        particular, CPU time spent projecting that scan must not expire the
+        resulting preview halfway through recovery. Admission still validates
+        its ORIGINAL deadline. Nested global searches share the recovery's
+        revision and cannot release its pin. All ordinary collision queries
+        resume expiry immediately when the outermost computation ends.
+        """
+        previous=self._planning_revision
+        if previous is None:
+            if prepare is None:self._expire_live_surface()
+            else:prepare()
+            revision=self.grid_revision
+            self._planning_revision=revision
+        else:
+            if prepare is not None:raise ValueError('规划快照内不能更新扫描')
+            revision=previous
+        try:
+            yield revision
+            if self.grid_revision!=revision:raise ValueError('规划期间通行图已变化，请按最新扫描重新规划')
+        finally:
+            self._planning_revision=previous
+            if previous is None:self._expire_live_surface()
 
     def _expire_live_surface(self):
         # Planning is a read-only snapshot, not permission to move. A search
@@ -226,7 +328,7 @@ class GridPlanner:
                 closed[y,x]=True;expansions+=1
                 if expansions%256==0:self._check_time()
                 # Reverse edge charges the forward destination's clearance cost.
-                penalty=1+.18/max(.1,self.clearance[y,x])
+                penalty=1+.18/max(.1,self.clearance[y,x])+self.soft_cost[y,x]
                 for dx,dy in ((1,0),(-1,0),(0,1),(0,-1),(1,1),(1,-1),(-1,1),(-1,-1)):
                     nx,ny=x+dx,y+dy
                     if not (0<=nx<self.w and 0<=ny<self.h and self.free[ny,nx]):continue
@@ -237,11 +339,19 @@ class GridPlanner:
             return float(d[ty,tx]) if closed[ty,tx] else math.inf
         return value
 
+    def _segment_soft_cost(self,a,b):
+        if not self.static_speckles['components']:return 0.
+        length=math.dist(a[:2],b[:2]);steps=max(1,math.ceil(length/self.res));cost=0.
+        for i in range(1,steps+1):
+            x,y=self.cell(a[0]+(b[0]-a[0])*i/steps,a[1]+(b[1]-a[1])*i/steps)
+            cost+=length/steps*self.soft_cost[y,x]
+        return cost
+
     def _segment_cost(self,a,b):
         length=math.dist(a[:2],b[:2]);steps=max(1,math.ceil(length/self.res));total=0.
         for i in range(1,steps+1):
             x,y=self.cell(a[0]+(b[0]-a[0])*i/steps,a[1]+(b[1]-a[1])*i/steps)
-            total+=length/steps*(1+.18/max(.1,self.clearance[y,x]))
+            total+=length/steps*(1+.18/max(.1,self.clearance[y,x])+self.soft_cost[y,x])
         return total
 
     def _smooth(self,poses):
@@ -309,12 +419,12 @@ class GridPlanner:
         guide.append(dict(path[-1],yaw=dense[-1]['yaw'],type=1))
         length=sum(math.hypot(b['x']-a['x'],b['y']-a['y']) for a,b in zip(path,path[1:]))
         diagnostics.update(live_surface=self.live_surface_status(),grid_revision=self.grid_revision,potential_expanded=self._potential_expanded,
-                           dense_poses=len(dense),rotation_samples=sum(p['kind']=='rotate' for p in dense))
+                           dense_poses=len(dense),rotation_samples=sum(p['kind']=='rotate' for p in dense),static_speckles=dict(self.static_speckles))
         if self._planning_revision is not None and self._planning_revision!=self.grid_revision:
             raise ValueError('规划期间实时通行观测已变化或过期，请更新扫描后重新规划')
         return dict(ok=True,path=path,dense_path=dense,points=guide,length_m=round(length,2),expanded=expanded,
                     goal=guide[-1],requested_goal=dict(x=goal[0],y=goal[1]),clearance_margin_m=CLEARANCE_MARGIN,
-                    self_projection_ignored=self.self_projection_ignored,diagnostics=diagnostics,
+                    self_projection_ignored=self.self_projection_ignored,diagnostics=diagnostics,static_speckles=dict(self.static_speckles),
                     planner='footprint_any_angle_v3',message='已生成机身包络验证的参考路径；执行器仍须依据实时观测跟踪与避障')
 
     def _nearby_goal_cells(self,goal,tolerance):
@@ -334,13 +444,17 @@ class GridPlanner:
         return sorted(result)
 
     def plan(self,start,goal,yaw=None,budget=3.,*,goal_tolerance=None):
+        with self.planning_snapshot():
+            return self._plan_with_snapshot(start,goal,yaw,budget,goal_tolerance=goal_tolerance)
+
+    def _plan_with_snapshot(self,start,goal,yaw=None,budget=3.,*,goal_tolerance=None):
         # The per-planner setting is retained for its start-recovery adapter;
         # callers that need an exact endpoint retain the default zero tolerance.
         if goal_tolerance is not None:
             value=float(goal_tolerance)
             if not math.isfinite(value) or not 0<=value<=1.:raise ValueError('目标调整范围必须为0到1米')
             self.goal_tolerance=value
-        self._expire_live_surface();self._planning_revision=self.grid_revision
+        previous_deadline=self._deadline
         self._deadline=time.monotonic()+max(0,float(budget));self._potential_expanded=0
         try:
             try:result=self._plan(start,goal,yaw,budget)
@@ -368,7 +482,7 @@ class GridPlanner:
             result.setdefault('goal_adjustment',dict(applied=False,distance_m=0.,tolerance_m=self.goal_tolerance))
             result['requires_live_revalidation']=self.live_surface is not None
             return result
-        finally:self._deadline=None;self._planning_revision=None
+        finally:self._deadline=previous_deadline
 
     def _plan(self,start,goal,yaw,budget):
         if not all(math.isfinite(float(v)) for v in [*start,*goal]+([] if yaw is None else [yaw])):raise ValueError('导航坐标必须为有限数值')
@@ -379,7 +493,8 @@ class GridPlanner:
         if not self.pose_fits(*start):raise ValueError('机器人起点过于靠近障碍，无法规划当前姿态；请核对定位或移到空地')
         line_yaw=math.atan2(goal[1]-start[1],goal[0]-start[0]) if math.dist(start[:2],goal)>.001 else start[2]
         final_yaw=line_yaw if yaw is None else yaw
-        if (self.segment_fits(start,goal,line_yaw) and self.world_rotation_fits(start,start[2],line_yaw)
+        soft_direct=self._segment_soft_cost(start,goal)>.01
+        if (not soft_direct and self.segment_fits(start,goal,line_yaw) and self.world_rotation_fits(start,start[2],line_yaw)
                 and self.world_rotation_fits(goal,line_yaw,final_yaw)):
             self._check_time()
             return self._result([tuple(start),(start[0],start[1],line_yaw),(goal[0],goal[1],line_yaw),
@@ -388,8 +503,23 @@ class GridPlanner:
         candidates=[h for h in range(8) if self.fits(gx,gy,h*4) and (gh is None or gh==h and self.rotation_fits(gx,gy,h*math.pi/4,yaw))]
         if not candidates:raise GoalSpaceError('目标周围空间不足以容纳机器人，请离墙或障碍远一些')
         sh=round(start[2]/(math.pi/4))%8
-        if not self.rotation_fits(sx,sy,start[2],sh*math.pi/4):
-            raise ValueError('机器人起点过于靠近障碍，无法规划当前姿态；请核对定位或移到空地')
+        original_cell=(sx,sy);start_bridge=0.
+        centre=(*self.world(sx,sy),start[2])
+        if not (self.segment_fits(start,centre,start[2]) and self.rotation_fits(sx,sy,start[2],sh*math.pi/4)):
+            # A valid continuous pose need not fit at its rounded cell centre.
+            # Join an adjacent centre through an explicitly checked swept-body
+            # segment; the returned path still begins at the actual robot pose.
+            choices=[]
+            for dy in (-1,0,1):
+                for dx in (-1,0,1):
+                    nx,ny=original_cell[0]+dx,original_cell[1]+dy
+                    if not (0<=nx<self.w and 0<=ny<self.h):continue
+                    point=(*self.world(nx,ny),start[2]);length=math.dist(start[:2],point[:2])
+                    if (length<=2*self.res and self.segment_fits(start,point,start[2])
+                            and self.rotation_fits(nx,ny,start[2],sh*math.pi/4)):
+                        choices.append((length,nx,ny))
+            if not choices:raise ValueError('机器人起点过于靠近障碍，无法规划当前姿态；请核对定位或移到空地')
+            start_bridge,sx,sy=min(choices)
         heuristic=self._potential(gx,gy);first=(sx,sy,sh);initial=heuristic(sx,sy)
         if not math.isfinite(initial):raise ValueError('目标与当前位置之间没有足够宽的已知通路；请检查门口、障碍或地图连通性')
         distance={first:0.};parent={};queue=[(initial,0.,first)];expanded=0;end=None
@@ -405,7 +535,7 @@ class GridPlanner:
             for offset,penalty in ((0,1.),(4,1.25),(-2,1.4),(2,1.4)):
                 dx,dy=directions[(h+offset)%8];nx,ny=x+dx,y+dy
                 if self.fits(nx,ny,h*4) and (not dx or not dy or self.fits(x+dx,y,h*4) and self.fits(x,y+dy,h*4)):
-                    moves.append(((nx,ny,h),penalty*math.hypot(dx,dy)*self.res*(1+.18/max(.1,self.clearance[ny,nx]))))
+                    moves.append(((nx,ny,h),penalty*math.hypot(dx,dy)*self.res*(1+.18/max(.1,self.clearance[ny,nx])+self.soft_cost[ny,nx])))
             for turn in [-1,1]:
                 if self.rotation_fits(x,y,h*math.pi/4,(h+turn)*math.pi/4):moves.append(((x,y,(h+turn)%8),.25))
             for nxt,step in moves:
@@ -433,7 +563,7 @@ class GridPlanner:
             try:poses,shortcuts=self._smooth(poses)
             except ValueError:pass
         return self._result(poses,goal,expanded,dict(method='obstacle_potential_lattice_shortcuts',shortcuts=shortcuts,
-                            raw_length_m=round(raw_length,3),planning_ms=round((time.monotonic()-began)*1000,2)))
+                            raw_length_m=round(raw_length,3),start_cell_adjusted=(sx,sy)!=original_cell,start_bridge_m=round(start_bridge,4),planning_ms=round((time.monotonic()-began)*1000,2)))
 
 
 def live_obstacles(packet,start,round_trip=0):

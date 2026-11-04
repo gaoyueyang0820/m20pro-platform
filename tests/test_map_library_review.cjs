@@ -91,6 +91,11 @@ test('cleanup request is bound to the specifically confirmed direct base',async(
  const other=fixture();other.c.mapLibrary.active='unrelated';other.c.openMapActivation('candidate');await other.c.ui['hub-confirm-apply']();
  assert.equal(other.jobs[0].data.cleanup_previous,false);assert.equal(other.jobs[0].data.cleanup_base,undefined);
 });
+test('activation shows the actual localization result instead of implying navigation readiness',async()=>{
+ const f=fixture();f.setJob(()=>({ok:true,map:{id:'candidate-cache'},navigation_ready:false,message:'地图已启用，定位正在恢复'}));
+ f.c.openMapActivation('candidate');await f.c.ui['hub-confirm-apply']();
+ assert.equal(f.toasts.at(-1)[0],'地图已启用，定位正在恢复');
+});
 test('a late trash response cannot replace a newer dialog',async()=>{
  const f=fixture(),gate=deferred();f.setAPI((path,data,previous)=>path.endsWith('/trash')?gate.promise:previous(path,data));
  const work=f.c.ui['map-library-trash']();f.c.editMapDialog('candidate','rename');gate.resolve({maps:[{id:'trash',name:'old'}]});await work;

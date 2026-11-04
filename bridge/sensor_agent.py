@@ -23,7 +23,7 @@ class SensorAgent:
         if path=='/sensors/status':return self.sensor.status()
         if path=='/sensors/cloud':return self.sensor.preview((request or {}).get('topic','/ALIGNED_POINTS'))
         if path=='/sensors/observation':return self.sensor.observation()
-        return self.sensor.autonomy(bool((request or {}).get('mapping')))
+        return self.sensor.autonomy(bool((request or {}).get('mapping')),**(dict(after_stamp=request['after_stamp']) if request and 'after_stamp' in request else {}))
 
     def close(self):
         if self.sensor:self.sensor.close()

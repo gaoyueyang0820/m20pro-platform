@@ -343,12 +343,13 @@ class Connections:
         if role=='sdk' and not target['sdk_workspace'].startswith('/'):
             raise ValueError('请填写 SDK 工作区的绝对路径')
         public=self.ensure_key()
-        if target.get('via_aos'):
+        if target.get('via_aos') and (not target.get('deployed') or req.get('password') or req.get('aos_password')):
             self.pair('aos',progress)
             program="import json,sys,os;from pathlib import Path;r=json.load(sys.stdin);d=Path.home()/'.ssh';d.mkdir(mode=0o700,exist_ok=True);p=d/'authorized_keys';s=p.read_text() if p.exists() else '';k=r['key'];p.write_text(s+('' if not s or s.endswith('\\n') else '\\n')+k+'\\n') if k not in s.splitlines() else None;p.chmod(0o600);print(json.dumps(dict(ok=True)))"
             relay=dict(target=self._aos_target(),aos=deployment['aos'])
             try:self.remote('aos',program,dict(key=public),timeout=20,expected=relay)
-            except ValueError:
+            except ValueError as exc:
+                if 'Permission denied' not in str(exc):raise
                 password=req.get('aos_password') or req.get('password')
                 if not password:raise ValueError('首次连接需要机器人账号密码，后续会自动连接')
                 self.remote('aos',program,dict(key=public),password,timeout=30,expected=relay)

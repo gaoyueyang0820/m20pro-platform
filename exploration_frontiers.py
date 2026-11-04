@@ -61,6 +61,7 @@ class FrontierSelector:
     def __init__(self,resolution=.2):
         self.res=resolution;self.failed=[];self.viewpoints=[];self.last={}
         self.goal_switches=0;self.previous_goal=None
+        self._search_key=None;self._search_index=0;self._maneuver_blocked=0
 
     def observe_pose(self,pose):
         # Record useful spatial baselines, not thousands of nearly identical
@@ -103,6 +104,23 @@ class FrontierSelector:
 
     def select(self,start,yaw,allowed,free,obstacles,within,now,prior_kind=None,possible=None,visited=()):
         costs,parent=reachable(start,allowed,self.res)
+        visited=set(visited);observed_baselines=set();near_viewpoint=set();near_short_view=set()
+        r=1.4/self.res;n=math.ceil(r);near2=(.85/self.res)**2
+        for vx,vy in self.viewpoints:
+            for x in range(math.floor(vx)-n,math.ceil(vx)+n+1):
+                for y in range(math.floor(vy)-n,math.ceil(vy)+n+1):
+                    d2=(x-vx)**2+(y-vy)**2
+                    if d2<=r*r:observed_baselines.add((x,y))
+                    if d2<near2:near_viewpoint.add((x,y))
+                    if d2<(.35/self.res)**2:near_short_view.add((x,y))
+        eligible_cache={};deferred=set()
+        def eligible(p,short=False):
+            key=(p,short)
+            if key not in eligible_cache:
+                usable=p not in visited and p not in (near_short_view if short else near_viewpoint)
+                if usable and self._deferred(p,now,obstacles):deferred.add(p);usable=False
+                eligible_cache[key]=usable
+            return eligible_cache[key]
         known=free|obstacles
         boundary={p for p in free if within(p) and any((p[0]+dx,p[1]+dy) not in known and within((p[0]+dx,p[1]+dy)) for dx,dy in CARDINAL)}
         groups=clusters(boundary)
@@ -116,7 +134,7 @@ class FrontierSelector:
                 for dx in range(-near,near+1):
                     for dy in range(-near,near+1):
                         q=(x+dx,y+dy)
-                        if dx*dx+dy*dy<=near*near and q in costs and costs[q]>=.7:options.add(q)
+                        if dx*dx+dy*dy<=near*near and q in costs and costs[q]>=.7 and eligible(q):options.add(q)
             if not options:continue
             centre=(sum(p[0] for p in group)/len(group),sum(p[1] for p in group)/len(group))
             chosen=sorted(options,key=lambda p:(math.dist(p,centre)+costs[p]/self.res*.15,p))
@@ -127,37 +145,44 @@ class FrontierSelector:
         # Add coarse viewpoints for revisiting old areas and for an already
         # fully visible room. Do not drive to every 20 cm cell in the room.
         coarse=max(1,round(.8/self.res))
-        fallback=[p for p in costs if costs[p]>=.8 and p[0]%coarse==0 and p[1]%coarse==0]
+        fallback=[p for p in costs if costs[p]>=.8 and p[0]%coarse==0 and p[1]%coarse==0 and eligible(p)]
         fallback.sort(key=lambda p:(costs[p],p))
-        if not fallback:fallback=sorted((p for p in costs if costs[p]>=.8),key=lambda p:(costs[p],p))
-        candidates.update(fallback[:96])
+        if not fallback:fallback=sorted((p for p in costs if costs[p]>=.8 and eligible(p)),key=lambda p:(costs[p],p))
         # A coarse lattice must not force a 45-degree turn merely because the
         # forward 0.8 m point was too near and the next axis point was 1.6 m.
         for angle in (yaw+i*math.pi/4 for i in range(8)):
             for length in (1.,1.6,2.4):
                 p=(start[0]+round(length/self.res*math.cos(angle)),start[1]+round(length/self.res*math.sin(angle)))
-                if p in costs:candidates.add(p)
-        ranked=[];visited=set(visited)
-        observed_baselines=set();r=1.4/self.res;n=math.ceil(r)
-        for vx,vy in self.viewpoints:
-            for x in range(math.floor(vx)-n,math.ceil(vx)+n+1):
-                for y in range(math.floor(vy)-n,math.ceil(vy)+n+1):
-                    if (x-vx)**2+(y-vy)**2<=r*r:observed_baselines.add((x,y))
-        for p in sorted(candidates):
-            if p in visited or self._deferred(p,now,obstacles):continue
-            novelty=min((math.dist(p,q)*self.res for q in self.viewpoints),default=3.)
-            if novelty<.85:continue
+                if p in costs and eligible(p):candidates.add(p)
+        # Keep every remaining coarse viewpoint. A fixed prefix can contain
+        # only visited/blocked locations while open space lies further away.
+        ordered=sorted(candidates,key=lambda p:(costs[p],p))+[p for p in fallback if p not in candidates]
+        normal_set=set(ordered)
+        # An 85 cm viewpoint baseline is useful for coverage, but must not
+        # forbid a shorter clear approach that reveals the next scan section.
+        short_points={p for p in costs if .4<=costs[p]<=1.6 and .35<=math.dist(p,start)*self.res<=1.2 and p not in normal_set and eligible(p,True)}
+        ordered+=sorted(short_points,key=lambda p:(costs[p],p))
+        key=(start,round(yaw/.25),tuple(ordered),frozenset(free),frozenset(obstacles))
+        if key!=self._search_key or self._search_index>=len(ordered) and self.last.get('search_status') in ['maneuver','local_space','deferred']:
+            self._search_key=key;self._search_index=0;self._maneuver_blocked=0
+        # Score bounded batches so large maps cannot stall the control loop.
+        # Unchecked candidates mean search is pending, never exploration done.
+        batch=ordered[self._search_index:self._search_index+192]
+        self._search_index+=len(batch);ranked=[]
+        for p in batch:
+            if p in short_points and ranked:break
+            gain,expansion,visible=self.information(p,free,obstacles,within,prior_kind)
+            new_views=len(visible-observed_baselines)*self.res**2
+            if gain<.08 and expansion<.08 and new_views<.2:continue
+            if p in short_points and gain<.08 and expansion<.08:continue
             # Check the actual first path direction, not a line through walls.
             chain=[];q=p
             while q is not None:chain.append(q);q=parent[q]
             chain.reverse();lead=chain[min(3,len(chain)-1)]
             heading=math.atan2(lead[1]-start[1],lead[0]-start[0]);turn=abs(math.atan2(math.sin(heading-yaw),math.cos(heading-yaw)))
-            if possible and not possible(heading):continue
-            gain,expansion,visible=self.information(p,free,obstacles,within,prior_kind)
+            if possible and not possible(heading):self._maneuver_blocked+=1;continue
             # Coverage gain means genuinely distinct nearby observation poses.
             # It is not a claim of improved map accuracy or metric SLAM quality.
-            new_views=len(visible-observed_baselines)*self.res**2
-            if gain<.08 and expansion<.08 and new_views<.2:continue
             kind=('expand' if expansion>.08 else 'refine') if prior_kind else ('expand' if gain>.08 else 'observe')
             # Once an old-map unknown area is reobserved, moving within it has
             # diminishing utility. Frontier gain is the dominant global driver.
@@ -166,11 +191,17 @@ class FrontierSelector:
             score=utility/cost
             ranked.append((score,-turn,-costs[p],p,chain,kind,gain,expansion,new_views))
         if not ranked:
-            deferred=sum(now<r['until'] for r in self.failed)
-            self.last=dict(frontier_clusters=len(groups),reachable_cells=len(costs),candidates=0,deferred_regions=deferred,reason='等待暂时受阻区域重试' if deferred else '没有未覆盖的可达观察点')
+            remaining=len(ordered)-self._search_index
+            status=('searching' if remaining else 'maneuver' if self._maneuver_blocked else 'deferred' if deferred
+                    else 'local_space' if groups and max(costs.values(),default=0.)<.8 else 'complete')
+            reasons=dict(searching='正在选择其他探索方向',maneuver='正在寻找转向或退让通路',deferred='等待暂时受阻通路重新开放',local_space='正在重新观察周边通路',complete='可达区域已完成观察')
+            self.last=dict(frontier_clusters=len(groups),reachable_cells=len(costs),candidates=0,
+                candidate_pool=len(ordered),search_remaining=remaining,search_status=status,
+                maneuver_blocked=self._maneuver_blocked,deferred_regions=len(deferred),reason=reasons[status])
             return None
         best=max(ranked);_,_,_,goal,path,kind,gain,expansion,new_views=best
+        self._search_index=0
         if prior_kind and kind=='observe':kind='refine'
         if goal!=self.previous_goal:self.goal_switches+=1;self.previous_goal=goal
-        self.last=dict(frontier_clusters=len(groups),reachable_cells=len(costs),candidates=len(ranked),information_gain_m2=round(gain,2),old_unknown_gain_m2=round(expansion,2),revisit_gain_m2=round(new_views,2),path_length_m=round(costs[goal],2),deferred_regions=sum(now<r['until'] for r in self.failed),goal_switches=self.goal_switches,reason='前往信息收益较高的边界观察点' if gain>.08 else '前往具有新观察角度的复查点')
+        self.last=dict(frontier_clusters=len(groups),reachable_cells=len(costs),candidates=len(ranked),candidate_pool=len(ordered),search_status='planned',information_gain_m2=round(gain,2),old_unknown_gain_m2=round(expansion,2),revisit_gain_m2=round(new_views,2),path_length_m=round(costs[goal],2),deferred_regions=sum(now<r['until'] for r in self.failed),goal_switches=self.goal_switches,reason='前往信息收益较高的边界观察点' if gain>.08 else '前往具有新观察角度的复查点')
         return dict(goal=goal,path=path,kind=kind,metrics=self.last)

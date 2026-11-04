@@ -114,6 +114,24 @@ class PersonVision:
             return row
 
 
+class ExplorationCompletion:
+    """Finish after stable observations, rather than five empty planner calls."""
+    def __init__(self):self.reset()
+    def reset(self):
+        self.since=None;self.stamp=None;self.signature=None;self.frames=0
+    def observe(self,outcome,scan,explorer,now):
+        if outcome!='exhausted':self.reset();return False
+        stamp=scan.get('stamp')
+        if not isinstance(stamp,(int,float)) or not math.isfinite(stamp):return False
+        signature=(round(scan['pose'][0]/RESOLUTION),round(scan['pose'][1]/RESOLUTION),len(explorer.free),len(explorer.obstacles))
+        if signature!=self.signature:
+            self.reset();self.signature=signature
+        if self.stamp is not None and stamp<=self.stamp:return False
+        if self.since is None:self.since=now
+        self.stamp=stamp;self.frames+=1
+        return self.frames>=5 and now-self.since>=3.
+
+
 class MotionProgress:
     """Progress is new position/goal approach, not alternating yaw or commands."""
     def __init__(self):
@@ -360,7 +378,7 @@ class Autonomy:
             else:
                 if self.app.mapping and not req.get('use_current'):raise ValueError('当前已有建图采集，请选择继续当前采集，或先结束并保存')
                 if not self.app.mapping and req.get('use_current'):raise ValueError('当前没有建图采集，请选择新建或续建')
-                self.target=None;self.explorer=Explorer(radius,forward,yaw)
+                self.target=None;self.explorer=Explorer(radius,forward,yaw,expand=scope=='map')
             self.generation+=1;self._save_token=None;self.context=self.app.hub.context()
             self.capture_id=None
             self.active=True;self.run_id=uuid.uuid4().hex;self.mode=mode;self.state='preparing';self.scope=scope;self.prior_grid=None
@@ -513,7 +531,7 @@ class Autonomy:
             with self.app.lock:
                 if self.run_id==run_id:self.pause(str(exc));self.app.add_log('autonomy',str(exc))
 
-    def scan_now(self,mapping,role=None):
+    def scan_now(self,mapping,role=None,after_stamp=None):
         if self.app.demo:
             x,y,yaw=[self.app.pose[k] for k in ['PosX','PosY','Yaw']]
             c,s=math.cos(yaw),math.sin(yaw);floor=[];obstacles=[]
@@ -528,7 +546,7 @@ class Autonomy:
             return dict(ok=True,protocol=1,demo=True,age=0,floor=floor,obstacles=obstacles,pose=[x,y,yaw],stamp=stamp,_valid_until=stamp+.65)
         role=role or self.app.hub.connections.value.get('sensor_source','nos')
         began=time.monotonic()
-        scan=self.app.proxy(role,'/sensors/autonomy',dict(mapping=mapping),timeout=.7)
+        scan=self.app.proxy(role,'/sensors/autonomy',dict(mapping=mapping,**(dict(after_stamp=after_stamp) if after_stamp is not None else {})),timeout=.7)
         if scan.get('protocol')!=1:raise ValueError('机器人连接服务尚未同步自主感知接口')
         rtt=time.monotonic()-began
         processing=number(scan.get('server_elapsed_s',0),0,5)
@@ -550,9 +568,9 @@ class Autonomy:
         follow_request=(0.,0.)
         follower=TrajectoryFollower(explorer.forward_limit,explorer.yaw_limit) if explorer else None
         trajectory_key=None;trajectory_detail={}
-        last_plan=0;last_vision=None;blocked_attempts=0;waiting=time.monotonic();exhausted=0;progress=MotionProgress()
+        last_plan=0;last_vision=None;blocked_attempts=0;waiting=time.monotonic();completion=ExplorationCompletion();progress=MotionProgress()
         last_yaw=None;scan_sweep=0.;scan_started=None
-        sensing_lost=None;recovery_frames=0;recovery_stamp=None
+        sensing_lost=None;recovery_frames=0;recovery_stamp=None;ground_waiting=False;environment_waiting=False
         pump=None;pump_generation=None;pump_capture_id=None;consumed_sequence=None;last_cache_state=None;scanning=False
         captured_context=self.context
         source_role=self.app.hub.connections.value.get('sensor_source','nos')
@@ -568,7 +586,9 @@ class Autonomy:
             check_owner()
             previous=getattr(self.app.hub._operation_context,'value',None)
             self.app.hub._operation_context.value=captured_context
-            try:packet=self.scan_now(mode=='explore',role=source_role)
+            try:
+                packet=self.scan_now(mode=='explore',role=source_role,after_stamp=description.get('after_stamp'))
+                description['after_stamp']=packet.get('stamp')
             finally:self.app.hub._operation_context.value=previous
             check_owner()
             return packet
@@ -631,6 +651,13 @@ class Autonomy:
                     raise OperationCancelled(cached.get('error') or '自主感知连接代际已变化')
                 scan=cached['observation']
                 if scan is None:
+                    completion.reset()
+                    if cached.get('error_kind')=='ground_pending':
+                        ground_waiting=True;sensing_lost=None;recovery_frames=0;recovery_stamp=None
+                        if not self._drive(run_id,0,0):return
+                        with self.app.lock:
+                            if self.run_id==run_id:self.message='等待地面扫描恢复，恢复后自动继续'
+                        time.sleep(.04);continue
                     sensing_lost=sensing_lost or time.monotonic();recovery_frames=0;recovery_stamp=None
                     if self.state=='preparing' and now-waiting<20 or time.monotonic()-sensing_lost<5:
                         if cached['state']!=last_cache_state:
@@ -645,12 +672,14 @@ class Autonomy:
                 last_cache_state=cached['state']
                 new_scan=cached['sequence']!=consumed_sequence
                 if not self.active or self.run_id!=run_id:return
-                if sensing_lost is not None:
+                if sensing_lost is not None or ground_waiting:
                     stamp=scan.get('stamp',now)
                     if recovery_stamp is None or stamp>recovery_stamp:recovery_frames+=1;recovery_stamp=stamp
                     if recovery_frames<2:
                         if not self._drive(run_id,0,0):return
                         time.sleep(.02);continue
+                    if ground_waiting:
+                        progress=MotionProgress();ground_waiting=False
                 with self.app.lock:
                     if not self.active or self.run_id!=run_id:return
                     self.scan=scan;self.scan_timing=dict(scan.get('_timing',{}),cache_wait_ms=round(scan.get('_cache_wait_ms',0),1),
@@ -703,31 +732,41 @@ class Autonomy:
                     if stuck and explorer.recovery is None and not explorer.recovery_pending:
                         feedback=scan.get('_velocity_body')
                         if feedback is not None and time.monotonic()<scan.get('_valid_until',0):
-                            if not explorer.request_recovery(progress.failed_axes(),stuck):raise ValueError(explorer.motion_hint)
-                            progress.recovery_started()
+                            if explorer.request_recovery(progress.failed_axes(),stuck):progress.recovery_started()
+                            else:
+                                explorer.note_blocked(stuck);last_plan=0
+                                explorer.motion_hint='正在改换探索路线'
+                                environment_waiting=explorer.recovery_block_reason=='no_verified_corridor'
                             self._drive(run_id,0,0)
                             trajectory_detail=dict(state='recovering',axes=[0.,0.,0.],reason=explorer.motion_hint,zero_reason='stuck_brake_before_direction_change')
                             with self.app.lock:
                                 if self.run_id==run_id:self.message=explorer.motion_hint;self.map_view=dict(explorer.view(),controller=trajectory_detail)
                             time.sleep(.02);continue
-                    if progress.stalled(time.monotonic()):raise ValueError('持续没有有效位移或目标接近，已暂停；转向摆动不会计为行走进展')
+                    if progress.stalled(time.monotonic()) and not environment_waiting and explorer.plan_state not in ['searching','exhausted']:raise ValueError('持续没有有效位移或目标接近，已暂停；转向摆动不会计为行走进展')
                     if new_scan and explorer.recovery is None and not explorer.recovery_pending and (now-last_plan>1 or not explorer.path):
                         stage=time.monotonic();outcome=explorer.plan();last_plan=now
                         self.scan_timing['plan_ms']=round((time.monotonic()-stage)*1000,1)
+                        complete=completion.observe(outcome,scan,explorer,now)
+                        if outcome=='searching':
+                            self._drive(run_id,0,0)
+                            with self.app.lock:
+                                if self.run_id==run_id:self.message='正在重新选择探索方向'
+                            time.sleep(.02);continue
                         if outcome=='blocked':
                             self._drive(run_id,0,0);blocked_attempts+=1;explorer.path=[]
+                            environment_waiting=explorer.recovery_block_reason=='no_verified_corridor'
                             with self.app.lock:
-                                if self.run_id==run_id:self.message='已停车，等待周边障碍移开或新一帧地面观测'
-                            if blocked_attempts>=10 and not explorer.frontier_metrics.get('deferred_regions'):
+                                if self.run_id==run_id:self.message='正在重新选择通路，通路恢复后自动继续'
+                            if blocked_attempts>=10 and not environment_waiting and not explorer.frontier_metrics.get('deferred_regions'):
                                 raise ValueError('周围持续存在障碍或地面不可通行，已暂停探索')
                             time.sleep(.08);continue
+                        blocked_attempts=0
                         if outcome=='exhausted' and math.dist(explorer.last_pose[:2],explorer.origin)<.15 and scan_sweep<1.8 and (scan_started is None or now-scan_started<20):
                             turn_clear,_=clearance(scan,0,.12)
                             if turn_clear:
-                                scan_started=scan_started or now;scanning=True;exhausted=0
-                        if not scanning:exhausted=exhausted+1 if outcome=='exhausted' else 0
-                        if exhausted>=5:
-                            self._drive(run_id,0,0);self.finish_save(run_id,'本轮没有更多可达探索点，正在保存地图');return
+                                scan_started=scan_started or now;scanning=True;completion.reset()
+                        if not scanning and complete:
+                            self._drive(run_id,0,0);self.finish_save(run_id,'本轮作业范围已完成探索，正在保存地图');return
                     yaw_rate=0.
                     if not self.app.demo and self.app.link:
                         record=self.app.link.record(1002,4)
@@ -738,7 +777,17 @@ class Autonomy:
                     trajectory_verified=False
                     if not scanning and explorer.path and explorer.recovery is None and not explorer.recovery_pending:
                         trajectory_detail=exploration_step(explorer,follower,scan,yaw_rate,new_scan=new_scan)
-                        if trajectory_detail.get('path_repair_state')=='exhausted':raise ValueError(trajectory_detail['reason'])
+                        if trajectory_detail.get('needs_recovery'):
+                            reason=trajectory_detail.get('reason','当前通路受阻')
+                            if explorer.request_recovery(progress.failed_axes(),reason):progress.recovery_started()
+                            else:
+                                explorer.note_blocked(reason);last_plan=0
+                                explorer.motion_hint='正在选择绕行方向'
+                                environment_waiting=explorer.recovery_block_reason=='no_verified_corridor'
+                            self._drive(run_id,0,0)
+                            with self.app.lock:
+                                if self.run_id==run_id:self.message=explorer.motion_hint;self.map_view=dict(explorer.view(),controller=trajectory_detail)
+                            time.sleep(.02);continue
                         if trajectory_detail['state']=='arrived':
                             explorer.visited.add(explorer.goal);explorer.path=[];last_plan=0
                             forward=side=yaw=0.;trajectory_verified=True
@@ -785,6 +834,8 @@ class Autonomy:
                 # The sampled controller has checked the actual swept arc on
                 # this same fresh scan. Do not replace it with a 90-degree disk
                 # test, which would reject a feasible gentle turn in a corridor.
+                if mode=='explore' and not any([forward,side,yaw]) and explorer.recovery_block_reason=='no_verified_corridor':
+                    environment_waiting=True
                 clear,reason=(True,'') if mode=='follow' or mode=='explore' and trajectory_verified else clearance(scan,forward,yaw,side=side)
                 if not clear:
                     if mode=='explore' and blocked_attempts<10:
@@ -794,6 +845,8 @@ class Autonomy:
                             if self.run_id==run_id:self.message='前方暂不可通行，正在选择其他探索点'
                         time.sleep(.2);continue
                     raise ValueError(reason)
+                if mode=='explore' and environment_waiting and any([forward,side,yaw]):
+                    progress=MotionProgress();environment_waiting=False
                 blocked_attempts=0
                 with self.app.lock:
                     if not self.active or self.run_id!=run_id:return
@@ -806,6 +859,7 @@ class Autonomy:
                         if self.run_id==run_id:self.map_view=dict(explorer.view(),controller=trajectory_detail)
                 if driven is False:return
                 if driven is None:
+                    completion.reset()
                     sensing_lost=sensing_lost or time.monotonic();recovery_frames=0;recovery_stamp=None
                     if time.monotonic()-sensing_lost>5:raise ValueError('感知持续无法及时完成，已停车；请查看时序记录')
                     continue

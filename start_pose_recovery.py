@@ -139,7 +139,8 @@ class _Geometry:
         return dict(overlap_cells=len(rows),unobserved_body_cells=sum(r['in_body_blind_patch'] and not r['observed_frames'] for r in rows),
                     insufficient_vote_cells=sum(r['observed_frames']<3 or r['source_span_s']<.4-1e-6 for r in rows),
                     live_blocked_cells=sum(r['live_obstacle'] for r in rows),surface_state=status.get('state','disabled'),
-                    structure=status.get('structure',{}),cells=rows,standing_is_not_map_clearing_evidence=True)
+                    structure=status.get('structure',{}),cells=rows,body_projection_cells=status.get('body_projection_cells',0),
+                    body_projection_policy='current_physical_body_only')
 
     def edge(self,a,b,relaxed=False):
         length=math.dist(a[:2],b[:2]);angle=_wrap(b[2]-a[2]);n=max(1,math.ceil(length/.025),math.ceil(abs(angle)/math.radians(2.5)))
@@ -190,7 +191,7 @@ def recover_start(planner,start,goal,yaw=None,scan=None,localization=None,standi
     began=time.monotonic();deadline=began+max(0,float(budget));start=_pose(start);goal=list(map(float,goal))
     result=dict(ok=False,classification='unclassified',reason='',recovery_dense_path=[],global_plan=None,
                 requested_start=list(start),requested_goal=list(goal),requires_live_revalidation=True,requires_field_validation=True,
-                persistent_map_changed=False,motion_sent=False,constraints=dict(max_distance_m=float(max_distance),max_turn_rad=float(max_turn),
+                persistent_map_changed=False,motion_sent=False,operator_confirmation_required=False,constraints=dict(max_distance_m=float(max_distance),max_turn_rad=float(max_turn),
                 normal_margin_m=CLEARANCE_MARGIN,max_total_translation_m=float(max_distance),max_total_rotation_rad=float(max_turn),
                 must_follow_returned_prefix=True,recommended_max_duration_s=8,relaxed_prefix_policy='physical_body_clear_and_non_decreasing_clearance',
                 support_assumption='standing-confirmed initial body blind patch; measured floor required outside it'))
@@ -200,107 +201,116 @@ def recover_start(planner,start,goal,yaw=None,scan=None,localization=None,standi
         if error:result.update(classification='observation_unavailable',reason=error);return result
         if standing is not True:result.update(classification='standing_unconfirmed',reason='需要站立反馈确认，不能自动假定机身下方有支撑');return result
         if not 0<max_distance<=1 or not 0<=max_turn<=math.radians(30):raise ValueError('起点恢复范围超出短程限制')
-        planner.live_surface_status();revision=planner.grid_revision
-        geometry=_Geometry(planner,start,scan,max_distance,standing)
-        result['support_seed']=dict(pose=list(scan['pose']),resolution=geometry.res,stamp=scan['stamp'],
-            floor=[list(q) for q in sorted(geometry.floor) if math.hypot(*q)*geometry.res<=max_distance+.8],
-            policy='only carry previously measured ground into the current body blind patch')
-        result['live_obstacle_raster_refined_cells']=geometry.refined_live_raster_cells
-        map_gap=geometry.map_gap(start);live_gap=geometry.local_gap(start)
-        result['initial_clearance_lower_bound_m']=round(min(map_gap,live_gap),4)
-        if live_gap<-1e-8:
-            result.update(classification='live_body_collision',reason='真实机身与当前实测障碍包围范围重叠，需更精确核对；不能通过缩小机身或忽略回波自动脱困');return result
-        if map_gap<-1e-8:
-            diagnostics=geometry.overlap_diagnostics(start);structure=diagnostics['structure']
-            if diagnostics['surface_state']=='expired':
-                code='live_evidence_expired';reason='临时通行观测已过期，需重新取得同步扫描后规划；原图保持不变'
-            elif structure and not structure.get('supported'):
-                code='local_structure_unconfirmed';reason='当前位置仍与旧图冲突，外围结构尚不足以确认局部残影；请先恢复定位或补充同步观测'
-            elif diagnostics['unobserved_body_cells']:
-                code='unobserved_body_overlap';reason='旧图占据落在机身盲区且没有历史实测地面，不能仅凭站立清墙；需先补充可验证的观测'
-            elif diagnostics['insufficient_vote_cells']:
-                code='insufficient_ground_votes';reason='旧图重叠区的独立地面帧还不足，需继续取得同步观测后再规划'
-            else:code='map_surface_disagreement';reason='真实机身仍与工作图占据重叠，当前证据不能验证通路；原图和实际障碍均已保留'
-            result.update(classification='map_surface_disagreement',reason=reason,reason_code=code,overlap_diagnostics=diagnostics);return result
-        if not geometry.supported(start):
-            result.update(classification='unsupported_floor',reason='当前机身周边缺少实际地面支撑观测');return result
-        relaxed=not geometry.standard(start)
-        classification='clearance_only' if relaxed else 'temporary_surface_verified' if geometry.map_gap(start,base=True)<-1e-8 else 'ready'
-        if not relaxed:
-            try:
-                plan=planner.plan(start,goal,yaw,budget=min(.35,max(.01,deadline-time.monotonic())))
-                if planner.grid_revision!=revision:raise ValueError('实时通行层已变化')
-                result.update(ok=True,classification=classification,reason='当前连续姿态有效，可直接接续原目标路线',
-                              recovery_dense_path=_knots([start],geometry),global_plan=plan,dense_path=plan['dense_path'],recovery_distance_m=0.,expanded=0)
-                return result
-            except ValueError as exc:
-                result['initial_plan_error']=str(exc)
-                sx,sy=planner.cell(*start[:2]);cx,cy=planner.world(sx,sy);sh=round(start[2]/(math.pi/4))*math.pi/4
-                # Only recover a demonstrated start discretization/orientation
-                # issue. A blocked distant goal is not solved by moving blindly.
-                center=[cx,cy,start[2]];snapped=[cx,cy,sh]
-                if geometry.standard(center) and geometry.standard(snapped) and planner.rotation_fits(sx,sy,start[2],sh):
-                    result.update(classification='valid_start_no_route',reason='起点姿态有效，原目标路线尚不可达；不以任意退让代替寻路');return result
-                classification='start_quantization'
-        result['classification']=classification
-        step=.05;angle_step=math.radians(5);origin=(0,0,0);queue=[(0.,origin)];cost={origin:0.};parents={};poses={origin:start};edges={};travelled={origin:0.};turned={origin:0.}
-        expanded=0;attempts=0;best_prefix=None
-        while queue and time.monotonic()<deadline:
-            score,key=heapq.heappop(queue)
-            if score!=cost.get(key):continue
-            p=poses[key];expanded+=1
-            lattice_ready=False
-            if key!=origin and geometry.standard(p):
-                ix,iy=planner.cell(*p[:2]);cx,cy=planner.world(ix,iy);sh=round(p[2]/(math.pi/4))*math.pi/4
-                center=[cx,cy,p[2]]
-                lattice_ready=(geometry.standard(center) and geometry.edge(p,center,relaxed=False) is not None
-                               and planner.rotation_fits(ix,iy,p[2],sh))
-            if lattice_ready:
-                prefix=[key]
-                while prefix[-1]!=origin:prefix.append(parents[prefix[-1]])
-                prefix.reverse();trajectory=[start]
-                for q in prefix[1:]:trajectory.extend(edges[q])
-                # The axis lattice may discover an L-shaped escape even when
-                # one fixed-heading diagonal translation is clear. The runtime
-                # executes only a single translation: shorten this prefix only
-                # after checking its ENTIRE swept body and non-decreasing
-                # clearance, including fresh measured floor along the segment.
-                if abs(_wrap(p[2]-start[2]))<1e-8:
-                    direct=geometry.edge(start,p,relaxed=relaxed)
-                    if direct is not None:trajectory=[start]+direct
-                best_prefix=_knots(trajectory,geometry)
-                if attempts<8:
-                    attempts+=1
-                    try:
-                        plan=planner.plan(p,goal,yaw,budget=min(.3,max(.01,deadline-time.monotonic())))
-                        if planner.grid_revision!=revision:raise ValueError('实时通行层已变化')
-                        distance=sum(math.dist(a[:2],b[:2]) for a,b in zip(trajectory,trajectory[1:]))
-                        full=best_prefix+plan['dense_path'][1:]
-                        result.update(ok=True,reason='已找到连续退让到标准净空的短轨迹，并接续原目标',recovery_dense_path=best_prefix,
-                                      global_plan=plan,dense_path=full,recovery_distance_m=round(distance,4),expanded=expanded,
-                                      recovered_start=list(p),planning_ms=round((time.monotonic()-began)*1000,2))
-                        return result
-                    except ValueError as exc:result['last_route_error']=str(exc)
-            # Position coordinates are in the INITIAL body frame; every edge is
-            # evaluated with its actual orientation and full continuous sweep.
-            for dx,dy,da,weight in [(-1,0,0,1.),(0,1,0,1.05),(0,-1,0,1.05),(1,0,0,1.1),(0,0,1,1.7),(0,0,-1,1.7)]:
-                nxt=(key[0]+dx,key[1]+dy,key[2]+da)
-                travelled_next=travelled[key]+math.hypot(dx,dy)*step;turned_next=turned[key]+abs(da)*angle_step
-                if travelled_next>max_distance+1e-9 or turned_next>max_turn+1e-9:continue
-                if math.hypot(nxt[0],nxt[1])*step>max_distance+1e-9 or abs(nxt[2]*angle_step)>max_turn+1e-9:continue
-                c,s=math.cos(start[2]),math.sin(start[2]);np_=[start[0]+c*nxt[0]*step-s*nxt[1]*step,start[1]+s*nxt[0]*step+c*nxt[1]*step,_wrap(start[2]+nxt[2]*angle_step)]
-                if relaxed and geometry.clearance(np_)<max(geometry.clearance(p),result['initial_clearance_lower_bound_m'])-.001:continue
-                edge=geometry.edge(p,np_,relaxed=relaxed)
-                if edge is None:continue
-                new=score+step*weight
-                if new<cost.get(nxt,math.inf):
-                    cost[nxt]=new;parents[nxt]=key;poses[nxt]=np_;edges[nxt]=edge;travelled[nxt]=travelled_next;turned[nxt]=turned_next;heapq.heappush(queue,(new,nxt))
-            if expanded>=1500:break
-        result.update(reason='没有找到同时满足真实机身、实测地面和原目标接续的短程退让路线',expanded=expanded,
-                      candidate_recovery=best_prefix,planning_ms=round((time.monotonic()-began)*1000,2))
-        return result
+        prepare=None
+        if getattr(planner,'live_surface',None) is not None:
+            prepare=lambda:planner.update_live_surface(scan,localization)
+        with planner.planning_snapshot(prepare=prepare) as revision:
+            return _recover_snapshot(planner,start,goal,yaw,scan,standing,max_distance,max_turn,began,deadline,result,revision)
     except (ValueError,TypeError,KeyError,OverflowError) as exc:
-        result.update(classification='invalid_or_changed_evidence',reason=str(exc));return result
+        result.update(ok=False,classification='invalid_or_changed_evidence',reason=str(exc));return result
+
+
+def _recover_snapshot(planner,start,goal,yaw,scan,standing,max_distance,max_turn,began,deadline,result,revision):
+    """Pure search over the admitted revision; its caller owns the snapshot."""
+    geometry=_Geometry(planner,start,scan,max_distance,standing)
+    result['support_seed']=dict(pose=list(scan['pose']),resolution=geometry.res,stamp=scan['stamp'],
+        floor=[list(q) for q in sorted(geometry.floor) if math.hypot(*q)*geometry.res<=max_distance+.8],
+        policy='only carry previously measured ground into the current body blind patch')
+    result['live_obstacle_raster_refined_cells']=geometry.refined_live_raster_cells
+    map_gap=geometry.map_gap(start);live_gap=geometry.local_gap(start)
+    result['initial_clearance_lower_bound_m']=round(min(map_gap,live_gap),4)
+    if live_gap<-1e-8:
+        result.update(classification='live_body_collision',reason='真实机身与当前实测障碍包围范围重叠，需更精确核对；不能通过缩小机身或忽略回波自动脱困');return result
+    if map_gap<-1e-8:
+        diagnostics=geometry.overlap_diagnostics(start);structure=diagnostics['structure']
+        if diagnostics['surface_state']=='expired':
+            code='live_evidence_expired';reason='临时通行观测已过期，需重新取得同步扫描后规划；原图保持不变'
+        elif structure and not structure.get('supported'):
+            code='local_structure_unconfirmed';reason='当前位置仍与旧图冲突，外围结构尚不足以确认局部残影；请先恢复定位或补充同步观测'
+        elif diagnostics['unobserved_body_cells']:
+            code='unobserved_body_overlap';reason='起点紧邻地图墙线，当前未找到可用的起步通路'
+        elif diagnostics['insufficient_vote_cells']:
+            code='insufficient_ground_votes';reason='旧图重叠区的独立地面帧还不足，需继续取得同步观测后再规划'
+        else:code='map_surface_disagreement';reason='真实机身仍与工作图占据重叠，当前证据不能验证通路；原图和实际障碍均已保留'
+        result.update(classification='map_surface_disagreement',reason=reason,reason_code=code,overlap_diagnostics=diagnostics);return result
+    if not geometry.supported(start):
+        result.update(classification='unsupported_floor',reason='当前机身周边缺少实际地面支撑观测');return result
+    relaxed=not geometry.standard(start)
+    classification=('clearance_only' if relaxed else 'body_projection_start' if getattr(getattr(planner,'live_surface',None),'body_projection_cells',set())
+                    else 'temporary_surface_verified' if geometry.map_gap(start,base=True)<-1e-8 else 'ready')
+    if not relaxed:
+        try:
+            plan=planner.plan(start,goal,yaw,budget=min(.35,max(.01,deadline-time.monotonic())))
+            if planner.grid_revision!=revision:raise ValueError('实时通行层已变化')
+            result.update(ok=True,classification=classification,reason='当前连续姿态有效，可直接接续原目标路线',
+                          recovery_dense_path=_knots([start],geometry),global_plan=plan,dense_path=plan['dense_path'],recovery_distance_m=0.,expanded=0)
+            return result
+        except ValueError as exc:
+            result['initial_plan_error']=str(exc)
+            sx,sy=planner.cell(*start[:2]);cx,cy=planner.world(sx,sy);sh=round(start[2]/(math.pi/4))*math.pi/4
+            # Only recover a demonstrated start discretization/orientation
+            # issue. A blocked distant goal is not solved by moving blindly.
+            center=[cx,cy,start[2]];snapped=[cx,cy,sh]
+            if geometry.standard(center) and geometry.standard(snapped) and planner.rotation_fits(sx,sy,start[2],sh):
+                result.update(classification='valid_start_no_route',reason='起点姿态有效，原目标路线尚不可达；不以任意退让代替寻路');return result
+            classification='start_quantization'
+    result['classification']=classification
+    step=.05;angle_step=math.radians(5);origin=(0,0,0);queue=[(0.,origin)];cost={origin:0.};parents={};poses={origin:start};edges={};travelled={origin:0.};turned={origin:0.}
+    expanded=0;attempts=0;best_prefix=None
+    while queue and time.monotonic()<deadline:
+        score,key=heapq.heappop(queue)
+        if score!=cost.get(key):continue
+        p=poses[key];expanded+=1
+        lattice_ready=False
+        if key!=origin and geometry.standard(p):
+            ix,iy=planner.cell(*p[:2]);cx,cy=planner.world(ix,iy);sh=round(p[2]/(math.pi/4))*math.pi/4
+            center=[cx,cy,p[2]]
+            lattice_ready=(geometry.standard(center) and geometry.edge(p,center,relaxed=False) is not None
+                           and planner.rotation_fits(ix,iy,p[2],sh))
+        if lattice_ready:
+            prefix=[key]
+            while prefix[-1]!=origin:prefix.append(parents[prefix[-1]])
+            prefix.reverse();trajectory=[start]
+            for q in prefix[1:]:trajectory.extend(edges[q])
+            # The axis lattice may discover an L-shaped escape even when
+            # one fixed-heading diagonal translation is clear. The runtime
+            # executes only a single translation: shorten this prefix only
+            # after checking its ENTIRE swept body and non-decreasing
+            # clearance, including fresh measured floor along the segment.
+            if abs(_wrap(p[2]-start[2]))<1e-8:
+                direct=geometry.edge(start,p,relaxed=relaxed)
+                if direct is not None:trajectory=[start]+direct
+            best_prefix=_knots(trajectory,geometry)
+            if attempts<8:
+                attempts+=1
+                try:
+                    plan=planner.plan(p,goal,yaw,budget=min(.3,max(.01,deadline-time.monotonic())))
+                    if planner.grid_revision!=revision:raise ValueError('实时通行层已变化')
+                    distance=sum(math.dist(a[:2],b[:2]) for a,b in zip(trajectory,trajectory[1:]))
+                    full=best_prefix+plan['dense_path'][1:]
+                    result.update(ok=True,reason='已找到连续退让到标准净空的短轨迹，并接续原目标',recovery_dense_path=best_prefix,
+                                  global_plan=plan,dense_path=full,recovery_distance_m=round(distance,4),expanded=expanded,
+                                  recovered_start=list(p),planning_ms=round((time.monotonic()-began)*1000,2))
+                    return result
+                except ValueError as exc:result['last_route_error']=str(exc)
+        # Position coordinates are in the INITIAL body frame; every edge is
+        # evaluated with its actual orientation and full continuous sweep.
+        for dx,dy,da,weight in [(-1,0,0,1.),(0,1,0,1.05),(0,-1,0,1.05),(1,0,0,1.1),(0,0,1,1.7),(0,0,-1,1.7)]:
+            nxt=(key[0]+dx,key[1]+dy,key[2]+da)
+            travelled_next=travelled[key]+math.hypot(dx,dy)*step;turned_next=turned[key]+abs(da)*angle_step
+            if travelled_next>max_distance+1e-9 or turned_next>max_turn+1e-9:continue
+            if math.hypot(nxt[0],nxt[1])*step>max_distance+1e-9 or abs(nxt[2]*angle_step)>max_turn+1e-9:continue
+            c,s=math.cos(start[2]),math.sin(start[2]);np_=[start[0]+c*nxt[0]*step-s*nxt[1]*step,start[1]+s*nxt[0]*step+c*nxt[1]*step,_wrap(start[2]+nxt[2]*angle_step)]
+            if relaxed and geometry.clearance(np_)<max(geometry.clearance(p),result['initial_clearance_lower_bound_m'])-.001:continue
+            edge=geometry.edge(p,np_,relaxed=relaxed)
+            if edge is None:continue
+            new=score+step*weight
+            if new<cost.get(nxt,math.inf):
+                cost[nxt]=new;parents[nxt]=key;poses[nxt]=np_;edges[nxt]=edge;travelled[nxt]=travelled_next;turned[nxt]=turned_next;heapq.heappush(queue,(new,nxt))
+        if expanded>=1500:break
+    result.update(reason='没有找到同时满足真实机身、实测地面和原目标接续的短程退让路线',expanded=expanded,
+                  candidate_recovery=best_prefix,planning_ms=round((time.monotonic()-began)*1000,2))
+    return result
 
 
 def check_recovery_step(planner,current,next_pose,scan,localization,anchor,standing=False,max_distance=.8,max_turn=math.radians(20),support_seed=None):

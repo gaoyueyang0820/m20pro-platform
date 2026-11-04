@@ -1,6 +1,6 @@
 'use strict';
 
-let navSyncBusy=false;
+let navSyncBusy=false,navSyncOwner=null;
 let driveView='front';
 const originalMotionPage=motion;
 motion=function(){
@@ -130,17 +130,20 @@ function mapFlowStatus(){
  const synced=!!map?.verified_for_robot&&map.robot_ip===S.ip&&active;
  const localized=demo||active&&S.online&&S.pose.Location===0;
  const step=(n,title,detail,ok)=>`<div class="map-flow-step ${ok?'complete':''}"><span>${ok?'✓':n}</span><div><strong>${title}</strong><small>${esc(detail)}</small></div></div>`;
- return `<div class="map-flow">${step(1,demo?'演示地图':'机器人活动地图',demo?name||map?.name||mapLibrary.active:mapLibrary.active||'等待读取 NOS',active)}${step(2,'导航栅格',demo?'演示栅格':synced?'已同步 · 栅格 '+(map.grid_id||0):active?'待同步到平台':'先选择并启用地图',demo||synced)}${step(3,'定位状态',demo?'演示位置':localized?'定位已就绪':active?'定位未就绪':'启用地图后核对定位',localized)}<div class="map-flow-action">${demo||synced?'':btn(page==='navigation'?'同步用于导航':'用于导航','map-use-navigation','primary small')}</div></div>`;
+ return `<div class="map-flow">${step(1,demo?'演示地图':'机器人活动地图',demo?name||map?.name||mapLibrary.active:mapLibrary.active||'正在读取地图',active)}${step(2,'导航地图',demo?'演示地图':synced?'已同步':active?'开始时自动同步':'请显示机器人当前地图',demo||synced)}${step(3,'定位状态',demo?'演示位置':localized?'定位已就绪':active?'开始时自动恢复定位':'等待当前地图',localized)}<div class="map-flow-action">${demo||synced||page==='navigation'&&active?'':btn(page==='navigation'?'显示当前地图':'用于导航',page==='navigation'?'goal-sync-active-map':'map-use-navigation','primary small')}</div></div>`;
 }
 function navigationMapReady(){
  const map=selectedMap();return S.mode==='demo'||!!(map?.verified_for_robot&&map.robot_ip===S.ip&&map.robot_map_name===mapLibrary.active);
+}
+function navigationMapCanPrepare(map=selectedMap()){
+ return S.mode==='demo'||!!(map?.robot_map_name&&map.robot_ip===S.ip&&(!mapLibrary.active||map.robot_map_name===mapLibrary.active));
 }
 function paintMapFlow(){
  if(!['maps','navigation'].includes(page)||!$('#main .page-heading'))return;
  let el=$('#map-navigation-flow');if(!el){el=document.createElement('div');el.id='map-navigation-flow';$('#main .page-heading')?.after(el);}
  const markup=mapFlowStatus();if(el._flowMarkup!==markup){el.innerHTML=markup;el._flowMarkup=markup;}
  if(page==='navigation'){
-  const ready=navigationMapReady(),start=$('[data-ui="start-nav"]');if(start){start.disabled=!ready;start.title=ready?'执行当前巡检路线':'请先同步当前活动地图';}
+  const ready=navigationMapCanPrepare(),start=$('[data-ui="start-nav"]');if(start){start.disabled=!ready||S.mapping||S.autonomy?.active||['running','cancelling'].includes(S.nav?.status);start.title=ready?'自动准备并执行巡检路线':'请显示机器人当前地图后设置路线';}
   // Single-goal readiness also depends on the plan and task state. One owner
   // must apply all conditions, including on asynchronous map-library refreshes.
   if(typeof paintGoalPlan==='function')paintGoalPlan();
@@ -187,15 +190,24 @@ render=function(){
  for(const cam of ['front','rear'])cameraClose(cam);
  workspaceRender();
  if(S.mode==='live'){if(page==='motion')for(const cam of activeDriveCameras())cameraOpen(cam);if(page==='navigation'&&$('.navigation-drive')?.open)cameraOpen('front');}
- if(page==='navigation')loadMapLibrary().then(async()=>{
+ if(page==='navigation'){
+  const scope=navigationMapScope(),selectedBefore=mapId;
+  loadMapLibrary().then(async()=>{
+  if(page!=='navigation'||scope!==navigationMapScope()||selectedBefore!==mapId)return;
   const current=selectedMap();
   if(!mapLibrary.maps.some(m=>m.name===current?.robot_map_name)){
-   const active=cachedMapFor(mapLibrary.active);if(active&&active.id!==mapId){mapId=active.id;render();return;}
+   const active=cachedMapFor(mapLibrary.active);if(active&&active.id!==mapId){points=[];routeId=null;if(typeof invalidateGoalPlan==='function')invalidateGoalPlan();mapId=active.id;render();return;}
   }
+  if(navSyncOwner?.scope!==scope){navSyncBusy=false;navSyncOwner=null;}
+  if(window.M20NavigationPreparation?.state){paintMapFlow();return;}
   if(page==='navigation'&&!navSyncBusy&&current?.robot_map_name===mapLibrary.active&&!current?.verified_for_robot&&S.mode==='live'){
-   navSyncBusy=true;try{const previous=mapId;await syncNavigationMap(mapLibrary.active,current.grid_id||0);if(previous!==mapId)render();}catch(e){toast('地图同步失败：'+e.message,true);}finally{navSyncBusy=false;}
+   const token={scope};navSyncOwner=token;navSyncBusy=true;paintMapFlow();
+   try{const previous=mapId;await syncNavigationMap(mapLibrary.active,current.grid_id||0);if(scope===navigationMapScope()&&page==='navigation'&&previous!==mapId)render();}
+   catch(e){if(scope===navigationMapScope())toast('地图暂未同步，开始时将自动重试',true);}
+   finally{if(navSyncOwner===token){navSyncBusy=false;navSyncOwner=null;}}
   }paintMapFlow();
  }).catch(()=>{});
+ }
  paintMapFlow();
 };
 update=function(){workspaceUpdate();paintCameraStatus();paintMapFlow();};

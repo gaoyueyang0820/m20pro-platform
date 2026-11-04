@@ -9,6 +9,7 @@ import threading
 import time
 import unittest
 from unittest.mock import patch
+from observation_errors import GroundObservationPending
 import test_platform as cases
 from autonomy_core import Explorer,disk
 
@@ -80,6 +81,41 @@ class AutonomyObservationRuntimeTests(unittest.TestCase):
             self.assertNotIn(10.05,a.explorer.ingested)
             with self.app.lock:a.pause('done')
         self.assertTrue(all(base=='offline-old-context' for base,path in self.calls))
+
+    def test_ground_occlusion_survives_long_wait_and_resumes_same_task(self):
+        self.occlusion_resume(typed=True)
+
+    def test_sparse_valid_surface_recovers_without_a_passive_wait_becoming_actuator_failure(self):
+        self.occlusion_resume(typed=False)
+
+    def occlusion_resume(self,typed):
+        import autonomy_runtime as runtime
+        a=self.configure();a.deadline=a.started+120
+        phase={'blocked':False,'stamp':1.};requests=[];progress_windows=[]
+        def transport(base,path,request,timeout,token):
+            requests.append(dict(request))
+            if phase['blocked'] and typed:raise GroundObservationPending('temporary foreground occlusion','floor_coverage_narrow')
+            phase['stamp']+=.1;packet=self.packet(phase['stamp'])
+            if phase['blocked']:packet['floor']=[];packet['measured_floor']=[]
+            return packet
+        progress_type=runtime.MotionProgress
+        def progress():
+            window=progress_type();progress_windows.append(window);return window
+        with patch('platform_hub.rpc',side_effect=transport),patch.object(runtime,'MotionProgress',side_effect=progress):
+            self.worker=threading.Thread(target=a._run,args=(a.run_id,None,120),daemon=True);self.worker.start()
+            self.assertTrue(self.wait_for(lambda:any(any(row['axes']) for row in self.app.link.output)),a.message)
+            run_id=a.run_id;phase['blocked']=True
+            self.assertTrue(self.wait_for(lambda:'恢复' in a.message),a.message)
+            before=len(self.app.link.output);time.sleep(5.2)
+            self.assertTrue(a.active,a.message);self.assertEqual(a.run_id,run_id)
+            self.assertTrue(all(not any(row['axes']) for row in self.app.link.output[before:]))
+            progress_windows[0].last_at=time.monotonic()-30
+            phase['blocked']=False;before=len(self.app.link.output)
+            self.assertTrue(self.wait_for(lambda:any(any(row['axes']) for row in self.app.link.output[before:])),a.message)
+            self.assertEqual(a.run_id,run_id);self.assertTrue(a.active,a.message)
+            self.assertGreaterEqual(len(progress_windows),2)
+            self.assertNotIn('after_stamp',requests[0]);self.assertTrue(any('after_stamp' in req for req in requests[1:]))
+            with self.app.lock:a.pause('done')
 
     def test_slow_rpc_does_not_block_cached_control_but_original_deadline_still_stops(self):
         a=self.configure();entered=threading.Event()
