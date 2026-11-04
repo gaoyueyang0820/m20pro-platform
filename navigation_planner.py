@@ -4,6 +4,7 @@ Pure planning, no actuator I/O. Concepts reviewed against Nav2 Smac and Theta*
 (Apache-2.0); this NumPy/Python implementation is independently written.
 """
 import heapq,math,re,time
+from contextlib import contextmanager
 from robot_geometry import BODY_HALF_LENGTH,BODY_HALF_WIDTH,CLEARANCE_HALF_LENGTH,CLEARANCE_HALF_WIDTH,CLEARANCE_MARGIN
 
 
@@ -187,6 +188,33 @@ class GridPlanner:
         report=self.live_surface.update(scan,localization,now)
         if self.live_surface.revision!=self._live_revision:self._rebuild_layers()
         return dict(report,enabled=True,grid_revision=self.grid_revision)
+
+    @contextmanager
+    def planning_snapshot(self,prepare=None):
+        """Pin one working-map revision for computation, never for execution.
+
+        prepare may admit a fresh scan before the snapshot is pinned. In
+        particular, CPU time spent projecting that scan must not expire the
+        resulting preview halfway through recovery. Admission still validates
+        its ORIGINAL deadline. Nested global searches share the recovery's
+        revision and cannot release its pin. All ordinary collision queries
+        resume expiry immediately when the outermost computation ends.
+        """
+        previous=self._planning_revision
+        if previous is None:
+            if prepare is None:self._expire_live_surface()
+            else:prepare()
+            revision=self.grid_revision
+            self._planning_revision=revision
+        else:
+            if prepare is not None:raise ValueError('规划快照内不能更新扫描')
+            revision=previous
+        try:
+            yield revision
+            if self.grid_revision!=revision:raise ValueError('规划期间通行图已变化，请按最新扫描重新规划')
+        finally:
+            self._planning_revision=previous
+            if previous is None:self._expire_live_surface()
 
     def _expire_live_surface(self):
         # Planning is a read-only snapshot, not permission to move. A search
@@ -416,13 +444,17 @@ class GridPlanner:
         return sorted(result)
 
     def plan(self,start,goal,yaw=None,budget=3.,*,goal_tolerance=None):
+        with self.planning_snapshot():
+            return self._plan_with_snapshot(start,goal,yaw,budget,goal_tolerance=goal_tolerance)
+
+    def _plan_with_snapshot(self,start,goal,yaw=None,budget=3.,*,goal_tolerance=None):
         # The per-planner setting is retained for its start-recovery adapter;
         # callers that need an exact endpoint retain the default zero tolerance.
         if goal_tolerance is not None:
             value=float(goal_tolerance)
             if not math.isfinite(value) or not 0<=value<=1.:raise ValueError('目标调整范围必须为0到1米')
             self.goal_tolerance=value
-        self._expire_live_surface();self._planning_revision=self.grid_revision
+        previous_deadline=self._deadline
         self._deadline=time.monotonic()+max(0,float(budget));self._potential_expanded=0
         try:
             try:result=self._plan(start,goal,yaw,budget)
@@ -450,7 +482,7 @@ class GridPlanner:
             result.setdefault('goal_adjustment',dict(applied=False,distance_m=0.,tolerance_m=self.goal_tolerance))
             result['requires_live_revalidation']=self.live_surface is not None
             return result
-        finally:self._deadline=None;self._planning_revision=None
+        finally:self._deadline=previous_deadline
 
     def _plan(self,start,goal,yaw,budget):
         if not all(math.isfinite(float(v)) for v in [*start,*goal]+([] if yaw is None else [yaw])):raise ValueError('导航坐标必须为有限数值')

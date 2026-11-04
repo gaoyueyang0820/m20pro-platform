@@ -62,30 +62,38 @@ class LiveSurfacePrecisionTests(unittest.TestCase):
         self.assertEqual(p.live_surface.free_cells,set())
 
     def test_wall_crossing_outside_the_physical_body_is_not_erased(self):
-        p=planner(door_world(),True);truth=planner(door_world(True));before=p.base_free.copy();start=[3.6,4.,0.]
-        for i in range(4):
-            s,l=packet(truth,actual=start,stamp=100+i*.2)
-            for key in ['floor','measured_floor']:s[key]=[q for q in s[key] if math.hypot(*q)*.2>.55]
-            p.update_live_surface(s,l,now=100.08+i*.2)
-        result=recover_start(p,start,[2.,4.],0.,s,l,standing=True)
-        self.assertFalse(result['ok']);self.assertEqual(result['classification'],'map_surface_disagreement')
-        self.assertGreater(result['overlap_diagnostics']['unobserved_body_cells'],0)
-        self.assertEqual(result['overlap_diagnostics']['body_projection_policy'],'current_physical_body_only')
-        self.assertEqual(result['reason_code'],'unobserved_body_overlap')
-        np.testing.assert_array_equal(p.base_free,before)
+        clock=[100.08]
+        with patch('time.monotonic',side_effect=lambda:clock[0]):
+            p=planner(door_world(),True);truth=planner(door_world(True));before=p.base_free.copy();start=[3.6,4.,0.]
+            for i in range(4):
+                stamp=100+i*.2;clock[0]=stamp+.08
+                s,l=packet(truth,actual=start,stamp=stamp)
+                for key in ['floor','measured_floor']:s[key]=[q for q in s[key] if math.hypot(*q)*.2>.55]
+                p.update_live_surface(s,l,now=clock[0])
+            result=recover_start(p,start,[2.,4.],0.,s,l,standing=True)
+            self.assertFalse(result['ok']);self.assertEqual(result['classification'],'map_surface_disagreement')
+            self.assertGreater(result['overlap_diagnostics']['unobserved_body_cells'],0)
+            self.assertEqual(result['overlap_diagnostics']['body_projection_policy'],'current_physical_body_only')
+            self.assertEqual(result['reason_code'],'unobserved_body_overlap')
+            np.testing.assert_array_equal(p.base_free,before)
 
     def test_previous_real_floor_can_carry_under_body_but_live_contact_still_rejects(self):
-        p=planner(door_world(),True);truth=planner(door_world(True));feed(p,truth)
-        for i,x in enumerate([3.,3.2,3.4,3.6]):
-            s,l=packet(truth,actual=(x,4.,0.),stamp=101+i*.2)
-            for key in ['floor','measured_floor']:s[key]=[q for q in s[key] if math.hypot(*q)*.2>.55]
-            p.update_live_surface(s,l,now=101.08+i*.2)
-        self.assertTrue(p.pose_fits(3.6,4.,0.))
-        result=recover_start(p,[3.6,4.,0.],[5.2,4.],0.,s,l,standing=True)
-        self.assertTrue(result['ok'],result)
-        contact=copy.deepcopy(s);self.add_small_box(contact,(1,0),(.19,-.02,.21,.02))
-        result=recover_start(p,[3.6,4.,0.],[5.2,4.],0.,contact,l,standing=True)
-        self.assertFalse(result['ok']);self.assertEqual(result['classification'],'live_body_collision')
+        clock=[100.08]
+        with patch('time.monotonic',side_effect=lambda:clock[0]):
+            p=planner(door_world(),True);truth=planner(door_world(True))
+            for i in range(4):
+                stamp=100+i*.2;clock[0]=stamp+.08;s,l=packet(truth,stamp=stamp)
+                p.update_live_surface(s,l,now=clock[0])
+            for i,x in enumerate([3.,3.2,3.4,3.6]):
+                stamp=101+i*.2;clock[0]=stamp+.08;s,l=packet(truth,actual=(x,4.,0.),stamp=stamp)
+                for key in ['floor','measured_floor']:s[key]=[q for q in s[key] if math.hypot(*q)*.2>.55]
+                p.update_live_surface(s,l,now=clock[0])
+            self.assertTrue(p.pose_fits(3.6,4.,0.))
+            result=recover_start(p,[3.6,4.,0.],[5.2,4.],0.,s,l,standing=True)
+            self.assertTrue(result['ok'],result)
+            contact=copy.deepcopy(s);self.add_small_box(contact,(1,0),(.19,-.02,.21,.02))
+            result=recover_start(p,[3.6,4.,0.],[5.2,4.],0.,contact,l,standing=True)
+            self.assertFalse(result['ok']);self.assertEqual(result['classification'],'live_body_collision')
 
 
 if __name__=='__main__':unittest.main()

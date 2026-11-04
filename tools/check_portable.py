@@ -31,7 +31,7 @@ GROUPS={
                   'test_recovery_issuance','test_precise_clearance.PreciseClearanceTests',
                   'test_control_clock','test_terrain_profiles','test_pose_monitor','test_greeting','test_greeting_cli'],
     'navigation':['test_navigation_planner','test_navigation_planning_v3','test_live_surface_localization',
-                  'test_localization_recovery','test_navigation_intents','test_goal_approach','test_goal_approach_review','test_body_projection_start','test_navigation_speckles','test_navigation_motion_alignment'],
+                  'test_localization_recovery','test_navigation_intents','test_goal_approach','test_goal_approach_review','test_body_projection_start','test_navigation_speckles','test_navigation_motion_alignment','test_planning_snapshot'],
     'sensing':['test_sensor_cache','test_sensor_reader','test_latest_observation','test_ground_recovery','test_sensing_equivalence','test_manual_turn_scan_frames','test_live_surface_precision'],
     'maps':['test_map_change_policy','test_map_fusion','test_map_update_v3','test_map_catalog','test_map_catalog_review',
             'test_map_learning.MapLearningTests.test_recorder_quality_and_duplicate_stamp_checks',
