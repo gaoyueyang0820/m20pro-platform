@@ -10,7 +10,7 @@ import sys
 import os
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from observation_errors import ObservationSyncPending
+from observation_errors import ObservationSyncPending,GroundObservationPending
 
 TOPICS=['/SLAM_ALIGNED_POINTS','/SLAM_ACCUMULATED_POINTS_MAP','/SLAM_CLOUD_REGISTERED_BODY','/ALIGNED_POINTS','/FULL_CLOUD_MAP','/LOC_BODY_POINTS','/LIDAR/POINTS','/LIDAR/POINTS2','/NAV_POINTS']
 
@@ -51,7 +51,7 @@ class RosSensors:
         from sensor_msgs.msg import PointCloud2,Imu
         from nav_msgs.msg import Odometry
         from std_msgs.msg import Float64MultiArray
-        self.rclpy=rclpy;self.lock=threading.RLock();self.clouds={};self.errors={};self.last={};self.imu=None;self.odom=None;self.slam_odom=None;self.autonomy_scan=None;self.autonomy_error=None;self.autonomy_last=0;self.autonomy_until=0
+        self.rclpy=rclpy;self.lock=threading.RLock();self.clouds={};self.errors={};self.last={};self.imu=None;self.odom=None;self.slam_odom=None;self.autonomy_scan=None;self.autonomy_error=None;self.autonomy_failure=None;self.autonomy_last=0;self.autonomy_until=0
         rclpy.init();self.node=Node('m20_platform_sensors_'+str(os.getpid()))
         qos_profile_sensor_data=QoSProfile(depth=1,reliability=ReliabilityPolicy.BEST_EFFORT)
         self.cloud_subscriptions={};self.cloud_until={};self.point_type=PointCloud2;self.cloud_qos=qos_profile_sensor_data
@@ -140,7 +140,7 @@ class RosSensors:
                 except ImportError:scan['processing_backend']='numpy'
                 scan.update(received_monotonic=received,source_age=max(0,lag),processing_ms=round((time.monotonic()-began)*1000,1),
                             stamp=message.header.stamp.sec+message.header.stamp.nanosec/1e9,frame_id='base_link',topic='/LIDAR/POINTS',source_frame=message.header.frame_id)
-                with self.lock:self.autonomy_scan=scan;self.autonomy_error=None;self.ground_ready.notify_all()
+                with self.lock:self.autonomy_scan=scan;self.autonomy_error=None;self.autonomy_failure=None;self.ground_ready.notify_all()
             except TimeoutError as exc:self.ground_failure(exc,temporal=True)
             except Exception as exc:self.ground_failure(exc)
 
@@ -150,8 +150,13 @@ class RosSensors:
             fresh=previous and time.monotonic()-previous['received_monotonic']+previous['source_age']<=.65
             # A late next packet does not invalidate a still-fresh previous
             # observation. Never renew its timestamps or reuse bad geometry.
-            if not temporal or not fresh:self.autonomy_scan=None
-            self.autonomy_error=str(error);self.ground_ready.notify_all()
+            if isinstance(error,GroundObservationPending) or not temporal or not fresh:self.autonomy_scan=None
+            self.autonomy_error=str(error)
+            # Store a fresh typed value, not the caught traceback (which can
+            # retain an entire PointCloud2 buffer and processing temporaries).
+            self.autonomy_failure=(GroundObservationPending(str(error),error.reason_code)
+                                   if isinstance(error,GroundObservationPending) else None)
+            self.ground_ready.notify_all()
 
     def imu_update(self,message):
         v=lambda q:[q.x,q.y,q.z]
@@ -201,7 +206,9 @@ class RosSensors:
             if odom and odom['frame_id']==data['frame_id'] and time.time()-odom['received_at']<2:data['odom']=copy.deepcopy(odom)
             return data
 
-    def autonomy(self,mapping=False):
+    def autonomy(self,mapping=False,after_stamp=None):
+        if after_stamp is not None and (not isinstance(after_stamp,(int,float)) or isinstance(after_stamp,bool) or not math.isfinite(after_stamp)):
+            raise ValueError('上次扫描时间戳无效')
         query_started=time.monotonic()
         self.ensure_topic('/LIDAR/POINTS')
         with self.lock:self.autonomy_until=time.monotonic()+2;self.ground_event.set()
@@ -235,9 +242,14 @@ class RosSensors:
                     # this CPU. Do not keep aging it until a fixed wait expires
                     # while hoping for an impossible <420 ms successor. A
                     # notification or duplicate/reordered stamp is not new data.
-                    if age<=.42 or newer and age<=.65:break
+                    if (after_stamp is not None and isinstance(stamp,(int,float)) and stamp>after_stamp and age<=.65
+                            or after_stamp is None and (age<=.42 or newer and age<=.65)):break
                 self.ground_ready.wait(deadline-time.monotonic())
-            if not self.autonomy_scan:raise ValueError(self.autonomy_error or '等待完整雷达扫描与地面观测')
+            if not self.autonomy_scan:
+                failure=getattr(self,'autonomy_failure',None)
+                if isinstance(failure,GroundObservationPending):
+                    raise GroundObservationPending(str(failure),failure.reason_code)
+                raise ValueError(self.autonomy_error or '等待完整雷达扫描与地面观测')
             data=copy.deepcopy(self.autonomy_scan)
             data['age']=time.monotonic()-data.pop('received_monotonic')+data.pop('source_age')
             if data['age']>.65:raise ValueError('雷达更新中断，已停止自主移动')

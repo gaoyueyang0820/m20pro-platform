@@ -38,7 +38,7 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(e.target_kind,'refine');self.assertGreater(e.command()[0],0)
     def test_old_map_free_space_does_not_replace_missing_live_floor(self):
         e=Explorer(3);e.prior=self.prior();e.ingest(dict(floor=[],obstacles=[],pose=[0,0,0]))
-        self.assertEqual(e.plan(),'exhausted')
+        self.assertEqual(e.plan(),'blocked')
     def test_fully_observed_room_still_selects_unvisited_vantage(self):
         e=Explorer(2);e.ingest(scan(radius=6));self.assertEqual(e.plan(),'planned')
         self.assertGreater(e.command()[0],0);self.assertEqual(e.command()[1],0)

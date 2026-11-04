@@ -1,13 +1,17 @@
 """Short-lived, evidence-backed traversability over an immutable occupancy map.
 
 This is a local execution layer, never a map edit or a localization correction.
-Only positively measured ground votes; no-return and ray-free space do not.
+Measured ground can open local passages. The current physical body projection
+can independently remove old-map residue strictly inside the occupied body;
+this exception neither infers unseen ground nor opens space ahead of the robot.
 A separate live obstacle layer always wins. All methods are local, without I/O.
 """
 import math
 import time
 from collections import deque
 import numpy as np
+from robot_geometry import BODY_HALF_LENGTH,BODY_HALF_WIDTH
+from navigation_validation import poses_consistent
 
 
 class LiveTraversability:
@@ -24,7 +28,7 @@ class LiveTraversability:
         self.base_free=base_free
         self.occupied=occupied
         self.res=float(resolution);self.origin=list(origin);self.h,self.w=base_free.shape
-        self.free_cells=set();self.blocked_cells=set();self.evidence={}
+        self.free_cells=set();self.blocked_cells=set();self.body_projection_cells=set();self.body_history={};self.evidence={}
         self.last_stamp=None;self.last_pose=None;self.epoch=None;self.source_highwater=None
         self.confirmed_cells=set();self.last_update_at=0.;self.last_real_update_at=0.
         self.expires_at=0.;self.real_expires_at=0.;self.revision=0
@@ -43,11 +47,13 @@ class LiveTraversability:
         return dict(self.status,temporary_free_cells=len(self.free_cells),blocked_cells=len(self.blocked_cells),
                     occupied_overrides=sum(bool(self.occupied[y,x]) for x,y in self.free_cells),
                     unknown_overrides=sum(not bool(self.occupied[y,x]) for x,y in self.free_cells),
+                    body_projection_cells=len(self.body_projection_cells),body_projection_policy='current_physical_body_only',
+                    body_projection_size_m=[2*BODY_HALF_LENGTH,2*BODY_HALF_WIDTH],
                     surface_revision=self.revision,source_stamp=self.last_stamp,expires_at=self.expires_at,
                     radius_m=self.NEAR_RADIUS,persistent_map_changed=False)
 
     def clear(self,reason,reset_source=False):
-        self.evidence.clear();self.last_stamp=None;self.last_pose=None;self.confirmed_cells.clear()
+        self.evidence.clear();self.last_stamp=None;self.last_pose=None;self.confirmed_cells.clear();self.body_projection_cells.clear();self.body_history.clear()
         self.expires_at=0.;self.real_expires_at=0.
         if reset_source:self.source_highwater=None
         return self._publish(set(),set(),accepted=False,state='invalid',reason=reason,structure={},carried_under_body=0)
@@ -61,9 +67,10 @@ class LiveTraversability:
         updated=self.last_real_update_at if now is None else self.last_update_at
         before=self.revision
         if clock>=deadline and (self.free_cells or self.blocked_cells):
+            self.body_projection_cells.clear()
             self._publish(set(),set(),accepted=False,state='expired',reason='实时通行许可已过期，等待新扫描恢复',carried_under_body=0)
         if clock-updated>self.EVIDENCE_WINDOW:
-            self.evidence.clear();self.confirmed_cells.clear();self.last_pose=None;self.last_stamp=None
+            self.evidence.clear();self.confirmed_cells.clear();self.body_history.clear();self.last_pose=None;self.last_stamp=None
         return self.revision!=before
 
     @staticmethod
@@ -85,7 +92,7 @@ class LiveTraversability:
         if abs(stamp-pose_stamp)>.100001:raise ValueError('扫描与位姿时刻不匹配，已撤销临时通行')
         pose=[float(v) for v in scan['pose']];reported=[float(v) for v in loc['pose']]
         if len(pose)!=3 or len(reported)!=3 or not all(math.isfinite(v) for v in pose+reported):raise ValueError('位姿无效')
-        if math.dist(pose[:2],reported[:2])>.35 or abs(self._wrap(pose[2]-reported[2]))>.25:raise ValueError('独立位姿读回不一致，已撤销地图投影')
+        if not poses_consistent(pose,scan_age,loc):raise ValueError('定位与扫描暂未同步')
         life=self.MAX_SCAN_AGE-scan_age
         if '_valid_until' in scan:life=min(life,float(scan['_valid_until'])-real_now)
         if not math.isfinite(life) or life<=0:raise ValueError('扫描控制期限已到，已撤销临时通行')
@@ -174,6 +181,29 @@ class LiveTraversability:
                 if ok:result.add((ix,iy))
         return result
 
+    def _body_projection(self,pose,blocked):
+        """Old occupied cells wholly inside the robot cannot be its new wall.
+
+        Use the actual .84 x .45 m body, WITHOUT clearance inflation, the sensor
+        blind radius, or future swept poses. Whole-cell containment prevents a
+        boundary cell from clearing a strip outside the physical body. Unknown
+        cells and current measured obstacles are never granted this exception.
+        These cells are not measured-floor votes. A short departure history is
+        kept separately so the same residue cannot catch the moving rear body.
+        """
+        x,y,yaw=pose;c,s=math.cos(yaw),math.sin(yaw);a,b=abs(c),abs(s)
+        hx,hy=BODY_HALF_LENGTH,BODY_HALF_WIDTH;half=self.res/2
+        ex=hx*a+hy*b;ey=hx*b+hy*a
+        left,top=self.cell(x-ex,y+ey);right,bottom=self.cell(x+ex,y-ey)
+        cells=set()
+        for iy in range(max(0,top),min(self.h,bottom+1)):
+            for ix in range(max(0,left),min(self.w,right+1)):
+                if not self.occupied[iy,ix] or (ix,iy) in blocked:continue
+                wx,wy=self.world(ix,iy);dx,dy=wx-x,wy-y
+                if abs(c*dx+s*dy)+half*(a+b)<=hx+1e-9 and abs(-s*dx+c*dy)+half*(a+b)<=hy+1e-9:
+                    cells.add((ix,iy))
+        return cells
+
     def _structure(self,anchors,candidates):
         """Check stable structure OUTSIDE the potential clearing region.
 
@@ -232,7 +262,22 @@ class LiveTraversability:
             blocked,anchors=self._project_blocks(scan,pose,resolution)
             candidates=self._candidates(visible,blocked,pose,resolution,self._precise_bounds(scan))
         except (ValueError,TypeError,KeyError,OverflowError) as exc:return self.clear('地面证据格式无效：'+str(exc))
-        structure=self._structure(anchors,candidates)
+        current_body=self._body_projection(pose,blocked)
+        self.body_history={p:at for p,at in self.body_history.items() if now-at[0]<=self.EVIDENCE_WINDOW and real_now-at[1]<=self.EVIDENCE_WINDOW and p not in blocked}
+        # Previously wholly occupied cells stay usable while the real rear
+        # body is still leaving them, even at very low measured speed. This
+        # renews ONLY an existing body seed, never a newly touched wall cell.
+        x,y,yaw=pose;c,s=math.cos(yaw),math.sin(yaw);a,b=abs(c),abs(s);half=self.res/2
+        for p in self.body_history:
+            wx,wy=self.world(*p);dx,dy=wx-x,wy-y
+            if (abs(dx)<BODY_HALF_LENGTH*a+BODY_HALF_WIDTH*b+half-1e-9 and
+                abs(dy)<BODY_HALF_LENGTH*b+BODY_HALF_WIDTH*a+half-1e-9 and
+                abs(c*dx+s*dy)<BODY_HALF_LENGTH+half*(a+b)-1e-9 and
+                abs(-s*dx+c*dy)<BODY_HALF_WIDTH+half*(a+b)-1e-9):
+                self.body_history[p]=(now,real_now)
+        for p in current_body:self.body_history[p]=(now,real_now)
+        body_projection=set(self.body_history)
+        structure=self._structure(anchors,candidates|body_projection)
         self.evidence={p:q for p,q in self.evidence.items() if q and now-q[-1][1]<=self.EVIDENCE_WINDOW and p not in blocked}
         for p in candidates:
             q=self.evidence.setdefault(p,deque(maxlen=12));q.append((stamp,now,real_now))
@@ -253,13 +298,18 @@ class LiveTraversability:
             dx=max(0.,abs(wx-pose[0])-self.res/2);dy=max(0.,abs(wy-pose[1])-self.res/2)
             if math.hypot(dx,dy)<=self.BLIND_RADIUS:carried.add(p)
         approved|=carried
-        self.confirmed_cells=set(approved);self.source_highwater=stamp
+        self.confirmed_cells=set(approved)
+        self.body_projection_cells=body_projection
+        approved|=body_projection
+        self.source_highwater=stamp
         self.last_stamp=stamp;self.last_pose=pose;self.epoch=epoch;self.last_update_at=now;self.last_real_update_at=real_now
         self.expires_at=now+life;self.real_expires_at=real_now+life
         pending=sum(bool(self.occupied[y,x]) for x,y in candidates-approved)
         reason=('旧占据局部投影尚未核对，仅更新已确认未知地面和实测障碍' if pending and not structure['supported'] else
+                '已自动处理当前机身内的旧图残影' if body_projection else
                 '已建立本轮临时通路，原图保持不变' if approved else '正在积累独立实测地面帧')
         state='projection_unconfirmed' if pending and not structure['supported'] else 'active' if approved else 'waiting_evidence'
         return self._publish(approved,blocked,accepted=True,state=state,reason=reason,structure=structure,carried_under_body=len(carried),
-                             observed_candidates=len(candidates),pending_occupied=pending,
+                             observed_candidates=len(candidates),pending_occupied=pending,current_body_projection_cells=len(current_body),
+                             departed_body_projection_cells=len(body_projection-current_body),
                              floor_geometry='precise_bounds' if self._precise_bounds(scan) is not None else 'conservative_cells')

@@ -75,6 +75,25 @@ class SensorCacheTests(unittest.TestCase):
         self.assertAlmostEqual(data['age'],.48)
         self.assertEqual(data['stamp'],123.1);self.assertEqual(len(clock.waits),1)
 
+    def test_unseen_valid_frame_returns_now_instead_of_waiting_until_expired(self):
+        r,clock,publish=self.virtual_reader(age=.50,stamp=123.)
+        with patch('bridge.ros_sensors.time',clock):data=r.autonomy(False,after_stamp=122.)
+        self.assertEqual(clock.waits,[]);self.assertEqual(data['server_elapsed_s'],0.)
+        self.assertAlmostEqual(data['age'],.50);self.assertEqual(data['stamp'],123.)
+
+    def test_seen_frame_waits_for_a_successor_instead_of_republishing_duplicates(self):
+        r,clock,publish=self.virtual_reader(age=.1)
+        clock.events=[(100.03,lambda:publish(123.1,.12))]
+        with patch('bridge.ros_sensors.time',clock):data=r.autonomy(False,after_stamp=123.)
+        self.assertAlmostEqual(data['server_elapsed_s'],.03);self.assertEqual(data['stamp'],123.1)
+        self.assertAlmostEqual(data['age'],.12)
+
+    def test_no_successor_does_not_refresh_the_old_source_age(self):
+        r,clock,publish=self.virtual_reader(age=.1)
+        with patch('bridge.ros_sensors.time',clock):data=r.autonomy(False,after_stamp=123.)
+        self.assertAlmostEqual(data['server_elapsed_s'],.22);self.assertAlmostEqual(data['age'],.32)
+        self.assertEqual(data['stamp'],123.)
+
     def test_duplicate_stamp_notification_does_not_claim_a_new_scan(self):
         r,clock,publish=self.virtual_reader(age=.425)
         clock.events=[(100.03,lambda:publish(123.,.455)),(100.07,lambda:publish(123.,.495))]

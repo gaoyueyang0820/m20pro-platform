@@ -136,6 +136,22 @@ class PairingTests(unittest.TestCase):
         self.assertNotIn('bootstrap-password',[event[0] for event in self.events])
         self.assert_no_saved_password()
 
+    def test_update_reuses_installed_relay_without_rewriting_aos_keys(self):
+        self.c.pair('aos');self.c.pair('nos');self.events=[]
+        self.c.value['targets']['nos']['deployed']=True
+        self.deploy()
+        self.assertEqual([event[0] for event in self.events if event[0]!='log'],['install','start'])
+
+    def test_network_failure_is_not_misreported_as_a_password_requirement(self):
+        original=self.fake_run
+        def unavailable(argv,**kwargs):
+            if Path(argv[0]).name=='ssh' and set(json.loads(kwargs.get('input') or '{}'))=={'key'}:
+                return subprocess.CompletedProcess(argv,255,'','connect to host synthetic port 22: Operation timed out')
+            return original(argv,**kwargs)
+        with patch('connection_manager.subprocess.run',side_effect=unavailable):
+            with self.assertRaisesRegex(ValueError,'timed out') as error:self.deploy()
+        self.assertNotIn('密码',str(error.exception));self.assertNotIn('install',[event[0] for event in self.events])
+
     def test_separate_aos_password_is_used_only_for_bootstrap(self):
         self.require_bootstrap_password=True
         aos_secret='synthetic-aos-only'

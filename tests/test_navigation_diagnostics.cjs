@@ -45,6 +45,7 @@ function fixture(){
  c.fetch=async(path,options)=>{const data=options.body===undefined?undefined:JSON.parse(options.body);calls.push({path,data,options});const result=await response(path,data);return {ok:result.ok!==false,json:async()=>result};};
  const app=fs.readFileSync('platform_web/app.js','utf8');vm.runInContext(app.slice(app.indexOf('async function api('),app.indexOf('function modal(')),c);
  const planning=fs.readFileSync('platform_web/map_learning.js','utf8');vm.runInContext(planning.slice(planning.indexOf('let goalPlan=')),c);
+ vm.runInContext(fs.readFileSync('platform_web/goal_approach.js','utf8'),c);
  vm.runInContext(fs.readFileSync('platform_web/navigation_preparation.js','utf8'),c);
  return {c,calls,nodes,toasts,get:name=>vm.runInContext(name,c),lookup,setResponse:fn=>{const previous=response;response=(...args)=>fn(...args,previous);},setDiagnostics:d=>{c.diagnosticFixture=d;vm.runInContext('goalPlanDiagnostics=diagnosticFixture;goalPlanError=diagnosticFixture.reason;goalPlanKey=goalKey();',c);c.paintGoalPlan();}};
 }
@@ -95,10 +96,10 @@ test('expired or insufficient observations offer one read-only recheck without l
  }
 });
 test('map identity mismatch offers active-map sync instead of localization or map activation',async()=>{
- const f=fixture();f.setDiagnostics({...diagnostic(),classification:'map_identity_mismatch',reason_code:'active_map_mismatch',recommended_action:'sync_active_map'});
+ const f=fixture();f.setDiagnostics({...diagnostic(),classification:'map_identity_mismatch',reason_code:'active_map_mismatch',selected_map:'room',active_map:'actual-room',recommended_action:'sync_active_map'});
  assert.ok(f.lookup('[data-ui="goal-sync-active-map"]'));assert.equal(f.lookup('[data-ui="goal-localize-preview"]'),undefined);
  f.c.S.pose.Location=1;f.c.paintGoalPlan();assert.equal(f.lookup('[data-ui="go-goal"]').disabled,true);
- await assert.rejects(f.c.ui['go-goal'](),/同步/);
+ await assert.rejects(f.c.ui['go-goal'](),/当前地图/);
  await assert.rejects(f.c.ui['goal-localize-preview'](),/同步/);assert.equal(f.calls.length,0);
  await f.c.ui['goal-sync-active-map']();assert.deepEqual(f.calls.map(r=>r.path),['/api/platform','/api/maps/library','/api/maps/library/sync']);
  assert.deepEqual(f.calls.at(-1).data,{name:'actual-room',grid_id:0});assert.equal(f.c.mapId,'synced-map');assert.equal(f.c.points.length,0);
@@ -107,6 +108,6 @@ test('map identity mismatch offers active-map sync instead of localization or ma
 test('a remaining overlap after static recovery retains the newer diagnostics without starting',async()=>{
  const f=fixture(),next={...diagnostic(),reason_code:'insufficient_ground_votes',recommended_action:'revalidate_observation'};f.setDiagnostics(diagnostic());
  f.setResponse((path,data,previous)=>path==='/api/nav/plan'?{ok:false,err:'还需独立地面观测',navigation:next}:previous(path,data));
- await assert.rejects(f.c.ui['goal-localize-preview'](),/独立地面观测/);assert.equal(f.get('goalPlanDiagnostics'),next);assert.equal(starts(f).length,0);
+ await assert.rejects(f.c.ui['goal-localize-preview'](),/等待通路恢复/);assert.equal(f.get('goalPlanDiagnostics'),next);assert.equal(starts(f).length,0);
  assert.ok(f.lookup('[data-ui="goal-observation-recheck"]'));
 });

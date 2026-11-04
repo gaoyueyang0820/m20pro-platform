@@ -148,7 +148,7 @@ class PointRecoveryLifecycleTests(unittest.TestCase):
       if action=='cancel':a.stop()
       elif action=='disconnect':a.connect(dict(mode='demo'))
      if clock[0]-initial_time>25:a.done=True
-   def actual_scan(mapping=False):
+   def actual_scan(mapping=False,**kwargs):
     advance(.06)
     s,l=scan_at(truth,pose,velocity,clock[0]);return s
    a.autonomy.scan_now=actual_scan

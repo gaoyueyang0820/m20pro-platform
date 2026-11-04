@@ -27,6 +27,6 @@ class SensorClient:
 
     def status(self):return self.call('/sensors/status')
     def preview(self,topic):return self.call('/sensors/cloud',dict(topic=topic))
-    def autonomy(self,mapping=False):return self.call('/sensors/autonomy',dict(mapping=mapping))
+    def autonomy(self,mapping=False,after_stamp=None):return self.call('/sensors/autonomy',dict(mapping=mapping,**(dict(after_stamp=after_stamp) if after_stamp is not None else {})))
     def observation(self):return self.call('/sensors/observation')
     def close(self):pass

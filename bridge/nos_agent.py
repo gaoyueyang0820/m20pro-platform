@@ -54,7 +54,7 @@ def dispatch(path,req):
                 REFINEMENT=RefinementAgent(MAP_SERVICE,sensors)
         return REFINEMENT.control(req or {})
     if path=='/sensors/observation':return dict(sensors().observation(),map_name=MAP_SERVICE.path('active').name)
-    if path=='/sensors/autonomy':return sensors().autonomy(bool((req or {}).get('mapping')))
+    if path=='/sensors/autonomy':return sensors().autonomy(bool((req or {}).get('mapping')),**(dict(after_stamp=req['after_stamp']) if req and 'after_stamp' in req else {}))
     if path=='/sensors/status':return sensors().status()
     if path=='/sensors/cloud':return sensors().preview((req or {}).get('topic','/ALIGNED_POINTS'))
     if path.startswith(('/maps/','/files/')):return MAP_SERVICE.dispatch(path,req)

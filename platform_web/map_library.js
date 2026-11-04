@@ -189,7 +189,7 @@ function openMapActivation(name,grid=0){
    if(mapId!==result.map.id){points=[];routeId=null;if(typeof invalidateGoalPlan==='function')invalidateGoalPlan();}mapId=result.map.id;
    await fetchState();if(!mapOperationCurrent(token))return;invalidateMapList();await loadMapLibrary();if(!mapOperationCurrent(token))return;
    reconcileMapSelection(result.cleanup?.ok?cleanupBase:null);render();
-   toast(result.cleanup?.ok?'新图已启用，旧图已移入回收站':result.cleanup?.retained?'新图已启用，旧版本保留':'地图已启用');
+   toast(result.message||(result.cleanup?.ok?'新图已启用，旧图已移入回收站':result.cleanup?.retained?'新图已启用，旧版本保留':'地图已启用'));
    return result;
   }catch(error){if(mapOperationCurrent(token))throw error;}
   finally{if(mapOperation===token){mapOperation=null;mapEditBusy=false;paintMapLibrary();}}

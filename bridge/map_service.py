@@ -2,6 +2,7 @@
 import base64
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -44,6 +45,39 @@ class MapService:
         if p.parent!=self.maps.resolve() or not p.is_dir():raise ValueError('地图不存在或路径无效')
         return p
 
+    def activation_context(self,name):
+        """Read evidence for carrying a pose from the CURRENT map to a version.
+
+        Fusion's transform maps the NEW SLAM session into the base. It does not
+        transform the base coordinate system, so a base pose stays unchanged.
+        Similar names or root_map alone never establish this relationship.
+        """
+        from map_change_policy import gate_alignment
+        folder=self.path(name);active=(self.maps/'active').resolve()
+        previous=active.name if active.is_dir() and active.parent==self.maps.resolve() else None
+        meta=folder/'.m20-project.json';raw=meta.read_bytes() if meta.is_file() else b''
+        proof=dict(protocol=1,source_map=previous,target_map=folder.name,same_frame=False,
+                   frame_id='map',project_sha256=hashlib.sha256(raw).hexdigest(),reason='map_lineage_unproven')
+        if previous==folder.name:return dict(ok=True,active=previous,**dict(proof,same_frame=True,method='same_active_map',reason='already_active'))
+        try:project=json.loads(raw) if raw else {}
+        except (ValueError,UnicodeError):return dict(ok=True,active=previous,**proof)
+        if not isinstance(project,dict):return dict(ok=True,active=previous,**proof)
+        rows=[(kind,row) for kind in ['sessions','refinements'] for row in (project.get(kind) or [])
+              if isinstance(row,dict) and row.get('map')==folder.name and isinstance(row.get('created'),(int,float))
+              and not isinstance(row['created'],bool) and math.isfinite(row['created'])]
+        if not rows:return dict(ok=True,active=previous,**proof)
+        kind,report=max(rows,key=lambda item:item[1].get('created',0))
+        structure=report.get('structural_alignment') or {}
+        known=(kind=='sessions' and report.get('known_region_change_policy')=='saved_keyframe_temporal_evidence' and isinstance(report.get('transform'),list)
+               or kind=='refinements' and report.get('method')=='structure_aligned_temporal_visibility')
+        if (not known or report.get('base_map')!=previous or report.get('includes_complete_base') is not True or
+                (structure.get('decision') or {}).get('allowed') is not True or not gate_alignment(structure)['allowed']):
+            return dict(ok=True,active=previous,**proof)
+        proof.update(same_frame=True,method='complete_base_'+kind,reason='base_coordinates_preserved',
+                     report_created=report.get('created'),includes_complete_base=True,
+                     pose_transform='identity',structural_alignment=structure)
+        return dict(ok=True,active=previous,**proof)
+
     def library(self):
         active=(self.maps/'active').resolve()
         catalog=MapCatalog(self.maps);labels=catalog.labels()
@@ -63,7 +97,7 @@ class MapService:
                                    cloud_bytes=cloud.stat().st_size if cloud.is_file() else 0,
                                    modified=p.stat().st_mtime,source='demo' if self.demo else 'nos'))
         usage=shutil.disk_usage(self.maps if self.maps.exists() else self.data)
-        return dict(ok=True,maps=result,active=active.name if active.is_dir() else None,management_version=1,catalog_integrity_protocol=1,permanent_delete_supported=True,trash_count=len(catalog.trash_list()),
+        return dict(ok=True,maps=result,active=active.name if active.is_dir() else None,management_version=1,catalog_integrity_protocol=1,activation_handoff_protocol=1,permanent_delete_supported=True,trash_count=len(catalog.trash_list()),
                     disk=dict(total=usage.total,free=usage.free),demo=self.demo)
 
     def grid(self,name='active',grid_id=0):
@@ -116,6 +150,7 @@ class MapService:
             project=json.loads(meta.read_text()) if meta.is_file() else dict(root_map=folder.name,revision=1,sessions=[])
             capabilities=dict(ready=True,pipeline_version=2,message='离线演示') if self.demo else self.privileged('mapping_capabilities',{})
             return dict(ok=True,project=project,active=folder==(self.maps/'active').resolve(),extension_method='new_session_registration',original_preserved=True,extension_ready=capabilities['ready'],pipeline_version=capabilities['pipeline_version'],capability_message=capabilities['message'])
+        if path=='/maps/activation-context':return self.activation_context(req.get('name'))
         if path=='/maps/details':
             folder=self.path(req.get('name','active'))
             mapping=folder/'occ_grid_id_map.toml'
@@ -179,6 +214,9 @@ class MapService:
             return self.privileged('import',dict(id=meta['id'],name=name,sha256=meta['sha256']))
         if path=='/maps/apply':
             folder=self.path(req.get('name'))
+            context=self.activation_context(folder.name)
+            if 'expected_active' in req and req['expected_active']!=context['active']:raise ValueError('活动地图已变化，未继续切换')
+            if req.get('expected_project_sha256') and req['expected_project_sha256']!=context['project_sha256']:raise ValueError('地图版本已变化，请重新启用')
             review=folder/'.m20-alignment-review.json'
             if review.is_file() and json.loads(review.read_text()).get('status')=='rejected':raise ValueError('这份候选已确认存在墙线冲突，请保留作诊断，不用于导航；请选择原图或重新生成的版本')
             if self.demo:
@@ -187,8 +225,9 @@ class MapService:
                     if active.is_symlink():active.unlink()
                     elif active.exists():raise ValueError('active 必须为软链接')
                     active.symlink_to(folder.name,target_is_directory=True)
-                return dict(ok=True,name=folder.name,delivery='simulated')
-            return self.privileged('apply',dict(name=folder.name))
+                return dict(ok=True,name=folder.name,delivery='simulated',activation_context=context)
+            result=self.privileged('apply',dict(name=folder.name,expected_active=context['active'],expected_project_sha256=context['project_sha256']))
+            return dict(result,activation_context=context)
         if path=='/maps/build':
             action=req.get('action')
             if action not in ['start','extend','stop','discard']:raise ValueError('建图操作无效')

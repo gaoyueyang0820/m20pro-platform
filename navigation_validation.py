@@ -1,4 +1,27 @@
 """Navigation preview evidence and bounded error summaries; no robot I/O."""
+import math
+
+
+def align_observed_pose(pose,scan_age,localization):
+    """Compare timestamped poses at one time without changing scan geometry."""
+    try:
+        velocity=localization.get('velocity_body');omega=float(localization.get('yaw_rate',0))
+        motion_age=float(localization.get('motion_age',math.inf))
+        age=float(localization.get('age',0));dt=max(-.65,min(.65,float(scan_age)-age))
+        if (not isinstance(velocity,(list,tuple)) or len(velocity)!=2 or not 0<=motion_age<=.25
+                or not all(math.isfinite(float(v)) for v in [*velocity,omega,age,scan_age])):return list(pose)
+        heading=pose[2]+omega*dt/2;c,s=math.cos(heading),math.sin(heading)
+        return [pose[0]+(c*velocity[0]-s*velocity[1])*dt,
+                pose[1]+(s*velocity[0]+c*velocity[1])*dt,
+                math.atan2(math.sin(pose[2]+omega*dt),math.cos(pose[2]+omega*dt))]
+    except (TypeError,ValueError,KeyError):return list(pose)
+
+
+def poses_consistent(pose,scan_age,localization):
+    reported=localization['pose']
+    def close(candidate):
+        return math.dist(candidate[:2],reported[:2])<=.35 and abs(math.atan2(math.sin(candidate[2]-reported[2]),math.cos(candidate[2]-reported[2])))<=.25
+    return close(pose) or close(align_observed_pose(pose,scan_age,localization))
 
 
 class NavigationEvidenceError(ValueError):
@@ -35,6 +58,6 @@ def error_summary(error):
     if isinstance(diagnostics,dict):
         # No raw floor/support arrays or complete map cells in HTTP errors.
         result['overlap_diagnostics']={k:diagnostics[k] for k in ['overlap_cells','unobserved_body_cells','insufficient_vote_cells',
-            'live_blocked_cells','surface_state','structure','standing_is_not_map_clearing_evidence'] if k in diagnostics}
+            'live_blocked_cells','surface_state','structure','standing_is_not_map_clearing_evidence','body_projection_cells','body_projection_policy'] if k in diagnostics}
     result['recommended_action']=action
     return result

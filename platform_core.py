@@ -19,7 +19,7 @@ from urllib.request import Request, urlopen
 import xml.etree.ElementTree as ET
 
 import m20_console as original
-from observation_errors import sync_error
+from observation_errors import sync_error,BridgeTransportError
 
 ROOT = Path(__file__).resolve().parent
 LEGS = ['FL', 'FR', 'HL', 'HR']
@@ -76,7 +76,7 @@ def rpc(base, path, data=None, timeout=4, token=None):
         if pending:raise pending
         raise ValueError(message)
     except (URLError, TimeoutError, OSError):
-        raise ValueError('代理连接失败或超时，请检查地址、SSH 隧道和代理进程')
+        raise BridgeTransportError('设备连接暂时无响应')
     if isinstance(result, dict) and result.get('ok') is False:
         pending=sync_error(result,path,data)
         if pending:raise pending

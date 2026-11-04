@@ -14,7 +14,7 @@ test('adjusted endpoint and requested click are visibly distinct without changin
  const group=nodes.get('#goal-approach-preview');assert.ok(group);
  const [line,marker]=group.children;assert.equal(line.attrs.x1,'10');assert.equal(line.attrs.y1,'60');
  assert.equal(marker.attrs.cx,'12.5');assert.equal(marker.attrs.cy,'57.5');assert.match(label.textContent,/0.35 米/);
- assert.deepEqual(p.goal_adjustment.requested,{x:1,y:2});assert.equal(marker.attrs['aria-label'],'实际可到达终点');
+ assert.deepEqual(p.goal_adjustment.requested,{x:1,y:2});assert.equal(marker.attrs['aria-label'],'计划停车位置');
 });
 test('invalidated preview removes the old adjusted marker',()=>{
  const {context,nodes}=setup();context.drawMap();assert.ok(nodes.get('#goal-approach-preview'));

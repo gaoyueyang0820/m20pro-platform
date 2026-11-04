@@ -88,10 +88,16 @@ def _execute(req,maps,data):
             if not (maps/name).is_dir():raise ValueError('drmap 已结束，但未发现预期地图目录，请查看日志核对结果')
             return dict(ok=True,name=name,output=output,activated=False)
     if action=='apply':
+        import hashlib,time
         name=map_name(req.get('name'));p=(maps/name).resolve()
         if p.parent!=maps.resolve() or not p.is_dir():raise ValueError('地图不存在')
+        active=(maps/'active').resolve();previous=active.name if active.is_dir() and active.parent==maps.resolve() else None
+        if 'expected_active' in req and req['expected_active']!=previous:raise ValueError('活动地图已变化，未继续切换')
+        meta=p/'.m20-project.json';raw=meta.read_bytes() if meta.is_file() else b''
+        if req.get('expected_project_sha256') and hashlib.sha256(raw).hexdigest()!=req['expected_project_sha256']:raise ValueError('地图版本已变化，未继续切换')
         output=run(['drmap','apply',str(p)])+run(['systemctl','restart','localization.service'])
-        return dict(ok=True,output=output,message='地图已切换并重启定位；仍需等待定位加载完成')
+        return dict(ok=True,name=name,output=output,localization_restart_completed_at=time.time(),
+                    message='地图已切换，正在恢复定位')
     if action=='extend_mapping':
         import math,uuid
         base=map_name(req.get('base'));folder=(maps/base).resolve()

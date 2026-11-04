@@ -139,7 +139,8 @@ class _Geometry:
         return dict(overlap_cells=len(rows),unobserved_body_cells=sum(r['in_body_blind_patch'] and not r['observed_frames'] for r in rows),
                     insufficient_vote_cells=sum(r['observed_frames']<3 or r['source_span_s']<.4-1e-6 for r in rows),
                     live_blocked_cells=sum(r['live_obstacle'] for r in rows),surface_state=status.get('state','disabled'),
-                    structure=status.get('structure',{}),cells=rows,standing_is_not_map_clearing_evidence=True)
+                    structure=status.get('structure',{}),cells=rows,body_projection_cells=status.get('body_projection_cells',0),
+                    body_projection_policy='current_physical_body_only')
 
     def edge(self,a,b,relaxed=False):
         length=math.dist(a[:2],b[:2]);angle=_wrap(b[2]-a[2]);n=max(1,math.ceil(length/.025),math.ceil(abs(angle)/math.radians(2.5)))
@@ -190,7 +191,7 @@ def recover_start(planner,start,goal,yaw=None,scan=None,localization=None,standi
     began=time.monotonic();deadline=began+max(0,float(budget));start=_pose(start);goal=list(map(float,goal))
     result=dict(ok=False,classification='unclassified',reason='',recovery_dense_path=[],global_plan=None,
                 requested_start=list(start),requested_goal=list(goal),requires_live_revalidation=True,requires_field_validation=True,
-                persistent_map_changed=False,motion_sent=False,constraints=dict(max_distance_m=float(max_distance),max_turn_rad=float(max_turn),
+                persistent_map_changed=False,motion_sent=False,operator_confirmation_required=False,constraints=dict(max_distance_m=float(max_distance),max_turn_rad=float(max_turn),
                 normal_margin_m=CLEARANCE_MARGIN,max_total_translation_m=float(max_distance),max_total_rotation_rad=float(max_turn),
                 must_follow_returned_prefix=True,recommended_max_duration_s=8,relaxed_prefix_policy='physical_body_clear_and_non_decreasing_clearance',
                 support_assumption='standing-confirmed initial body blind patch; measured floor required outside it'))
@@ -200,6 +201,11 @@ def recover_start(planner,start,goal,yaw=None,scan=None,localization=None,standi
         if error:result.update(classification='observation_unavailable',reason=error);return result
         if standing is not True:result.update(classification='standing_unconfirmed',reason='需要站立反馈确认，不能自动假定机身下方有支撑');return result
         if not 0<max_distance<=1 or not 0<=max_turn<=math.radians(30):raise ValueError('起点恢复范围超出短程限制')
+        if getattr(planner,'live_surface',None) is not None:
+            # The caller may enter recovery directly after a standard-plan
+            # failure. Apply this fresh physical-body seed here as well; no
+            # historic floor votes or operator verification are required.
+            planner.update_live_surface(scan,localization)
         planner.live_surface_status();revision=planner.grid_revision
         geometry=_Geometry(planner,start,scan,max_distance,standing)
         result['support_seed']=dict(pose=list(scan['pose']),resolution=geometry.res,stamp=scan['stamp'],
@@ -217,7 +223,7 @@ def recover_start(planner,start,goal,yaw=None,scan=None,localization=None,standi
             elif structure and not structure.get('supported'):
                 code='local_structure_unconfirmed';reason='当前位置仍与旧图冲突，外围结构尚不足以确认局部残影；请先恢复定位或补充同步观测'
             elif diagnostics['unobserved_body_cells']:
-                code='unobserved_body_overlap';reason='旧图占据落在机身盲区且没有历史实测地面，不能仅凭站立清墙；需先补充可验证的观测'
+                code='unobserved_body_overlap';reason='起点紧邻地图墙线，当前未找到可用的起步通路'
             elif diagnostics['insufficient_vote_cells']:
                 code='insufficient_ground_votes';reason='旧图重叠区的独立地面帧还不足，需继续取得同步观测后再规划'
             else:code='map_surface_disagreement';reason='真实机身仍与工作图占据重叠，当前证据不能验证通路；原图和实际障碍均已保留'
@@ -225,7 +231,8 @@ def recover_start(planner,start,goal,yaw=None,scan=None,localization=None,standi
         if not geometry.supported(start):
             result.update(classification='unsupported_floor',reason='当前机身周边缺少实际地面支撑观测');return result
         relaxed=not geometry.standard(start)
-        classification='clearance_only' if relaxed else 'temporary_surface_verified' if geometry.map_gap(start,base=True)<-1e-8 else 'ready'
+        classification=('clearance_only' if relaxed else 'body_projection_start' if getattr(getattr(planner,'live_surface',None),'body_projection_cells',set())
+                        else 'temporary_surface_verified' if geometry.map_gap(start,base=True)<-1e-8 else 'ready')
         if not relaxed:
             try:
                 plan=planner.plan(start,goal,yaw,budget=min(.35,max(.01,deadline-time.monotonic())))

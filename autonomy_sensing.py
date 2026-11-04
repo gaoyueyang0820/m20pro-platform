@@ -2,11 +2,13 @@
 import math
 import numpy as np
 from autonomy_core import RESOLUTION
+from observation_errors import GroundObservationPending
 
 
 def xyz(message):
     fields = {f.name:f for f in message.fields}
     total = int(message.width)*int(message.height)
+    if total==0:raise GroundObservationPending('雷达点数不在自主控制支持范围内','points_insufficient')
     if not 1 <= total <= 400000:
         raise ValueError('雷达点数不在自主控制支持范围内')
     rows = []
@@ -38,8 +40,10 @@ def supported_floor(points):
 
 def _numpy_supported_floor(points):
     points = np.asarray(points,dtype=float)
-    if points.ndim!=2 or points.shape[1]!=3 or len(points)<100:
+    if points.ndim!=2 or points.shape[1]!=3:
         raise ValueError('当前点云不足以判断可行走地面')
+    if len(points)<100:
+        raise GroundObservationPending('当前点云不足以判断可行走地面','points_insufficient')
     x,y,z=points.T
     # Filter finite values and radius with one Nx3 copy. The 2-component sum
     # retains float64 arithmetic; only threshold-neighbouring values need sqrt
@@ -58,7 +62,7 @@ def _numpy_supported_floor(points):
     z=points[:,2];ground_mask=(z<-.15)&(z>-.9)
     ground_z=z[ground_mask]
     if len(ground_z)<80:
-        raise ValueError('尚未看到连续地面，请停稳等待雷达')
+        raise GroundObservationPending('尚未看到连续地面，请停稳等待雷达','floor_insufficient')
     bins=np.round(ground_z/.05).astype(int)
     # Height bins are bounded by the unchanged (-.9, -.15) ground interval.
     # bincount preserves unique's ascending-bin tie break without sorting.
@@ -66,7 +70,7 @@ def _numpy_supported_floor(points):
     level=(first+int(np.argmax(counts)))*.05
     samples=points[ground_mask&(abs(z-level)<.08)]
     if len(samples)<80 or np.ptp(samples[:,0])<1.2 or np.ptp(samples[:,1])<1.2:
-        raise ValueError('地面覆盖太窄，暂不能自主移动')
+        raise GroundObservationPending('地面覆盖太窄，暂不能自主移动','floor_coverage_narrow')
     # Solve the centered 2x2 normal system instead of constructing and QR-
     # factorizing an N x 3 matrix for every 150k-point scan on the robot CPU.
     # Samples is an owned filtered copy. In-place centering avoids another Nx3
@@ -76,7 +80,7 @@ def _numpy_supported_floor(points):
     x,y,z=samples.T
     xx=np.sum(x*x);xy=np.sum(x*y);yy=np.sum(y*y);xz=np.sum(x*z);yz=np.sum(y*z)
     determinant=xx*yy-xy*xy
-    if determinant<=1e-8*max(1.,xx*yy):raise ValueError('地面观测退化为细线，等待更完整地面')
+    if determinant<=1e-8*max(1.,xx*yy):raise GroundObservationPending('地面观测退化为细线，等待更完整地面','floor_plane_degenerate')
     ax=(xz*yy-yz*xy)/determinant;ay=(yz*xx-xz*xy)/determinant
     coeff=np.array([ax,ay,mean[2]-ax*mean[0]-ay*mean[1]])
     if math.hypot(*coeff[:2])>math.tan(math.radians(6)):

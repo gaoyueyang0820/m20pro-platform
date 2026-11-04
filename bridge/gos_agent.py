@@ -41,7 +41,7 @@ class GOSAgent:
             proc=subprocess.run(['journalctl','--no-pager','-n','100','-u','m20-platform-gos.service','-u','multicast-relay.service'],
                                 capture_output=True,text=True,timeout=10)
             return dict(ok=True,output=(proc.stdout+proc.stderr)[-18000:])
-        if path=='/sensors/autonomy':return self.ros().autonomy(bool((req or {}).get('mapping')))
+        if path=='/sensors/autonomy':return self.ros().autonomy(bool((req or {}).get('mapping')),**(dict(after_stamp=req['after_stamp']) if req and 'after_stamp' in req else {}))
         if path=='/sensors/status':return dict(self.ros().status(),host_role='gos')
         if path=='/sensors/cloud':return dict(self.ros().preview((req or {}).get('topic','/ALIGNED_POINTS')),host_role='gos')
         raise ValueError('GOS 只读代理不支持此操作')

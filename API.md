@@ -181,7 +181,7 @@ SDK `/status` 增加 environment：ready、stage、message、workspace、input�
 ## v2.6 自主作业
 
 - `GET /api/autonomy/status`：任务状态、run_id、观测栅格、路径、提示与视觉状态。也随 `/api/platform` 返回。
-- `POST /api/autonomy/start`：`mode=explore`，可选 `radius`（2–12 m）、`minutes`（0.1–20）；`extend=true, base, grid_id` 表示续建；`use_current=true` 接管当前采集。`mode=follow` 使用对应视觉响应的 `sequence, person`（从 0 起）锁定人物。
+- `POST /api/autonomy/start`：`mode=explore`，可选 `radius`（2–100 m）、`minutes`（0.1–60）；`extend=true, base, grid_id` 表示续建；`use_current=true` 接管当前采集。`scope=map` 会随新观测到的通道逐步扩展初始地图范围（至 100 m），`scope=radius` 使用指定半径。`mode=follow` 使用对应视觉响应的 `sequence, person`（从 0 起）锁定人物。
 - `POST /api/autonomy/lease`：兼容旧客户端的 `run_id` 心跳。已启动任务由后台执行，不依赖网页可见性；任务时限、感知有效期、连接归属与显式暂停继续生效。探索范围为 `scope: "radius" | "map"`，旧 `room/floor` 值兼容映射；按地图范围仅用于已有地图更新。
 - `POST /api/autonomy/stop`：撤销当前移动任务；探索中的地图采集保留。
 - `POST /api/autonomy/save`：停车并请求停止保存，后台核对最终地图结果后才完成。
@@ -189,6 +189,7 @@ SDK `/status` 增加 environment：ready、stage、message、workspace、input�
 - `GET /api/autonomy/vision`：同帧 JPEG data URL、归一化 XYXY 人物框、sequence、源图像 age。慢推理不会刷新源图像时间。
 - `POST /api/autonomy/vision/stop`：停止识别及依赖它的跟随任务。
 - 机器人代理 `GET /sensors/status` 新增 `autonomy_protocol=1`；`POST /sensors/autonomy {mapping: boolean}` 提供完整雷达归约的 floor/obstacles、0.2 m 栅格、源数据 age 与可选同步 SLAM pose。该接口按需启用约 5 Hz 处理，不改变 1 Hz 的 UI 预览通道。
+- `/sensors/autonomy` 可携带 `after_stamp` 表示上次已接收的扫描。尚未读取的新帧立即返回，重复帧短暂等待后继帧；旧代理忽略该可选字段。网络读取失败不会立刻丢弃仍有效的缓存，缓存保留原失效时间。几何错误、过期或连接切换仍会失效。
 
 自主指令继续经过普通运动状态检查和现有速度超时。详细输入契约、模型要求和验证边界见 `自主作业说明.md`。
 

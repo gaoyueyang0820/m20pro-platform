@@ -61,7 +61,7 @@ class LiveSurfacePrecisionTests(unittest.TestCase):
             p.update_live_surface(s,l,now=100.08+i*.2)
         self.assertEqual(p.live_surface.free_cells,set())
 
-    def test_unobserved_initial_body_overlap_reports_seed_gap_without_clearing_wall(self):
+    def test_wall_crossing_outside_the_physical_body_is_not_erased(self):
         p=planner(door_world(),True);truth=planner(door_world(True));before=p.base_free.copy();start=[3.6,4.,0.]
         for i in range(4):
             s,l=packet(truth,actual=start,stamp=100+i*.2)
@@ -70,7 +70,7 @@ class LiveSurfacePrecisionTests(unittest.TestCase):
         result=recover_start(p,start,[2.,4.],0.,s,l,standing=True)
         self.assertFalse(result['ok']);self.assertEqual(result['classification'],'map_surface_disagreement')
         self.assertGreater(result['overlap_diagnostics']['unobserved_body_cells'],0)
-        self.assertTrue(result['overlap_diagnostics']['standing_is_not_map_clearing_evidence'])
+        self.assertEqual(result['overlap_diagnostics']['body_projection_policy'],'current_physical_body_only')
         self.assertEqual(result['reason_code'],'unobserved_body_overlap')
         np.testing.assert_array_equal(p.base_free,before)
 
