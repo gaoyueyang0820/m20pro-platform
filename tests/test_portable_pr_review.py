@@ -51,7 +51,7 @@ class PortableReviewTests(unittest.TestCase):
 
     def test_diagnostic_context_never_records_command_secrets(self):
         root=Path(__file__).resolve().parents[1]
-        node=next(n for n in ast.parse((root/'m20_platform.py').read_text()).body if isinstance(n,ast.FunctionDef) and n.name=='exc_location')
+        node=next(n for n in ast.parse((root/'m20_platform.py').read_text(encoding='utf-8')).body if isinstance(n,ast.FunctionDef) and n.name=='exc_location')
         scope={'Path':Path};exec(compile(ast.Module(body=[node],type_ignores=[]),'<diagnostic>','exec'),scope)
         for error in [ValueError('password=synthetic-secret'),subprocess.CalledProcessError(1,['ssh','token=synthetic-secret'])]:
             try:raise error
@@ -64,7 +64,7 @@ class PortableReviewTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='m20 SSH 空格 ') as folder:
             known=Path(folder)/'known hosts'
             option=platform_host.ssh_path_option('UserKnownHostsFile',known)
-            result=subprocess.run([ssh,'-G','-F','none','-o',option,'synthetic.invalid'],capture_output=True,text=True,timeout=10)
+            result=subprocess.run([ssh,'-G','-F','none','-o',option,'synthetic.invalid'],capture_output=True,text=True,encoding='utf-8',timeout=10)
             self.assertEqual(result.returncode,0,result.stderr)
             line=next(line for line in result.stdout.splitlines() if line.startswith('userknownhostsfile '))
             self.assertIn(str(known).replace('\\','/'),line)
@@ -78,7 +78,7 @@ class PortableReviewTests(unittest.TestCase):
             proxy=platform_host.local_command_line([sys.executable,str(helper),option])
             result=subprocess.run([platform_host.ssh_executable('ssh'),'-F','none','-o','ProxyCommand='+proxy,
                 '-o','BatchMode=yes','-o','PubkeyAuthentication=no','-o','IdentityAgent=none','-o','ConnectTimeout=3','127.0.0.1'],
-                capture_output=True,text=True,timeout=10)
+                capture_output=True,text=True,encoding='utf-8',timeout=10)
             self.assertNotEqual(result.returncode,0)  # The local helper is not an SSH server.
             line=next((x for x in result.stderr.splitlines() if x.startswith('M20_PROXY_ARGS:')),None)
             self.assertIsNotNone(line,result.stderr)
