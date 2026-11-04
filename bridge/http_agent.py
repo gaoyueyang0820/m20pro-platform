@@ -34,6 +34,10 @@ def serve(port, dispatch, bind='127.0.0.1'):
                     return self.reply(dict(ok=False,err='代理仅接收服务端请求'),403)
                 if token and not hmac.compare_digest(self.headers.get('X-API-Token',''),token):
                     return self.reply(dict(ok=False,err='代理令牌不正确'),401)
+                # Liveness must not enumerate maps, start ROS or wait for
+                # vendor subprocesses. Business readiness has separate APIs.
+                if not post and urlparse(self.path).path=='/health':
+                    return self.reply(dict(ok=True,health_protocol=1))
                 req=None
                 if post:
                     if not self.headers.get('Content-Type','').startswith('application/json'):
