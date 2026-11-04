@@ -402,11 +402,19 @@ class Hub:
             with self.app.lock:
                 if not self.same_context(context):raise OperationCancelled('连接已变化，未采用旧建图回包')
                 start=result.get('mapping',{});stop=result.get('stop_mapping',{})
+                # 兼容旧版 NOS 代理：停止命令已完成、采集进程已退出、却没有任何栅格/点云产物时，
+                # 旧代理会一直回报“正在保存”，界面就永远停在保存中。这里补一个兜底终态。
+                if (result.get('in_progress') and result.get('phase')=='saving' and not result.get('result_maps')
+                        and stop.get('state')=='command_finished' and stop.get('ended',0)
+                        and time.time()-stop.get('ended',0)>90
+                        and not start.get('processes_alive') and not stop.get('processes_alive')):
+                    result=dict(result,phase='empty',in_progress=False,
+                                message='采集已停止，但本轮没有生成栅格与点云（多为采集时间过短或未收到位姿）；可直接重新建图')
                 if 'in_progress' in result:self.app.mapping=bool(result['in_progress'])
                 elif result.get('demo') or (stop.get('state')=='command_finished' and stop.get('ended',0)>start.get('started',0)) or start.get('state')=='failed':
                     self.app.mapping=False
                 elif start.get('state')=='running' or stop.get('state')=='running':self.app.mapping=True
-                if result.get('phase') in ['idle','saved','discarded','interrupted'] and not result.get('in_progress'):
+                if result.get('phase') in ['idle','saved','discarded','interrupted','empty'] and not result.get('in_progress'):
                     self.mapping_uncertain=None
                 elif (self.mapping_uncertain and result.get('phase')=='collecting'
                       and start.get('request_id')==self.mapping_uncertain['request_id']):

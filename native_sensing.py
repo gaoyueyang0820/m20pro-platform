@@ -29,7 +29,19 @@ class _Result(ctypes.Structure):
 
 
 def _path():
-    return Path(os.environ.get('M20_SENSING_LIBRARY') or Path(__file__).resolve().parent/'native'/'libsensing.so').expanduser()
+    explicit=os.environ.get('M20_SENSING_LIBRARY')
+    if explicit:return Path(explicit).expanduser()
+    native=Path(__file__).resolve().parent/'native'
+    # Windows builds a CPython extension (.pyd); POSIX builds a shared object (.so).
+    # Prefer the platform-native name, but also accept the other so a cross-built
+    # library can be selected explicitly without touching code.
+    if os.name=='nt':
+        candidates=[native/'libsensing.pyd',native/'libsensing.so']
+    else:
+        candidates=[native/'libsensing.so',native/'libsensing.pyd']
+    for path in candidates:
+        if path.exists():return path
+    return candidates[0]
 
 
 def _load():

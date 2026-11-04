@@ -24,7 +24,7 @@ function modal(title,html,actions=[]){$('#modal-content').innerHTML=`<h2>${esc(t
 async function fetchState(){if(authPending||stateBusy)return;stateBusy=true;try{const data=await api('/api/platform',undefined,true);const prev=S;S=data;if(first){first=false;renderNav();render();}if(prev&&prev.mode!==S.mode){mapId=null;routeId=null;points=[];render();}update();}catch(e){if(S){$('#connection-pill').textContent='服务连接中断';$('#connection-pill').className='pill red';} }finally{stateBusy=false;}}
 function renderNav(){let html='';for(const [i,key] of Object.keys(pages).entries()){if(i===6)html+='<div class="nav-section">开发与观测</div>';html+=`<button title="${pages[key][0]}" class="nav-item ${page===key?'active':''}" data-page="${key}">${icon(key)}<span>${pages[key][0]}</span></button>`;}$('#navigation').innerHTML=html;}
 function navigate(p){if(!pages[p])return;if(page==='joints'&&session){api('/api/joints/stop',{},true).catch(()=>{});session=null;}stopMotion();page=p;location.hash=p;window.scrollTo(0,0);renderNav();render();}
-function stage(large=false){return `<div class="robot-stage ${large?'large':''}"><div class="robot-canvas" id="robot-view"></div><div class="model-loading" id="model-loading">正在加载机器人模型…</div><div class="stage-meta"><strong>LYNX M20 PRO</strong><small>16 DOF · 四轮足式机器人</small></div><div class="stage-controls">${btn('复位视角','reset-view','small')}${page==='joints'?btn('查看反馈','clear-preview','small'):''}</div><div class="stage-bottom"><span>${icon('refresh')} 拖动旋转 · 滚轮缩放</span><b>机器人模型</b></div><span class="source-pill" id="model-source">DEMO TELEMETRY</span><span class="preview-badge" id="preview-badge" hidden>目标姿态预览 · 尚未执行</span></div>`;}
+function stage(large=false){return `<div class="robot-stage ${large?'large':''}"><div class="robot-canvas" id="robot-view"></div><div class="model-loading" id="model-loading">正在加载机器人模型…</div><div class="stage-meta"><strong>具身智能机器狗</strong><small>16 DOF · 四轮足式机器人</small></div><div class="stage-controls">${btn('复位视角','reset-view','small')}${page==='joints'?btn('查看反馈','clear-preview','small'):''}</div><div class="stage-bottom"><span>${icon('refresh')} 拖动旋转 · 滚轮缩放</span><b>机器人模型</b></div><span class="source-pill" id="model-source">DEMO TELEMETRY</span><span class="preview-badge" id="preview-badge" hidden>目标姿态预览 · 尚未执行</span></div>`;}
 function overview(){return heading(btn('导出状态','export','','download')+btn('连接设备','connect-modal','primary','link'))+`<div class="cards kpi-grid"><div class="card kpi"><div class="kpi-label">${icon('link')}设备连接</div><div class="kpi-value" id="kpi-online">在线<small>DEMO</small></div><div class="kpi-note"><span class="dot"></span><span id="kpi-ip">本地演示环境</span></div></div><div class="card kpi"><div class="kpi-label">${icon('battery')}双电池电量</div><div class="kpi-value" id="kpi-battery">—</div><div class="kpi-note" id="kpi-battery-note">前侧 / 后侧电池</div><svg class="kpi-graph" viewBox="0 0 100 40"><path d="M1 31L15 24 28 27 40 17 53 20 66 13 81 15 99 6" fill="none" stroke="#70bfa5" stroke-width="1.5"/></svg></div><div class="card kpi"><div class="kpi-label">${icon('joints')}关节状态</div><div class="kpi-value" id="kpi-joints">—</div><div class="kpi-note">16 个电机 · 四条腿</div></div><div class="card kpi"><div class="kpi-label">${icon('temp')}最高关节温度</div><div class="kpi-value" id="kpi-temp">—</div><div class="kpi-note" id="kpi-temp-note">反馈温度 · 持续更新</div></div></div><div class="overview-main">${card('机器人数字视图',stage()+`<div class="source-note" id="overview-source">演示数据 · 三维姿态随模拟关节变化。</div>`,'joints','<span class="pill" id="model-pill">模拟反馈</span>')}${card('运行状态',`<div class="health-list">${kv('运动状态','—','health-motion')}${kv('使用模式','—','health-mode')}${kv('当前步态','—','health-gait')}${kv('地图定位','—','health-loc')}${kv('硬急停','—','health-hes')}${kv('充电状态','—','health-charge')}</div><div class="quick-actions">${cmd('站立','stand')}${cmd('趴下','lie')}${btn('前往遥控','goto-motion','','motion')}${cmd('停止运动','stop','danger')}</div>`,'sensors','<span class="dot"></span>')}</div><div class="overview-bottom">${card('计算单元温度',`<canvas id="temp-chart" class="mini-chart"></canvas><div class="chart-legend"><span>最近 60 秒</span><span><span class="dot"></span>最高主机温度 / °C</span></div>`,'cpu')}${card('当前任务',`<div id="overview-task"></div>`,'tasks',btn('任务中心','goto-tasks','small ghost','arrow'))}${card('最近动态','<div class="log-scroll" id="overview-logs"></div>','clock')}</div>`+'';}
 function motion(){return heading(cmd('停止运动','stop','danger')+cmd('软急停','estop','danger'))+`<div class="split"><div class="stack">${card('姿态与步态',`<div class="card-pad"><div class="button-row">${cmd('站立','stand','primary')}${cmd('趴下','lie')}${cmd('软急停','estop','danger')}</div><div class="small-heading">使用模式</div><div class="mode-choice">${[['normal',0,'常规 / 手动','直接遥控'],['aux',2,'辅助 / 避障','雷达辅助避障'],['nav',1,'自主导航','使用地图路线']].map(([m,id,title,tip])=>`<button data-action="mode_${m}" data-mode="${id}"><strong>${title}</strong><small>${tip}</small></button>`).join('')}</div><div class="small-heading">步态 · 停稳后切换</div><div class="gait-groups"><div><small>标准运动</small>${cmd('基础','gait_basic')}${cmd('楼梯','gait_standard_stair')}</div><div><small>敏捷运动</small>${cmd('平地','gait_flat')}${cmd('楼梯','gait_stair')}</div><div><small>兼容步态</small>${cmd('高台','gait_platform')}</div></div><p class="help" id="drive-mode-state"></p><details class="compatibility-tools"><summary>兼容姿态</summary><p class="help">可用动作取决于设备固件。阻尼与空闲不等同于趴下；日常停车请使用“停止运动”。</p>${cmd('阻尼','damping','small')}${cmd('空闲','idle','small')}${cmd('标准姿态','standard','small')}</details></div>`,'motion')}${card('照明与方向',`<div class="card-pad"><div class="form-grid"><div><div class="small-heading">前照明</div>${cmd('打开','light_front_on')}${cmd('关闭','light_front_off')}</div><div><div class="small-heading">后照明</div>${cmd('打开','light_back_on')}${cmd('关闭','light_back_off')}</div></div><div class="divider"></div><div class="small-heading">互动动作</div><div class="button-row">${cmd('灯语问好','greet','primary')}${cmd('点头','greet_nod')}${cmd('起伏','greet_bob')}</div><p class="help">灯语持续 4 秒。点头与起伏需要设备固件支持，请先站稳；无响应时可使用灯语。按停止或手动驾驶可中断。</p><p class="help" id="greeting-status" role="status"></p><div class="divider"></div><div class="segmented"><button data-action="dir_forward" id="dir-forward">头朝前</button><button data-action="dir_backward" id="dir-backward">尾朝前</button></div><p class="help">选择机头或机尾作为手动前进方向。自主行走请使用头朝前。</p></div>`,'vision')}</div><div class="stack">${card('手动遥控',`<div class="joystick-wrap"><div class="dpad"><span></span><button data-velocity="1,0,0" aria-label="向前">↑</button><span></span><button data-velocity="0,1,0" aria-label="向左平移">←</button><button class="center" data-ui="motion-stop">STOP</button><button data-velocity="0,-1,0" aria-label="向右平移">→</button><button data-velocity="0,0,1" aria-label="左转">↶</button><button data-velocity="-1,0,0" aria-label="后退">↓</button><button data-velocity="0,0,-1" aria-label="右转">↷</button></div></div><div class="keys"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 平移 · <kbd>Q</kbd><kbd>E</kbd> 转向<br>保持按住才会移动，离开页面即停止。</div><div class="card-pad"><div class="range-label"><span>归一化幅度</span><b id="speed-label">0.20</b></div><input id="motion-speed" class="range" type="range" min="0.05" max="0.7" step="0.05" value="0.2"><div class="divider"></div>${kv('X / Y / Yaw','—','velocity-readout')}${kv('控制状态','—','motion-readiness')}</div>`,'navigation')}${card('电源与充电',`<div class="card-pad"><div class="form-grid">${btn('开始进桩','charge-in')}${btn('正常退桩','charge-out')}${btn('休眠','sleep')}${btn('唤醒','wake')}</div><p class="help">进桩需已到充电桩前且安装充电选件。休眠需先趴下。</p></div>`,'battery')}</div></div>`;}
 function joints(){const legNames={FL:'左前腿',FR:'右前腿',HL:'左后腿',HR:'右后腿'};return heading(btn('保存当前姿态','save-pose','','file')+btn('停止关节动作','joint-stop','danger','stop'))+alert('独立关节动作没有站立平衡保护，请使用吊架或仿真。拖动滑块预览，点击“执行”控制关节。')+`<div class="split"><div class="stack">${card('M20 三维关节视图',stage(true),'joints','<span class="pill" id="joint-source">演示反馈</span>')}${card('姿态库','<div id="pose-list"></div>','file')}</div>${card('独立关节控制',`<div class="card-pad"><div class="segmented" id="leg-tabs">${Object.keys(legNames).map(l=>`<button class="${selectedLeg===l?'active':''}" data-leg="${l}">${l}<small style="display:block;font-size:9px;margin-top:4px">${legNames[l]}</small></button>`).join('')}</div><div id="joint-sliders"></div><div class="small-heading">单腿动作</div><div class="range-label"><span>机身 Z 方向抬升高度</span><b id="leg-height-label">4 cm</b></div><input id="leg-height" class="range" type="range" min="1" max="8" step="1" value="4"><div class="form-grid">${btn('预览抬腿','preview-leg','','joints')}${btn('执行抬腿','lift-leg','primary','play')}${btn('恢复落腿','lower-leg')}${btn('结束控制','joint-stop','danger')}</div><div class="divider"></div>${field('动作时长 / s','joint-duration',2,'number')}<label class="check"><input id="rig-confirmed" type="checkbox"><span>机器人已在吊架上（或仿真中），关节校准已完成。</span></label>${btn('开启关节控制','joint-arm','primary wide','link')}<p class="help" id="joint-session-note">尚未开启关节控制。离开页面或窗口失焦会停止动作。</p></div>`,'settings')}</div><div class="section-gap">${card('16 关节反馈',`<div class="table-wrap"><table><thead><tr><th>索引 / 关节</th><th>角度 / rad</th><th>速度 / rad·s⁻¹</th><th>扭矩 / Nm</th><th>温度 / °C</th><th>数据来源</th></tr></thead><tbody id="joint-table"></tbody></table></div>`,'sensors','<span class="label">硬件顺序 · 每腿 4 电机</span>')}</div>`;}
@@ -162,3 +162,84 @@ document.addEventListener('DOMContentLoaded',async()=>{try{const auth=await api(
 const greetingOriginalUpdate=update;
 function greetingStatusText(g){if(!g)return '';if(g.state==='lighting')return '灯语进行中'+(g.demo?' · 演示':'');if(g.state==='motion')return (g.motion==='nod'?'点头':'起伏')+'进行中'+(g.demo?' · 演示':'');if(g.state==='completed')return '问候已结束';if(g.state==='idle')return '站稳后选择动作';return g.message||'问候已停止';}
 update=function(...args){greetingOriginalUpdate.apply(this,args);if(S?.greeting)text('greeting-status',greetingStatusText(S.greeting));};
+
+// ===== 语音控制（声控：说“起立” / “趴下”）=====
+// 使用浏览器原生 Web Speech API（需 Chrome/Edge 且能联网访问识别服务）。
+// 命中关键词后调用与点击按钮完全相同的后端指令 /api/cmd，后端无需改动。
+(function voiceControl(){
+  const btn = $('#voice-toggle'), statusEl = $('#voice-status');
+  if(!btn) return;
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let recog = null, listening = false;
+  // 关键词 → 动作映射（与 data-action="stand"/"lie" 一致）
+  const RULES = [
+    { re: /(起立|站起|站起来|站立|起身)/, action: 'stand', label: '站起' },
+    { re: /(趴下|趴下来|躺下|坐下|坐下来|卧下)/, action: 'lie',   label: '趴下' }
+  ];
+  function setStatus(text, kind){
+    if(!statusEl) return;
+    statusEl.textContent = text || '';
+    statusEl.className = 'voice-status' + (kind ? ' ' + kind : '');
+    statusEl.hidden = !text;
+  }
+  async function fire(action, label){
+    try{
+      await api('/api/cmd', { action });
+      toast('语音指令：' + label + (S && S.mode === 'demo' ? '（演示）' : '，已发送'));
+    }catch(e){ toast('语音指令失败：' + e.message, true); }
+  }
+  function onResult(e){
+    let finalText = '';
+    for(let i = e.resultIndex; i < e.results.length; i++){
+      if(e.results[i].isFinal) finalText += e.results[i][0].transcript;
+    }
+    const t = finalText.trim();
+    if(!t) return;
+    setStatus('识别到：“' + t + '”');
+    for(const rule of RULES){
+      if(rule.re.test(t)){ fire(rule.action, rule.label); break; }
+    }
+  }
+  function onError(e){
+    if(e.error === 'not-allowed' || e.error === 'service-not-allowed'){
+      setStatus('麦克风权限被拒绝，请在地址栏允许麦克风后重试', 'err'); stop();
+    } else if(e.error === 'network'){
+      setStatus('语音识别网络错误（需联网访问识别服务，或改用按钮）', 'err'); stop();
+    } else if(e.error === 'no-speech'){
+      setStatus('未听到声音，继续聆听…');
+    } else {
+      setStatus('语音识别：' + e.error, 'err');
+    }
+  }
+  function onEnd(){ if(listening){ try{ recog.start(); }catch(_){ } } }
+  function start(){
+    if(!SpeechRecognition){
+      setStatus('当前浏览器不支持语音识别（请用 Chrome/Edge 并联网）', 'err');
+      return;
+    }
+    recog = new SpeechRecognition();
+    recog.lang = 'zh-CN';
+    recog.continuous = true;
+    recog.interimResults = false;
+    recog.onresult = onResult;
+    recog.onerror = onError;
+    recog.onend = onEnd;
+    try{
+      recog.start();
+      listening = true;
+      btn.classList.add('voice-on');
+      btn.setAttribute('title', '语音控制：聆听中…再点一次关闭');
+      setStatus('正在聆听… 说“起立”或“趴下”');
+    }catch(_){
+      setStatus('无法启动麦克风，请检查浏览器权限', 'err');
+    }
+  }
+  function stop(){
+    listening = false;
+    if(recog){ try{ recog.stop(); }catch(_){} recog = null; }
+    btn.classList.remove('voice-on');
+    btn.setAttribute('title', '语音控制：说“起立”或“趴下”');
+    setStatus('', 'off');
+  }
+  btn.addEventListener('click', () => { listening ? stop() : start(); });
+})();

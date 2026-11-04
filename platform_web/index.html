@@ -4,15 +4,15 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>M20 Pro · 机器人操作平台</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230d1f27'/%3E%3Ctext x='16' y='21' font-family='Arial' font-size='13' font-weight='700' fill='%236be2bd' text-anchor='middle'%3EM20%3C/text%3E%3C/svg%3E"><link rel="stylesheet" href="/style.css?v=2.8ui2">
+  <title>具身智能机器狗 · 机器人操作平台</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230d1f27'/%3E%3Ctext x='16' y='21' font-family='Arial' font-size='13' font-weight='700' fill='%236be2bd' text-anchor='middle'%3EM20%3C/text%3E%3C/svg%3E"><link rel="stylesheet" href="/style.css?v=2.8ui4">
   <link rel="stylesheet" href="/map_library.css?v=1">
 </head>
 <body>
   <aside class="sidebar" id="sidebar">
-    <a class="brand" href="#overview" aria-label="M20 Pro 工作台">
-      <span class="brand-mark">M<span>20</span></span>
-      <span class="brand-text"><strong>LYNX</strong><small>M20 PRO CONSOLE</small></span>
+    <a class="brand" href="#overview" aria-label="具身智能机器狗 工作台">
+      <span class="brand-mark brand-mark-logo"><img src="/brand-logo.svg?v=1" alt="中铁" width="30" height="25"></span>
+      <span class="brand-text"><strong class="brand-name">具身智能机器狗</strong><small>EMBODIED ROBOT DOG</small></span>
     </a>
     <div class="sidebar-device" aria-live="polite">
       <span class="device-dot" id="sidebar-dot"></span>
@@ -31,6 +31,10 @@
       <div class="topbar-right">
         <span id="connection-pill" class="pill">演示模式</span>
         <span id="live-clock" class="mono clock"></span>
+        <div class="voice-control">
+          <button class="btn ghost small" id="voice-toggle" type="button" title="语音控制：说“起立”或“趴下”"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zM17 11a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.9V21h2v-3.1A7 7 0 0 0 19 11h-2z"/></svg>语音</button>
+          <span id="voice-status" class="voice-status" hidden></span>
+        </div>
         <button class="btn danger small topbar-stop" data-action="estop" type="button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>软急停</button>
         <button class="avatar" data-page="settings" aria-label="打开连接中心">OP</button>
       </div>
@@ -45,7 +49,7 @@
   <div id="toasts" aria-live="polite"></div>
   <dialog id="modal"><div id="modal-content"></div></dialog>
   <script type="module" src="/vendor/viewer.js?v=2.8ui1"></script>
-  <script src="/app.js?v=3.3-greet-cancel" defer></script>
+  <script src="/app.js?v=3.5-voice" defer></script>
   <script src="/hub.js?v=2.8asyncfix1" defer></script>
   <script src="/connections.js?v=3.4-network" defer></script>
   <script src="/sharing.js?v=2.8ui1" defer></script>

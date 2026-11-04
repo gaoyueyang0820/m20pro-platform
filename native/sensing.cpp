@@ -11,6 +11,15 @@
 #include <new>
 #include <vector>
 
+// MSVC does not auto-export symbols from a DLL the way GCC/Clang do with
+// -shared; without this the .pyd would load but ctypes could not resolve the
+// entry points. The macro expands to nothing on POSIX toolchains.
+#if defined(_WIN32)
+  #define M20_SENSING_API __declspec(dllexport)
+#else
+  #define M20_SENSING_API
+#endif
+
 extern "C" {
 struct M20SensingResult {
     std::uint32_t abi;
@@ -20,8 +29,8 @@ struct M20SensingResult {
     double coeff[3];
     double condition;
 };
-std::uint32_t m20_sensing_abi_version() { return 1; }
-std::size_t m20_sensing_result_size() { return sizeof(M20SensingResult); }
+M20_SENSING_API std::uint32_t m20_sensing_abi_version() { return 1; }
+M20_SENSING_API std::size_t m20_sensing_result_size() { return sizeof(M20SensingResult); }
 }
 
 namespace {
@@ -138,7 +147,7 @@ int reduce(const T* points,std::size_t count,std::uint8_t* floor,
 }
 }
 
-extern "C" int m20_sensing_reduce(const void* points,std::uint64_t count,
+extern "C" M20_SENSING_API int m20_sensing_reduce(const void* points,std::uint64_t count,
     std::uint32_t scalar_bytes,std::uint8_t* floor,std::uint8_t* obstacle,
     double* bounds,std::uint32_t capacity,M20SensingResult* result) {
     if (!result)return 1;
