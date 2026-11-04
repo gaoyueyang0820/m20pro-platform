@@ -13,6 +13,29 @@ import tempfile
 ROOT=Path(__file__).resolve().parents[1]
 
 
+def windows_compiler(compiler=None):
+    env=os.environ.copy()
+    if env.get('INCLUDE') and env.get('LIB'):
+        found=compiler or env.get('CXX') or shutil.which('cl.exe')
+        if found:return found,env
+    vswhere=Path(env.get('ProgramFiles(x86)',r'C:\Program Files (x86)'))/'Microsoft Visual Studio/Installer/vswhere.exe'
+    if not vswhere.is_file():raise ValueError('请安装 Visual Studio C++ 生成工具，或从 x64 开发者命令行执行构建')
+    probe=subprocess.run([str(vswhere),'-latest','-products','*','-requires','Microsoft.VisualStudio.Component.VC.Tools.x86.x64','-property','installationPath'],capture_output=True,text=True,check=True,timeout=30)
+    installation=probe.stdout.strip()
+    setup=Path(installation)/'VC/Auxiliary/Build/vcvarsall.bat'
+    if not installation or not setup.is_file():raise ValueError('未找到 x64 C++ 编译环境')
+    cmd=Path(env.get('SystemRoot',r'C:\Windows'))/'System32/cmd.exe'
+    # Only the installed, fixed vcvarsall path is evaluated by cmd. The compiler
+    # itself receives an argv list and runs in the temporary output directory.
+    probe=subprocess.run([str(cmd),'/d','/s','/c','call "'+str(setup)+'" x64 >nul && set'],capture_output=True,text=True,check=True,timeout=45)
+    for line in probe.stdout.splitlines():
+        key,separator,value=line.partition('=')
+        if separator and key and not key.startswith('='):env[key.upper()]=value
+    found=compiler or shutil.which('cl.exe',path=env.get('PATH',''))
+    if not found or not env.get('INCLUDE') or not env.get('LIB'):raise ValueError('C++ 编译环境未就绪')
+    return found,env
+
+
 def build(output=None,compiler=None):
     source=ROOT/'native/sensing.cpp'
     is_windows=os.name=='nt'
@@ -21,27 +44,17 @@ def build(output=None,compiler=None):
     output.parent.mkdir(parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='m20-native-sensing-',dir=str(output.parent)) as directory:
         candidate=Path(directory)/default_name
+        env=None
         if is_windows:
-            # MSVC (cl.exe). Locate it through vswhere if it is not already on PATH.
-            if not compiler:
-                vswhere=r'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
-                if os.path.exists(vswhere):
-                    try:
-                        out=subprocess.run([vswhere,'-latest','-products','*','-requires','Microsoft.VisualStudio.Component.VC.Tools.x86.x64','-property','installationPath'],capture_output=True,text=True,timeout=30).stdout.strip()
-                        if out:
-                            for candidate_cl in (Path(out)/'VC'/'Tools'/'MSVC').rglob('bin/Hostx64/x64/cl.exe'):
-                                compiler=str(candidate_cl);break
-                    except (OSError,subprocess.SubprocessError):pass
-                compiler=compiler or shutil.which('cl.exe')
-            if not compiler:raise ValueError('Windows 上未找到 MSVC (cl.exe)；请安装「Visual Studio 生成工具」后重试，或继续使用 NumPy 感知后端')
-            flags=['/O2','/std:c++17','/EHsc','/nologo','/LD','/DNDEBUG']
-            command=[compiler,*flags,str(source),'/Fe:'+str(candidate)]
+            compiler,env=windows_compiler(compiler)
+            flags=['/O2','/std:c++17','/EHsc','/nologo','/LD','/DNDEBUG','/fp:strict']
+            command=[compiler,*flags,str(source),'/Fe:'+str(candidate),'/Fo:'+str(Path(directory)/'sensing.obj')]
         else:
             compiler=compiler or os.environ.get('CXX') or shutil.which('c++') or shutil.which('clang++')
             if not compiler:raise ValueError('没有可用 C++ 编译器；继续使用 NumPy 感知后端')
             flags=['-O3','-std=c++17','-shared','-fPIC','-fno-fast-math','-ffp-contract=off']
             command=[compiler,*flags,str(source),'-o',str(candidate)]
-        result=subprocess.run(command,text=True,capture_output=True,timeout=180,shell=is_windows)
+        result=subprocess.run(command,text=True,capture_output=True,timeout=180,cwd=directory,env=env)
         if result.returncode:raise ValueError('原生感知编译失败：'+result.stderr[-5000:])
         # cl.exe names the DLL after the source basename unless /Fe: points elsewhere.
         built=candidate if candidate.exists() else Path(directory)/(source.stem+'.dll')

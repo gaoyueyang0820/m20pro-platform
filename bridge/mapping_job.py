@@ -43,6 +43,18 @@ def slam_processes(proc=Path('/proc')):
     return result
 
 
+def empty_capture_confirmed(start,stop):
+    """A missing field or an elapsed PC timeout is not an empty-map receipt."""
+    if start.get('context',{}).get('workflow')=='extension' or stop.get('context',{}).get('discard'):return False
+    expected=stop.get('expected_start_request_id')
+    if expected is not None and expected!=start.get('request_id'):return False
+    return (stop.get('state')=='command_finished' and stop.get('ended',0)>0
+            and stop.get('started',0)>start.get('started',0)>0
+            and 'processes_alive' in start and start['processes_alive']==[]
+            and not stop.get('processes_alive')
+            and re.search(r'\bNo poses loaded\b',stop.get('output',''),re.I) is not None)
+
+
 def mapping_phase(start,stop,maps):
     since=start.get('started',0)
     if start.get('state')=='none' or not since:
@@ -69,13 +81,9 @@ def mapping_phase(start,stop,maps):
         if stop.get('state')=='failed':return dict(phase='error',in_progress=True,message='停止或保存失败，请查看日志后重试停止保存',result_maps=[])
         if stop.get('state')=='command_finished' and candidates:
             return dict(phase='saved',in_progress=False,message='采集已停止，地图文件已生成',result_maps=candidates)
-        # 停止命令已结束、采集进程也已退出，但仍没有栅格/点云产物：本轮没有有效数据
-        # （常见于采集时间过短，厂商日志报 No poses loaded）。这属于终态，不能一直停在“保存中”。
-        if (stop.get('state')=='command_finished' and stop.get('ended',0) and not start.get('processes_alive')
-                and not stop.get('processes_alive')):
+        if empty_capture_confirmed(start,stop):
             return dict(phase='empty',in_progress=False,
-                        message='采集已停止，但本轮没有生成栅格与点云（多为采集时间过短或未收到位姿）；原始目录已保留，可直接重新建图',
-                        result_maps=[])
+                        message='采集已停止，厂商报告没有有效位姿，未生成地图；原始目录已保留，请核对定位和雷达后重新建图',result_maps=[])
         return dict(phase='saving',in_progress=True,message='正在停止采集、生成栅格与点云，请等待保存完成',result_maps=[])
     if start.get('state')=='none' or not since:return dict(phase='idle',in_progress=False,message='尚未开始建图',result_maps=[])
     if start.get('state')=='failed':return dict(phase='error',in_progress=bool(start.get('processes_alive')),message='建图启动失败，请查看日志',result_maps=[])

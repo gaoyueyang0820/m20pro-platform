@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import unittest
 from unittest.mock import MagicMock,patch
+from urllib.error import HTTPError,URLError
 
 from connection_manager import Connections,target_config
 from ssh_identity import known_keys,endpoint_name
@@ -281,6 +282,75 @@ class PairingTests(unittest.TestCase):
         self.assertFalse(self.c.service_attempts['nos']['running'])
         self.assertEqual(self.c.service_attempts['nos']['detail'],'synthetic service error')
         self.assertEqual(self.c.states['nos']['status'],'waiting_service')
+
+    def test_health_probe_avoids_business_status(self):
+        self.online_tunnel()
+        def response(req,**kwargs):
+            self.assertTrue(req.full_url.endswith('/health'))
+            self.assertEqual(req.get_header('X-api-token'),self.c.value['targets']['nos']['token'])
+            return io.BytesIO(b'{"ok":true,"health_protocol":1}')
+        with patch('connection_manager.urlopen',side_effect=response) as request,patch.object(self.c,'recover_service') as recover:
+            self.c.poll_once()
+        self.assertEqual(request.call_count,1);recover.assert_not_called()
+        self.assertEqual(self.c.states['nos']['status'],'ready')
+
+    def test_old_agents_fall_back_only_on_explicit_unsupported_endpoint(self):
+        for code,message in [(404,''),(405,''),(400,'NOS 接口或操作不存在'),(400,'GOS 只读代理不支持此操作'),(400,'SDK 接口不存在'),(400,'接口不存在')]:
+            error=HTTPError('http://synthetic/health',code,'unsupported',{},io.BytesIO(json.dumps({'err':message}).encode()))
+            with patch('connection_manager.urlopen',side_effect=[error,io.BytesIO(b'{"ok":true}')]) as request:
+                self.c.probe_service('nos')
+            self.assertTrue(request.call_args.args[0].full_url.endswith('/status'))
+
+    def test_auth_server_and_transport_errors_never_fall_back(self):
+        for error in [HTTPError('http://synthetic/health',code,'error',{},io.BytesIO(b'{"err":"failure"}')) for code in (400,401,403,500)]+[TimeoutError('timeout')]:
+            with patch('connection_manager.urlopen',side_effect=error) as request:
+                with self.assertRaises(Exception):self.c.probe_service('nos')
+            self.assertEqual(request.call_count,1)
+
+    def test_invalid_heartbeat_does_not_claim_online(self):
+        for body in [b'{}',b'[]',b'{"ok":true}',b'{"ok":false,"health_protocol":1}']:
+            with patch('connection_manager.urlopen',return_value=io.BytesIO(body)):
+                with self.assertRaises(ValueError):self.c.probe_service('nos')
+
+    def test_one_timeout_retries_without_starting_service_or_claiming_ready(self):
+        self.online_tunnel();self.c.states['nos']={'status':'ready','checked':10}
+        with patch('connection_manager.urlopen',side_effect=URLError(TimeoutError('synthetic timeout'))),patch.object(self.c,'recover_service') as recover:
+            self.c.poll_once()
+            self.assertEqual(self.c.states['nos']['status'],'connecting');recover.assert_not_called()
+            self.assertNotIn('checked',self.c.states['nos'])
+            self.c.poll_once()
+            self.assertEqual(self.c.states['nos']['status'],'waiting_service');recover.assert_called_once_with('nos')
+        with patch('connection_manager.urlopen',return_value=io.BytesIO(b'{"ok":true,"health_protocol":1}')):self.c.poll_once()
+        self.assertEqual(self.c.states['nos']['status'],'ready');self.assertNotIn('timeouts',self.c.states['nos'])
+
+
+class AgentHealthTests(unittest.TestCase):
+    def request(self,headers=None,post=False):
+        import bridge.http_agent as agent
+        captured=[];dispatch=MagicMock(return_value={'business':True})
+        class Server:
+            def __init__(self,address,handler):self.handler=handler
+            def serve_forever(self):
+                h=self.handler.__new__(self.handler);h.path='/health';h.headers=headers or {}
+                h.rfile=io.BytesIO(b'{}');h.reply=lambda obj,status=200:captured.append((obj,status))
+                h.run_request(post=post)
+            def server_close(self):pass
+        with patch.dict('os.environ',{'M20_BRIDGE_TOKEN':'synthetic-token'}),patch.object(agent,'ThreadingHTTPServer',Server),patch.object(agent,'threading_is_main',return_value=False),patch('builtins.print'):
+            agent.serve(0,dispatch)
+        return captured[0],dispatch
+
+    def test_authenticated_health_does_not_call_business_dispatch(self):
+        (body,code),dispatch=self.request({'X-API-Token':'synthetic-token'})
+        self.assertEqual((body,code),({'ok':True,'health_protocol':1},200));dispatch.assert_not_called()
+
+    def test_health_still_requires_token_and_rejects_browser_origin(self):
+        for headers,expected in [({},401),({'X-API-Token':'wrong'},401),({'X-API-Token':'synthetic-token','Origin':'http://example.invalid'},403)]:
+            (body,code),dispatch=self.request(headers)
+            self.assertEqual(code,expected);self.assertFalse(body['ok']);dispatch.assert_not_called()
+
+    def test_post_does_not_bypass_business_dispatch(self):
+        (body,code),dispatch=self.request({'X-API-Token':'synthetic-token','Content-Type':'application/json','Content-Length':'2'},post=True)
+        self.assertEqual(body,{'business':True});dispatch.assert_called_once_with('/health',{})
 
 
 if __name__=='__main__':unittest.main()

@@ -32,8 +32,8 @@
         <span id="connection-pill" class="pill">演示模式</span>
         <span id="live-clock" class="mono clock"></span>
         <div class="voice-control">
-          <button class="btn ghost small" id="voice-toggle" type="button" title="语音控制：说“起立”或“趴下”"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zM17 11a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.9V21h2v-3.1A7 7 0 0 0 19 11h-2z"/></svg>语音</button>
-          <span id="voice-status" class="voice-status" hidden></span>
+          <button class="btn ghost small" id="voice-toggle" type="button" aria-pressed="false" title="语音控制：说“起立”或“趴下”"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3zM17 11a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.9V21h2v-3.1A7 7 0 0 0 19 11h-2z"/></svg>语音</button>
+          <span id="voice-status" class="voice-status" role="status" aria-live="polite" hidden></span>
         </div>
         <button class="btn danger small topbar-stop" data-action="estop" type="button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>软急停</button>
         <button class="avatar" data-page="settings" aria-label="打开连接中心">OP</button>
@@ -49,14 +49,14 @@
   <div id="toasts" aria-live="polite"></div>
   <dialog id="modal"><div id="modal-content"></div></dialog>
   <script type="module" src="/vendor/viewer.js?v=2.8ui1"></script>
-  <script src="/app.js?v=3.5-voice" defer></script>
-  <script src="/hub.js?v=2.8asyncfix1" defer></script>
+  <script src="/app.js?v=3.5-voice-review" defer></script>
+  <script src="/hub.js?v=3.5-empty-review" defer></script>
   <script src="/connections.js?v=3.4-network" defer></script>
   <script src="/sharing.js?v=2.8ui1" defer></script>
   <script src="/workspace.js?v=2.8video-sync1" defer></script>
   <script src="/pose_display.js?v=1" defer></script>
   <script src="/navigation_status.js?v=3.0-planning1" defer></script>
-  <script src="/workflows.js?v=3.3-map-library" defer></script>
+  <script src="/workflows.js?v=3.5-empty-review" defer></script>
   <script src="/autonomy.js?v=3.0-planning1" defer></script>
   <script src="/vision_models.js?v=2.8ui2" defer></script>
   <script src="/map_learning.js?v=3.3-map-library" defer></script>
@@ -64,5 +64,6 @@
   <script src="/people_counting.js?v=2.8ui2" defer></script>
   <script src="/goal_approach.js?v=1" defer></script>
   <script src="/navigation_preparation.js?v=2-intent" defer></script>
+  <script src="/voice_control.js?v=1" defer></script>
 </body>
 </html>

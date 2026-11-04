@@ -75,3 +75,23 @@ jobs:
             .artifacts/portable/report.json
             .artifacts/portable/logs/*.txt
           if-no-files-found: warn
+
+  windows-native-build:
+    name: Windows MSVC native parity and SSH quoting
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install public development dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Build with the discovered MSVC environment
+        run: python tools/build_native_sensing.py --output .artifacts/native/libsensing.pyd
+      - name: Require native execution and exact synthetic parity
+        env:
+          M20_SENSING_LIBRARY: ${{ github.workspace }}/.artifacts/native/libsensing.pyd
+          M20_REQUIRE_NATIVE_SENSING: '1'
+          PYTHONPATH: .;tests
+        run: python -m unittest test_native_sensing test_portable_pr_review -q

@@ -21,6 +21,7 @@ import platform_host
 import robot_discovery
 from ssh_identity import endpoint_name,known_keys,valid_alias,write_alias
 from urllib.request import Request,urlopen
+from urllib.error import HTTPError,URLError
 
 ROOT=Path(__file__).resolve().parent
 ROLES=dict(nos=8093,gos=8090,sdk=8091,train=8092)
@@ -420,6 +421,25 @@ class Connections:
             finally:token['running']=False
         threading.Thread(target=recover,daemon=True).start()
 
+    def probe_service(self,role):
+        url,token=self.endpoint(role)
+        headers={'X-API-Token':token}
+        try:
+            with urlopen(Request(url+'/health',headers=headers),timeout=2) as r:status=json.load(r)
+        except HTTPError as exc:
+            # Older agents have no health route. Only an explicit unsupported
+            # endpoint may fall back; auth, server and transport failures may not.
+            unsupported=exc.code in (404,405)
+            if exc.code==400:
+                try:unsupported=json.load(exc).get('err') in ('NOS 接口或操作不存在','GOS 只读代理不支持此操作','SDK 接口不存在','接口不存在')
+                except (ValueError,AttributeError):unsupported=False
+            if not unsupported:raise
+            with urlopen(Request(url+'/status',headers=headers),timeout=2) as r:status=json.load(r)
+            if not isinstance(status,dict) or status.get('ok') is not True:raise ValueError('服务未就绪')
+            return
+        if not isinstance(status,dict) or status.get('ok') is not True or status.get('health_protocol')!=1:
+            raise ValueError('服务心跳格式不正确')
+
     def poll_once(self):
         for role,target in list(self.value['targets'].items()):
             if not target['enabled']:continue
@@ -450,13 +470,15 @@ class Connections:
                 self.states[role]=dict(status='connecting',message='正在连接设备',attempted=state.get('attempted',0))
                 continue
             try:
-                url,token=self.endpoint(role)
-                request=Request(url+'/status',headers={'X-API-Token':token})
-                with urlopen(request,timeout=2) as r:status=json.load(r)
-                if status.get('ok') is False:raise ValueError('服务未就绪')
+                self.probe_service(role)
                 self.states[role]=dict(status='ready',message='服务已连接'+(' · 经 AOS' if target.get('via_aos') else ''),attempted=state.get('attempted',0),checked=time.time())
             except Exception as exc:
-                self.states[role]=dict(status='waiting_service',message='正在等待设备服务响应',detail=str(exc)[:250],attempted=state.get('attempted',0))
+                reason=exc.reason if isinstance(exc,URLError) else exc
+                timeouts=state.get('timeouts',0)+1 if isinstance(reason,(TimeoutError,socket.timeout)) else 0
+                if timeouts==1:
+                    self.states[role]=dict(status='connecting',message='服务响应暂时超时，正在重试',detail=str(exc)[:250],attempted=state.get('attempted',0),timeouts=timeouts)
+                    continue
+                self.states[role]=dict(status='waiting_service',message='正在等待设备服务响应',detail=str(exc)[:250],attempted=state.get('attempted',0),timeouts=timeouts)
                 if target.get('deployed'):self.recover_service(role)
 
     def discover(self,progress=None):

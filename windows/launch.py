@@ -15,7 +15,8 @@ def main():
     if os.name!='nt':raise SystemExit('Use the existing launcher for your operating system.')
     mode=sys.argv[1] if len(sys.argv)>1 else 'start'
     if mode not in ['start','demo','share']:raise SystemExit('Unknown launcher mode')
-    port=int(os.environ.get('M20_HTTP_PORT','8080'));url='http://127.0.0.1:%d/'%port
+    portable=os.environ.get('M20_PORTABLE')=='1'
+    port=int(os.environ.get('M20_HTTP_PORT','8081' if portable and mode=='demo' else '8080'));url='http://127.0.0.1:%d/'%port
     existing=existing_platform(port)
     if existing:
         if mode=='demo' and existing['mode']!='demo':raise SystemExit('The live platform is already running on this port. It was not changed or stopped.')
@@ -24,7 +25,7 @@ def main():
     try:
         with socket.create_connection(('127.0.0.1',port),timeout=.5):raise SystemExit('Port %d is used by another service. No process was stopped.'%port)
     except OSError:pass
-    data=Path(os.environ.get('LOCALAPPDATA',str(Path.home()/'AppData/Local')))/'M20ProPlatform'
+    data=(ROOT/('userdata-demo' if mode=='demo' else 'userdata')) if portable else Path(os.environ.get('LOCALAPPDATA',str(Path.home()/'AppData/Local')))/'M20ProPlatform'
     args=['m20_platform.py','--http',str(port),'--data-dir',str(data)]
     if mode=='demo':args+=['--demo']
     if mode=='share':

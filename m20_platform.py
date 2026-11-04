@@ -53,9 +53,10 @@ def exc_location(exc):
         last = frames[-1]
         where = ' @ %s:%s %s' % (Path(last.filename).name, last.lineno, last.name)
     if isinstance(exc, subprocess.CalledProcessError):
-        detail = '命令退出码 %s: %s' % (exc.returncode, exc.cmd)
+        detail = '外部命令退出码 %s' % exc.returncode
     else:
-        detail = str(exc)
+        # Arbitrary messages may contain request tokens, passwords or argv.
+        detail = type(exc).__name__
     detail = ' '.join(detail.split())
     if len(detail) > 220:
         detail = detail[:217] + '...'

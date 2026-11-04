@@ -37,6 +37,8 @@ v2.3：`/api/platform` 增加 `cameras`（解码可用性、每路 fresh/age/fra
 
 AOS 控制使用 UDP 地址与端口；NOS/GOS 是独立的 SSH/代理通道，可同时连接。SDK 是可选服务的执行端，不代表第四台物理主机。sensor_source 为 nos 或 gos，旧配置默认 nos；不会自动迁移 SDK 或修改原控制器执行位置。
 
+连接检查优先调用受相同令牌保护的机器人代理 `GET /health`（`{ok:true,health_protocol:1}`），不读取地图或启动 ROS。旧代理明确不支持该接口时兼容 `/status`；鉴权失败和传输错误不回退。单次超时显示正在重试，连续超时显示服务无响应。服务在线只表示代理可达；地图、定位、感知新鲜度和运动准备继续由各业务接口独立核对。
+
 目标参数包含 host、user、enabled、ssh_port、local_port、remote_port、python、ros_setup（绝对路径列表）、domain_id；SDK 增加 sdk_workspace、sdk_admin；训练增加 train_root。SDK 管理员身份需在首次部署明确确认。密码仅用于当次请求，连接令牌与专用私钥只保存在电脑后端。
 
 兼容接口 `POST /api/connect {mode,ip,port}`、`POST /api/settings {sdk,train,nos}` 仍可使用，URL 设置会保存本机；启用连接中心目标后优先使用受管理通道。

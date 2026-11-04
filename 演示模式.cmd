@@ -1,13 +1,15 @@
 @echo off
+setlocal EnableExtensions DisableDelayedExpansion
 chcp 65001 >nul
 cd /d "%~dp0"
-echo ============================================
-echo   具身智能机器狗 · 演示模式（无需连接机器人）
-echo   访问地址: http://127.0.0.1:8081/
-echo ============================================
-echo.
-start "" /min cmd /c "timeout /t 3 >nul & explorer http://127.0.0.1:8081/"
-runtime\python.exe -X utf8 m20_platform.py --demo --http 8081 --data-dir "%~dp0userdata-demo"
-echo.
-echo 平台已退出，按任意键关闭窗口。
-pause >nul
+if not exist "runtime\python.exe" (
+  call "windows\dispatch.cmd" demo
+  exit /b
+)
+set "M20_PORTABLE=1"
+set "PYTHONUTF8=1"
+"runtime\python.exe" -X utf8 "windows\launch.py" demo
+set "M20_RESULT=%ERRORLEVEL%"
+if not "%M20_RESULT%"=="0" echo Platform did not start. See the error above.
+pause
+exit /b %M20_RESULT%
