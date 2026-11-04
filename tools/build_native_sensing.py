@@ -27,7 +27,8 @@ def windows_compiler(compiler=None):
     cmd=Path(env.get('SystemRoot',r'C:\Windows'))/'System32/cmd.exe'
     # Only the installed, fixed vcvarsall path is evaluated by cmd. The compiler
     # itself receives an argv list and runs in the temporary output directory.
-    probe=subprocess.run([str(cmd),'/d','/s','/c','call "'+str(setup)+'" x64 >nul && set'],capture_output=True,text=True,check=True,timeout=45)
+    command=subprocess.list2cmdline([str(cmd)])+' /d /u /s /c ""'+str(setup)+'" x64 >nul && set"'
+    probe=subprocess.run(command,executable=str(cmd),capture_output=True,encoding='utf-16le',errors='replace',check=True,timeout=45)
     for line in probe.stdout.splitlines():
         key,separator,value=line.partition('=')
         if separator and key and not key.startswith('='):env[key.upper()]=value
@@ -68,7 +69,7 @@ def build(output=None,compiler=None):
 def main():
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--output');parser.add_argument('--compiler');args=parser.parse_args()
     try:result=build(args.output,args.compiler)
-    except (ValueError,subprocess.TimeoutExpired,OSError) as exc:print(json.dumps(dict(ok=False,error=str(exc)),ensure_ascii=False));return 1
+    except (ValueError,subprocess.SubprocessError,OSError) as exc:print(json.dumps(dict(ok=False,error=str(exc)),ensure_ascii=False));return 1
     print(json.dumps(result,ensure_ascii=False,indent=2));return 0
 
 

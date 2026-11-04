@@ -44,6 +44,8 @@ GROUPS={
 }
 POSIX_GROUPS={'maps','lifecycle','native'}
 EXCLUDE_TESTS={
+    'test_portable_pr_review.PortableReviewTests.test_windows_proxy_executes_absolute_helper_and_preserves_arguments':
+        'Executes installed OpenSSH and a synthetic helper; covered separately by the Windows MSVC/SSH job.',
     'test_portable_pr_review.PortableReviewTests.test_windows_openssh_path_option_round_trip_without_network':
         'Executes installed OpenSSH; covered separately by the real Windows MSVC/SSH job.',
     'test_pose_monitor.PoseMonitorTests.test_actual_unready_pose_series_is_never_frozen_into_a_trusted_marker':
@@ -321,7 +323,7 @@ def main(args):
             node_version=run([node,'--version'],stage,env,15);report['versions']['node']=node_version['stdout'].strip()
         if 'native' in groups:
             if sys.platform not in ['darwin','linux']:
-                report['native_build']=dict(status='unsupported',reason='Current explicit builder uses POSIX compiler flags; Windows native parity is not verified')
+                report['native_build']=dict(status='unsupported',reason='Windows native parity runs in its dedicated MSVC CI job; this guarded native group supports POSIX only')
                 unsupported.append('native')
             else:
                 library=temporary/'native/libsensing.so'

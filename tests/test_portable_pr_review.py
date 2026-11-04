@@ -1,10 +1,12 @@
 """Synthetic review regressions. No robot, real credentials or motion."""
 import ast
 import io
+import json
 import os
 from pathlib import Path
 import shlex
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -66,6 +68,21 @@ class PortableReviewTests(unittest.TestCase):
             self.assertEqual(result.returncode,0,result.stderr)
             line=next(line for line in result.stdout.splitlines() if line.startswith('userknownhostsfile '))
             self.assertIn(str(known).replace('\\','/'),line)
+
+    @unittest.skipUnless(os.name=='nt','Actual Windows ProxyCommand execution only')
+    def test_windows_proxy_executes_absolute_helper_and_preserves_arguments(self):
+        with tempfile.TemporaryDirectory(prefix='m20 proxy 空格 ') as folder:
+            helper=Path(folder)/'synthetic helper.py'
+            helper.write_text('import json,sys\nsys.stderr.write("M20_PROXY_ARGS:"+json.dumps(sys.argv[1:])+"\\n")\n',encoding='utf-8')
+            option=platform_host.ssh_path_option('UserKnownHostsFile',Path(folder)/'known hosts')
+            proxy=platform_host.local_command_line([sys.executable,str(helper),option])
+            result=subprocess.run([platform_host.ssh_executable('ssh'),'-F','none','-o','ProxyCommand='+proxy,
+                '-o','BatchMode=yes','-o','PubkeyAuthentication=no','-o','IdentityAgent=none','-o','ConnectTimeout=3','127.0.0.1'],
+                capture_output=True,text=True,timeout=10)
+            self.assertNotEqual(result.returncode,0)  # The local helper is not an SSH server.
+            line=next((x for x in result.stderr.splitlines() if x.startswith('M20_PROXY_ARGS:')),None)
+            self.assertIsNotNone(line,result.stderr)
+            self.assertEqual(json.loads(line.split(':',1)[1]),[option])
 
 
 if __name__=='__main__':unittest.main()

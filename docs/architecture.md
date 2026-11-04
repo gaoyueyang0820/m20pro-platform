@@ -52,7 +52,7 @@ flowchart LR
 |---|---|---|
 | macOS | Python 控制台、网页、几何算法、Node 测试、本机 C++ 构建 | Shell/启动方式；严格本机验收使用系统网络沙箱，不能把它当作其他 OS 的能力 |
 | Linux | 同一电脑端源码、便携测试、本机 C++ 构建 | 只有机器人侧或明确配置的环境才具备 ROS、systemd、厂商工具、GPU 训练栈 |
-| Windows | Python/Node 纯算法与 UI 子集，独立演示与专用 Windows 安装说明 | POSIX 锁、SSH/服务管理、符号链接权限、视频与原生库工具链要分开验证；现有便携 CI 不声称 Windows C++ 后端已通过 |
+| Windows | Python/Node 纯算法与 UI 子集，独立演示与专用 Windows 安装说明 | POSIX 锁、SSH/服务管理、符号链接权限、视频与原生库工具链要分开验证；Windows C++ 数值一致性另由独立 MSVC CI 作业核对 |
 
 平台间共享代码，不共享虚拟环境或已编译库。编译器、CPU 架构、Python/NumPy/OpenCV 版本和执行的测试范围，应随验证报告记录。
 
