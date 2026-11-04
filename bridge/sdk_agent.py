@@ -14,7 +14,7 @@ import time
 import tempfile
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from platform_core import JOINTS,number,rpc
-from http_agent import serve
+from bridge.http_agent import serve
 
 SDK_SOURCE='https://github.com/DeepRoboticsLab/sdk_deploy.git'
 SDK_REVISION='20279073bc43522aa06b0abf611bb2daaa53d87d'

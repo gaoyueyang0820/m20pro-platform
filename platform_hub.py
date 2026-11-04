@@ -15,6 +15,7 @@ from map_formats import Files,inspect_package,preview_pcd,identifier
 from operations import Operations
 from platform_core import rpc,number,age_of
 from bridge.map_service import MapService
+from bridge.mapping_job import empty_capture_confirmed
 from localization_runtime import OperationCancelled
 
 
@@ -402,11 +403,16 @@ class Hub:
             with self.app.lock:
                 if not self.same_context(context):raise OperationCancelled('连接已变化，未采用旧建图回包')
                 start=result.get('mapping',{});stop=result.get('stop_mapping',{})
+                # Legacy agents require the same positive vendor/process evidence.
+                if (result.get('phase')=='saving' and not result.get('result_maps')
+                        and empty_capture_confirmed(start,stop)):
+                    result=dict(result,phase='empty',in_progress=False,
+                                message='采集已停止，厂商报告没有有效位姿，未生成地图；请核对定位和雷达后重新建图')
                 if 'in_progress' in result:self.app.mapping=bool(result['in_progress'])
                 elif result.get('demo') or (stop.get('state')=='command_finished' and stop.get('ended',0)>start.get('started',0)) or start.get('state')=='failed':
                     self.app.mapping=False
                 elif start.get('state')=='running' or stop.get('state')=='running':self.app.mapping=True
-                if result.get('phase') in ['idle','saved','discarded','interrupted'] and not result.get('in_progress'):
+                if result.get('phase') in ['idle','saved','discarded','interrupted','empty'] and not result.get('in_progress'):
                     self.mapping_uncertain=None
                 elif (self.mapping_uncertain and result.get('phase')=='collecting'
                       and start.get('request_id')==self.mapping_uncertain['request_id']):

@@ -113,7 +113,7 @@ loadBuildStatus=async function(){
  const token={scope};workflowBuildRequest=token;buildLoading=true;const current=()=>workflowBuildRequest===token&&scope===navigationMapScope();
  try{
   const r=await api('/api/maps/build/status',undefined,true);if(!current())return;buildState=r;
-  const phase=r.phase||'unconfirmed',labels={idle:'未开始',starting:'启动中',collecting:'正在采集',saving:'停止并保存中',saved:'已保存',interrupted:'采集中断 · 数据保留',external_collecting:'外部建图任务',unconfirmed:'状态待核对',error:'需要处理'};
+  const phase=r.phase||'unconfirmed',labels={idle:'未开始',starting:'启动中',collecting:'正在采集',saving:'停止并保存中',saved:'已保存',interrupted:'采集中断 · 数据保留',empty:'已停止 · 无地图产物',external_collecting:'外部建图任务',unconfirmed:'状态待核对',error:'需要处理'};
   const pill=$('#mapping-phase');if(pill){pill.textContent=(r.demo?'演示 · ':'')+(labels[phase]||phase);pill.className='mapping-phase '+phase;}
   text('mapping-phase-message',r.message||'暂未收到采集状态，请检查 NOS 连接');
   text('mapping-phase-extra',r.result_maps?.length?'结果地图：'+r.result_maps.join('、'):r.fusion?'本轮融合：'+r.fusion.keyframes+' 帧 · 回环 '+r.fusion.loop_constraints+' 个 · 配准误差 '+r.fusion.quality.rmse_m+' m':r.in_progress&&r.mapping?.context?.base?'正在补扫：'+r.mapping.context.base:r.in_progress&&r.mapping?.name?'正在创建：'+r.mapping.name:r.demo?'演示采集 · 无真实雷达数据':'等待采集状态');

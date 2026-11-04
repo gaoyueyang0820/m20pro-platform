@@ -49,15 +49,22 @@ def ssh_path_option(name,path):
 
 
 def local_command_line(argv):
-    return subprocess.list2cmdline(argv) if IS_WINDOWS else shlex.join(argv)
+    if not IS_WINDOWS:return shlex.join(argv)
+    # Keep the selected SSH executable: it may not be available on PATH.
+    parts=[str(a).replace('\\','/') for a in argv]
+    return subprocess.list2cmdline(parts)
 
 
 def private_file(path):
     """New platform-owned keys/config only; never touch arbitrary user SSH keys."""
     path=Path(path)
     if not IS_WINDOWS:path.chmod(0o600);return
-    result=subprocess.run(['whoami','/user','/fo','csv','/nh'],capture_output=True,text=True,check=True,timeout=5)
-    row=next(csv.reader(result.stdout.strip().splitlines()))
-    sid=next((v for v in row if re.fullmatch(r'S-1-\d+(?:-\d+)+',v)),None)
-    if not sid:raise ValueError('无法读取当前 Windows 用户 SID，未放宽密钥权限')
-    subprocess.run(['icacls',str(path),'/inheritance:r','/grant:r','*'+sid+':F'],capture_output=True,check=True,timeout=5)
+    system32=Path(os.environ.get('SystemRoot',r'C:\Windows'))/'System32'
+    try:
+        result=subprocess.run([str(system32/'whoami.exe'),'/user','/fo','csv','/nh'],capture_output=True,text=True,check=True,timeout=5)
+        row=next(csv.reader(result.stdout.strip().splitlines()))
+        sid=next((v for v in row if re.fullmatch(r'S-1-\d+(?:-\d+)+',v)),None)
+        if not sid:raise ValueError('Windows 用户 SID 无效')
+        subprocess.run([str(system32/'icacls.exe'),str(path),'/inheritance:r','/grant:r','*'+sid+':F'],capture_output=True,check=True,timeout=5)
+    except (OSError,subprocess.SubprocessError,ValueError,StopIteration) as exc:
+        raise ValueError('无法设置平台文件的 Windows 私有权限，请检查账号权限与系统工具后重试') from exc

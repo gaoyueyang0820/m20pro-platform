@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from platform_core import JOINTS, integer, number
-from http_agent import serve
+from bridge.http_agent import serve
 
 
 class JointController:

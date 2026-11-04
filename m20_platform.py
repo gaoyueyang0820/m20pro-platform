@@ -42,6 +42,27 @@ if not os.environ.get('M20_PPE_MODEL'):
     original.PPE_MODEL_PATH=str(default_path('ppe'))
 
 
+def exc_location(exc):
+    """把异常压成一行可定位信息：最新一帧的文件:行号 函数 + 具体原因。
+    诊断日志只写异常类型名时无法判断根因（例如哪条外部命令失败），故补齐这两项。"""
+    import subprocess
+    import traceback
+    frames = traceback.extract_tb(exc.__traceback__)
+    where = ''
+    if frames:
+        last = frames[-1]
+        where = ' @ %s:%s %s' % (Path(last.filename).name, last.lineno, last.name)
+    if isinstance(exc, subprocess.CalledProcessError):
+        detail = '外部命令退出码 %s' % exc.returncode
+    else:
+        # Arbitrary messages may contain request tokens, passwords or argv.
+        detail = type(exc).__name__
+    detail = ' '.join(detail.split())
+    if len(detail) > 220:
+        detail = detail[:217] + '...'
+    return where + (' | ' + detail if detail else '')
+
+
 def import_pgm(encoded):
     try:
         raw = base64.b64decode(encoded, validate=True)
@@ -770,7 +791,7 @@ class Platform:
                 if self.mapping:raise ValueError('建图采集或后处理尚未完成，请先停止建图并核对结果')
             else:
                 build=self.hub.get('/api/maps/build/status',{})
-                if build.get('in_progress',True) or build.get('phase') not in ['idle','saved','discarded','interrupted']:
+                if build.get('in_progress',True) or build.get('phase') not in ['idle','saved','discarded','interrupted','empty']:
                     raise ValueError('建图采集或后处理尚未确认结束，请先核对建图结果')
                 with self.lock:
                     if not current():raise ValueError('导航启动已取消或连接已改变')
@@ -1028,7 +1049,7 @@ class Platform:
         try:
             if not demo:
                 build=self.hub.get('/api/maps/build/status',{})
-                if build.get('in_progress',True) or build.get('phase') not in ['idle','saved','discarded','interrupted']:raise ValueError('建图采集或后处理尚未确认结束')
+                if build.get('in_progress',True) or build.get('phase') not in ['idle','saved','discarded','interrupted','empty']:raise ValueError('建图采集或后处理尚未确认结束')
                 loc=link.record(1007,2)
                 if age_of(loc)>2 or loc.get('items',{}).get('Location')!=0:raise ValueError('定位异常或数据过期')
                 if self.proxy('nos','/status').get('active')!=map_.get('robot_map_name'):raise ValueError('活动地图已改变，请重新规划路线')
@@ -1668,7 +1689,7 @@ class Handler(original.Handler):
         except (ValueError,TypeError,KeyError) as exc: self._json(dict(ok=False,err=str(exc),navigation=error_summary(exc)),400)
         except (BrokenPipeError,ConnectionResetError): pass
         except Exception as exc:
-            APP.add_log('error','服务错误: '+type(exc).__name__)
+            APP.add_log('error','服务错误: '+type(exc).__name__+exc_location(exc))
             self._json(dict(ok=False,err='服务错误，请查看诊断日志'),500)
 
 

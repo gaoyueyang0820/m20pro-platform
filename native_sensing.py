@@ -29,7 +29,10 @@ class _Result(ctypes.Structure):
 
 
 def _path():
-    return Path(os.environ.get('M20_SENSING_LIBRARY') or Path(__file__).resolve().parent/'native'/'libsensing.so').expanduser()
+    explicit=os.environ.get('M20_SENSING_LIBRARY')
+    if explicit:return Path(explicit).expanduser()
+    native=Path(__file__).resolve().parent/'native'
+    return native/('libsensing.pyd' if os.name=='nt' else 'libsensing.so')
 
 
 def _load():

@@ -43,7 +43,7 @@ npm ci
 .venv\Scripts\python.exe tools/check_portable.py --groups algorithms,navigation,sensing,ui --report .artifacts/portable/report.json
 ```
 
-Windows 命令是明确的子集，报告为 `partial`；没有验证 POSIX 服务操作或 C++ 原生感知。当前原生构建脚本使用 POSIX 编译参数，不能把 Windows 子集通过写成原生库跨平台通过。macOS/Linux 的完整便携检查会在临时目录显式编译原生库，并要求测试确实调用原生实现，不能全程回退到 NumPy 后报通过。
+Windows 命令是明确的子集，报告为 `partial`；没有验证 POSIX 服务操作或 C++ 原生感知。Windows 原生构建由独立 MSVC CI 作业验证，不能把纯 Python/Node 子集通过写成原生库通过。macOS/Linux 的完整便携检查会在临时目录显式编译原生库，并要求测试确实调用原生实现，不能全程回退到 NumPy 后报通过。
 
 `requirements-dev.txt` 只装 NumPy 和无 GUI 的 OpenCV 测试依赖，不安装 ROS、Torch、Ultralytics、机器人 SDK 或模型权重。运行视频/模型功能另用已有安装说明，勿在同一虚拟环境同时安装多个 OpenCV 发行包。测试脚本不会自动下载或安装缺失依赖。
 

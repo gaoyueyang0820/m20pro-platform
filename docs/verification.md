@@ -77,3 +77,7 @@ Worker 在安装测试 guard 前，仅预热标准库 `platform.uname()` / `plat
 `tools/offline_acceptance.py` 是独立入口，包含已录制故障、私有来源校验与测试基线。只在具备相应数据和系统沙箱的原开发/验收环境运行。其 `--record-baseline` 只有在实际满足覆盖条件时才应使用；不将便携报告复制为该基线。
 
 实机测试另记录型号/固件、实际运行源码、地图与现场条件、执行者、任务边界、真实反馈和保存结果。协议 ACK、UI 出现路线、原生命中、地图点数增加或“服务已启动”，都不能单独作为行走完成或地图精度提高的证据。
+
+## Windows 独立工具链检查
+
+`portable-checks.yml` 的独立 Windows MSVC 作业准备编译环境、构建当前源码的 `.pyd`，要求 `test_native_sensing` 实际命中原生实现并与 NumPy 数值一致，同时执行无网络的本机 OpenSSH 参数检查。该作业与受 effect guard 约束的 Windows Python/Node 子集分开报告；不会由模拟响应或 Mac 编译结果替代。

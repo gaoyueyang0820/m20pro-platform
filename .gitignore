@@ -43,3 +43,15 @@ release-manifest.json
 
 .artifacts/
 /验证结果.json
+
+# Portable runtime bundle and local user data (contains SSH private keys,
+# maps, point clouds, logs and connection profiles - never commit these)
+/runtime/
+/userdata*/
+
+# Local Windows C++ outputs
+native/*.pyd
+native/*.obj
+native/*.lib
+native/*.exp
+native/*.pdb
