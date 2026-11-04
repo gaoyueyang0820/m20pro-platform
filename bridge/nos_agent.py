@@ -15,6 +15,7 @@ MAP_SERVICE=MapService()
 SENSORS=None
 SENSOR_LOCK=threading.RLock()
 REFINEMENT=None
+RESIDENT=None
 
 
 def sensors():
@@ -30,7 +31,13 @@ def sensors():
 
 
 def dispatch(path,req):
-    global REFINEMENT
+    global REFINEMENT,RESIDENT
+    if path.startswith('/missions/'):
+        with SENSOR_LOCK:
+            if RESIDENT is None:
+                from bridge.resident_mission import ResidentMissionService
+                RESIDENT=ResidentMissionService(MAP_SERVICE,sensors,MAP_SERVICE.data)
+        return RESIDENT.dispatch(path,req)
     if path=='/diagnostics/navigation':
         from navigation_diagnostics import read_navigation_diagnostics
         result=read_navigation_diagnostics()
@@ -78,6 +85,10 @@ def dispatch(path,req):
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser();parser.add_argument('--port',type=int,default=8093);args=parser.parse_args()
+    from bridge.resident_mission import ResidentMissionService
+    RESIDENT=ResidentMissionService(MAP_SERVICE,sensors,MAP_SERVICE.data)
+    if RESIDENT.enabled:RESIDENT.recover()
     try:serve(args.port,dispatch)
     finally:
+        if RESIDENT:RESIDENT.close()
         if SENSORS:SENSORS.close()

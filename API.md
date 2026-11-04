@@ -253,3 +253,7 @@ SDK `/status` 增加 environment：ready、stage、message、workspace、input�
 字段中的单调时钟期限只属于生成它的进程，不得跨电脑直接比较或当作新的运动授权。
 
 地图保存结果区分 `observations_saved`、`fusion_status=awaiting_evidence`、`candidate_created` 和 `result_maps`。只保存原始观测时不得显示为融合候选已可导航；原图版本始终由操作者启用。
+
+## 驻机断联任务
+
+导航/路线选项增加 `disconnect_policy: stop|finish|return|finish_return`，默认stop。后三项需机器人端报告驻机执行能力；使用既有准备与停止接口。GET `/api/nav/resident/capabilities` 核对配置，快照 `resident_navigation` 反映远端任务状态。首次下发完整路线；重连仅对账，禁止自动重播启动。详见 [断联任务](docs/disconnected-navigation.md)。

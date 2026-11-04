@@ -1,5 +1,6 @@
 """Map library API used by NOS and the explicitly labelled local demo."""
 import base64
+import hashlib
 import json
 import os
 import re
@@ -81,7 +82,7 @@ class MapService:
                     free_thresh=float(re.search(r'^free_thresh:\s*([\d.]+)',yaml,re.M)[1]) if re.search(r'^free_thresh:\s*([\d.]+)',yaml,re.M) else .196,
                     occupied_thresh=float(re.search(r'^occupied_thresh:\s*([\d.]+)',yaml,re.M)[1]) if re.search(r'^occupied_thresh:\s*([\d.]+)',yaml,re.M) else .65,
                     resolution=float(resolution.group(1)),origin=[float(x) for x in origin.group(1).split(',')],
-                    pgm=base64.b64encode(pgm.read_bytes()).decode(),active=folder==(self.maps/'active').resolve())
+                    pgm=base64.b64encode(pgm.read_bytes()).decode(),yaml_sha256=hashlib.sha256((folder/(stem+'.yaml')).read_bytes()).hexdigest(),active=folder==(self.maps/'active').resolve())
 
     def privileged(self,action,req):
         payload=dict(action=action,**req)

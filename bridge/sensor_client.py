@@ -7,11 +7,11 @@ from observation_errors import sync_error
 
 
 class SensorClient:
-    def call(self,path,data=None):
+    def call(self,path,data=None,timeout=2):
         headers={'Content-Type':'application/json','X-API-Token':os.environ.get('M20_BRIDGE_TOKEN','')}
         request=Request('http://127.0.0.1:8094'+path,data=json.dumps(data).encode() if data is not None else None,headers=headers)
         try:
-            with urlopen(request,timeout=2) as response:result=json.load(response)
+            with urlopen(request,timeout=timeout) as response:result=json.load(response)
         except HTTPError as exc:
             try:payload=json.load(exc);message=payload.get('err','感知服务返回错误')
             except Exception:payload=None;message=str(exc)
