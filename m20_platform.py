@@ -162,6 +162,8 @@ class Platform:
         self._plan_generation=0;self._nav_start_generation=0
         from navigation_intents import NavigationIntents
         self.navigation_intents=NavigationIntents()
+        from resident_navigation_client import ResidentNavigationClient
+        self.resident_navigation=ResidentNavigationClient(self)
         self.people=PeopleCounter(self)
         from localization_runtime import AutomaticLocalizer
         self.localizer=AutomaticLocalizer(self)
@@ -183,7 +185,9 @@ class Platform:
             self.people.stop()
             self.people.control(dict(action='reset'))
             self.cameras.close()
-            stopped=self.stop();connection_warnings=list(stopped.get('warnings',[]))
+            preserve_resident=self.resident_navigation.preserve()
+            stopped=dict(warnings=[]) if preserve_resident else self.stop()
+            connection_warnings=list(stopped.get('warnings',[]))
             if self.link and self.nav['status']=='cancelling':
                 notice=self._close_navigation_connection()
                 if notice['state']=='unconfirmed':connection_warnings.append(notice['message'])
@@ -191,7 +195,8 @@ class Platform:
             if original.PPE and original.PPE.enabled:
                 original.PPE.stop()
             if self.link:
-                self.link.close()
+                if preserve_resident:self.link.close(stop=False)
+                else:self.link.close()
                 self.link = None
             original.LINK = None
             self.demo = req.get('mode', 'demo') == 'demo'
@@ -255,6 +260,7 @@ class Platform:
 
     def stop(self, estop=False):
         self.cancel_greeting()
+        if self.resident_navigation.busy():self.resident_navigation.cancel()
         self.invalidate_navigation_start()
         self.autonomy.pause()
         if self.nav.get('engine')=='platform':self.point_navigation.stop()
@@ -304,6 +310,9 @@ class Platform:
                     warnings=failures, message='停止请求尚未确认，请核对状态反馈' if unconfirmed else '已发停止请求；请核对状态反馈' if self.link else '演示动作已停止')
 
     def command(self, action):
+        if self.resident_navigation.busy() and action not in ['stop','estop','heartbeat']:
+            self.resident_navigation.cancel()
+            raise ValueError('驻机任务已请求停车，请等待停止确认后手动操作')
         if action=='greet' or action.startswith('greet_'):
             return self.greet(**self._greet_args(action))
         if action!='heartbeat':self.cancel_greeting('已切换为手动操作，问候取消')
@@ -401,6 +410,9 @@ class Platform:
         self.greeting.cancel(reason)
 
     def set_velocity(self, req, autonomous=False, valid_until=None):
+        if not autonomous and self.resident_navigation.busy() and any(req.get(k,0) for k in ('forward','side','yaw')):
+            self.resident_navigation.cancel()
+            raise ValueError('已请求驻机任务停车，停止确认前暂不可移动')
         if not autonomous:
             self.cancel_greeting("已由手动驾驶接管，问候取消")
             self.invalidate_navigation_start();self.autonomy.pause("已由手动驾驶接管")
@@ -547,7 +559,9 @@ class Platform:
             gait=options.get('gait','flat')
             if gait not in ['flat','stair']:raise ValueError('路线步态无效')
             value['options']=dict(nav_mode=integer(options.get('nav_mode',1),0,1),speed=integer(options.get('speed',1),0,2),
-                                  gait=gait,manner=integer(options.get('manner',0),0,1),pause_at_point=options.get('pause_at_point',False))
+                                  gait=gait,manner=integer(options.get('manner',0),0,1),pause_at_point=options.get('pause_at_point',False),disconnect_policy=options.get('disconnect_policy','stop'))
+            from navigation_disconnect import POLICIES
+            if value['options']['disconnect_policy'] not in POLICIES:raise ValueError('断联策略无效')
         if persist:
             self.store.value['routes'] = [r for r in self.store.value['routes'] if r['id'] != value['id']] + [value]
             self.store.save()
@@ -734,12 +748,13 @@ class Platform:
                 raise ValueError('机器人位置或朝向已变化，请重新规划')
             result=copy.deepcopy(plan['result']);point=result['goal']
             route=self.route_save(dict(name='前往目标',map_id=req.get('map_id'),points=[point],
-                options=dict(nav_mode=1,speed=1,gait='flat',manner=0,pause_at_point=False)),persist=False)['route']
+                options=dict(nav_mode=1,speed=1,gait='flat',manner=0,pause_at_point=False,disconnect_policy=req.get('disconnect_policy','stop'))),persist=False)['route']
             route.update(temporary=True,preview_start=list(plan['start']),preview_source=plan['source'],preview_fingerprint=plan['fingerprint'],preview_path=result['path'])
         engine=req.get('engine','native')
         if engine not in ['native','platform']:raise ValueError('未知导航执行器')
+        if req.get('disconnect_policy','stop')!='stop' and engine!='native':raise ValueError('断联执行需使用机器人端寻路，请重新规划')
         if engine=='platform':return self.point_navigation.start(route,plan,intent,client_intent)
-        started=self.start_route(dict(nav_mode=1,speed=1,gait='flat',pause_at_point=False,_start_generation=intent),goal=route,client_intent=client_intent)
+        started=self.start_route(dict(nav_mode=1,speed=1,gait='flat',pause_at_point=False,disconnect_policy=req.get('disconnect_policy','stop'),_start_generation=intent),goal=route,client_intent=client_intent)
         with self.lock:
             if self.nav.get('route',{}).get('id')==route['id']:self.nav['plan']=result
         message='正在确认模式与步态，完成后仅提交最终目标' if started.get('phase')=='preparing' else '已提交最终目标；预览路线供核对，机器人自主寻路并实时避障，终点自动结束'
@@ -768,6 +783,10 @@ class Platform:
             route=copy.deepcopy(goal or next((r for r in self.store.value['routes'] if r['id']==req.get('id')),None))
             if not route:raise ValueError('路线不存在，请先保存路线')
             saved=route.get('options',{});pause=req.get('pause_at_point',saved.get('pause_at_point',False))
+            from navigation_disconnect import POLICIES
+            disconnect_policy=req.get('disconnect_policy',saved.get('disconnect_policy','stop'))
+            if disconnect_policy not in POLICIES:raise ValueError('未知断联策略')
+            if disconnect_policy!='stop' and self.demo:raise ValueError('驻机断联任务需连接已配置的机器人端服务')
             if not isinstance(pause,bool):raise ValueError('到点暂停参数无效')
             options=dict(NavMode=integer(req.get('nav_mode',saved.get('nav_mode',0)),0,1),
                          Gait=0x3003 if req.get('gait',saved.get('gait'))=='stair' else 0x3002,
@@ -779,7 +798,7 @@ class Platform:
             link=self.link;demo=self.demo
             nav=dict(status='running',phase='validating',execution_state='preparing',message='正在核对活动地图与建图状态',
                      validation_deadline=time.monotonic()+15,index=0,route=route,progress=0,completed=0,started=time.time(),
-                     options=options,pause_at_point=pause,grid_id=map_.get('grid_id',0),previous_cancelled_value=previous_cancelled)
+                     options=options,pause_at_point=pause,grid_id=map_.get('grid_id',0),previous_cancelled_value=previous_cancelled,disconnect_policy=disconnect_policy)
             nav.update(self.navigation_intents.nav_fields(client_intent))
             self.nav=nav;self.velocity=[0.,0.,0.]
             if link:link.set_velocity(0,0,0)
@@ -982,6 +1001,10 @@ class Platform:
             if age_of(record)>2 or b.get('HES')!=0 or b.get('MotionState')!=17 or b.get('Sleep') or b.get('ControlUsageMode')!=1:
                 self.nav['warning']='控制状态已改变，正在确认停止导航'
                 self._cancel_navigation('control_state_changed','paused');return
+        if self.nav.get('disconnect_policy','stop')!='stop':
+            try:self.resident_navigation.prepared(self.nav)
+            except Exception as error:self.nav.update(status='failed',phase='failed',error='驻机任务未能提交：'+str(error))
+            return
         p = self.nav['route']['points'][self.nav['index']]
         try:value=self._reserve_navigation_value()
         except (ValueError,OSError) as exc:
@@ -1027,6 +1050,7 @@ class Platform:
         self.store.value['history']=self.store.value['history'][-50:];self.store.save()
 
     def resume_route(self):
+        if self.nav.get('engine')=='resident':raise ValueError('驻机任务停止后请重新核对状态并开始新任务')
         if self._greet_busy:raise ValueError('请先停止问候动作，再继续导航')
         if self.nav.get('engine')=='platform':
             if self.nav.get('status')!='paused':raise ValueError('任务不在暂停状态')
@@ -1065,6 +1089,8 @@ class Platform:
             raise
 
     def _cancel_navigation(self,reason,after='paused',retry=False):
+        if self.nav.get('engine')=='resident':
+            self.resident_navigation.cancel(after);return
         if self.nav.get('engine')=='platform':
             self.point_navigation.stop(after,'平台导航已请求停车：'+reason);return
         if self.nav['status']=='cancelling' and not retry:return
@@ -1163,6 +1189,12 @@ class Platform:
                         self.pose['PosX'] += dx/d*speed
                         self.pose['PosY'] += dy/d*speed
                         self.pose['Yaw']=math.atan2(dy,dx)
+                return
+            self.resident_navigation.tick()
+            if self.nav.get('engine')=='resident':
+                if self.link:
+                    self.basic=self.link.record(1002,6).get('items',{}).get('BasicStatus',{})
+                    self.pose=self.link.record(1007,2).get('items',{})
                 return
             if not self.link:
                 return
@@ -1325,7 +1357,7 @@ class Platform:
                 pose_age=0. if self.demo else age_of(self.link.record(1007,2)) if self.link else float('inf'),
                 motion_age=0. if self.demo else age_of(self.link.record(1002,4)) if self.link else float('inf'),
                 relocation_epoch=(self._plan_generation,id(self.link),self.pose.get('Relocation')))
-            return dict(mode='demo' if self.demo else 'live',online=bool(online),server_instance=self.instance_id,pose_view=pose_view,
+            return dict(mode='demo' if self.demo else 'live',online=bool(online),server_instance=self.instance_id,pose_view=pose_view,resident_navigation=self.resident_navigation.snapshot(),
                         connection_generation=self._plan_generation,
                         navigation_preparation=dict(client_intent_protocol=1,verify_current_localization=True),
                         previous_connection_stop=copy.deepcopy(self.store.value.get('previous_connection_stop')),
@@ -1743,14 +1775,16 @@ def main():
     try: server.serve_forever()
     except KeyboardInterrupt: pass
     finally:
+        preserve_resident=APP.resident_navigation.preserve()
         APP.done=True
-        APP.stop()
+        APP.resident_navigation.close()
+        if not preserve_resident:APP.stop()
         APP.hub.close()
         APP.autonomy.vision.stop()
         APP.map_learning.close()
         APP.people.stop()
         APP.cameras.close()
-        if APP.link: APP.link.close()
+        if APP.link: APP.link.close(stop=not preserve_resident)
         if original.PPE: original.PPE.stop()
         server.server_close()
         instance_lock.close()

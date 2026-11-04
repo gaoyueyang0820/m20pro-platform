@@ -23,6 +23,10 @@ def run(argv):
 
 def _execute(req,maps,data):
     action=req.get('action')
+    if action in ['apply','mapping','extend_mapping','localize_auto']:
+        resident=read_json(data/'resident-mission.json',{})
+        if resident.get('job') and resident.get('phase') not in ['completed','cancelled','failed','idle']:
+            raise ValueError('驻机导航任务或停车状态尚未确认，请先结束任务再切图、建图或重定位')
     if action in ['catalog-rename','catalog-delete','catalog-restore','catalog-purge','catalog-cleanup-previous']:
         def busy():
             try:from .mapping_job import read_job,mapping_phase,unowned_processes
@@ -120,7 +124,7 @@ def _execute(req,maps,data):
 
 def execute(req,maps=Path('/var/opt/robot/data/maps'),data=Path('/var/lib/m20-platform')):
     # Serialize activation/producer starts with catalog edits across helper processes.
-    if req.get('action') in ['apply','mapping','extend_mapping','refine_map','import']:
+    if req.get('action') in ['apply','mapping','extend_mapping','refine_map','import','localize_auto']:
         with catalog_lock(maps):return _execute(req,maps,data)
     return _execute(req,maps,data)
 

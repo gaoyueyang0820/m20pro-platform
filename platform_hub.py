@@ -74,6 +74,8 @@ class Hub:
 
     def idle(self):
         with self.app.lock:
+            resident=getattr(self.app,'resident_navigation',None)
+            if resident and resident.busy():raise ValueError('驻机任务或停车状态尚未确认')
             if getattr(self.app,"_greet_busy",False):raise ValueError("请先停止问候动作")
             if getattr(self.app,'autonomy',None) and self.app.autonomy.active:raise ValueError('请先停止自主任务')
             if self.app.nav['status'] in ['running','cancelling'] or any(self.app.velocity) or self.app.sdk.get('armed'):
@@ -383,6 +385,7 @@ class Hub:
             return catalog()
         if path=='/api/maps/extensions':return dict(ok=True,plans=self.app.store.value.get('map_extensions',[]),native_extension_supported=False,platform_extension_supported=True,message='平台保留旧图，采集新轮次并配准融合为新版本；不调用会覆盖历史记录的隐藏 -c 参数')
         if path=='/api/maps/project':return self.remote_maps('/maps/project',dict(name=query.get('name',['active'])[0]))
+        if path=='/api/nav/resident/capabilities':return self.app.resident_navigation.capabilities()
         if path=='/api/connections':return dict(ok=True,connections=self.connections.public())
         if path=='/api/operations':return dict(ok=True,jobs=self.operations.get(query.get('id',[None])[0]))
         if path=='/api/files':return dict(ok=True,files=self.files.list())

@@ -39,7 +39,7 @@ GROUPS={
     'lifecycle':['test_mapping_request_identity','test_operations_lifecycle','test_delivery_boundary','test_navigation_preview_identity','test_greeting_runtime','test_shared_listener.SharedStartupTests','test_map_management_hub','test_map_management_review','test_connection_recovery','test_sdk_setup_review',
                  'test_autonomy','test_point_navigation_runtime'],
     'native':['test_native_sensing'],
-    'connections':['test_portable_pr_review','test_connection_roaming','test_shared_listener.SharedListenerTests','test_robot_discovery','test_connection_pairing','test_connection_relay'],
+    'connections':['test_navigation_disconnect','test_resident_client','test_portable_pr_review','test_connection_roaming','test_shared_listener.SharedListenerTests','test_robot_discovery','test_connection_pairing','test_connection_relay'],
     'ui':[],
 }
 POSIX_GROUPS={'maps','lifecycle','native'}
@@ -55,7 +55,7 @@ EXCLUDE_TESTS={
     'test_mapping_request_identity.MappingRequestIdentityTests.test_stop_waits_for_start_then_saves_same_capture':
         'Calls the host process inventory without a test-local proc fixture; outside portable effect scope.',
 }
-JS_TESTS=['test_voice_control_ui.cjs','test_autonomy_ui.cjs','test_autonomy_map_view.cjs','test_navigation_preparation.cjs','test_navigation_diagnostics.cjs','test_goal_approach_ui.cjs','test_navigation_ui.cjs','test_cloud_ui.cjs','test_camera_player.cjs',
+JS_TESTS=['test_disconnect_policy_ui.cjs','test_voice_control_ui.cjs','test_autonomy_ui.cjs','test_autonomy_map_view.cjs','test_navigation_preparation.cjs','test_navigation_diagnostics.cjs','test_goal_approach_ui.cjs','test_navigation_ui.cjs','test_cloud_ui.cjs','test_camera_player.cjs',
           'test_model_check_ui.cjs','test_navigation_status.cjs','test_pose_display.cjs','test_connection_roaming_ui.cjs','test_map_library_ui.cjs','test_map_library_review.cjs','test_map_workflows_review.cjs','test_connection_onboarding_ui.cjs','test_product_ui_copy.cjs']
 NATIVE_PROOFS=[
     'test_native_sensing.NativeSensingTests.test_random_frames_require_native_hit_and_exact_all_field_equality',

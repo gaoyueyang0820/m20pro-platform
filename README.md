@@ -54,6 +54,8 @@ python m20_platform.py --ip <AOS-WIFI-IP> --share <PRIVATE-CIDR>
 
 共享地址取决于控制电脑的局域网 IP，更换网络后需更新入口与共享网段。同一工作区只启动一个后台，避免本机和共享服务争用机器人；独立测试使用其他 `--data-dir`。
 
+导航与巡检的断联策略、驻机执行条件和加载说明见 [断联任务说明](docs/disconnected-navigation.md)。
+
 ## 当前功能
 
 | 模块 | 内容 |

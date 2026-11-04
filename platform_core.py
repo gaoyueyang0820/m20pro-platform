@@ -213,10 +213,11 @@ class RobotLink(original.M20Link):
             elif any(v.values()) or now<self._zero_until and basic.get('ControlUsageMode') in [0,2]:
                 self._send_axis(v['f'],v['s'],v['y'])
 
-    def close(self):
-        self.set_velocity(0, 0, 0)
-        # A lost UDP zero packet must not be the only shutdown attempt.
-        for _ in range(2):self._send_axis(0,0,0)
+    def close(self,stop=True):
+        if stop:
+            self.set_velocity(0, 0, 0)
+            # A lost UDP zero packet must not be the only shutdown attempt.
+            for _ in range(2):self._send_axis(0,0,0)
         self._stop = True
         self.sock.close()
 

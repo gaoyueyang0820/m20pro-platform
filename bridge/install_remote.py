@@ -24,6 +24,10 @@ if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_.-]{0,63}',user):raise ValueError('Inv
 account=pwd.getpwnam(user)
 root=Path('/opt/m20-platform');root.mkdir(parents=True,exist_ok=True)
 data=Path('/var/lib/m20-platform');data.mkdir(parents=True,exist_ok=True)
+maplock=Path('/var/opt/robot/data/maps/.m20-catalog.lock')
+if maplock.parent.is_dir():
+ if maplock.is_symlink():raise ValueError('Map lock path is a symlink')
+ maplock.touch(exist_ok=True);maplock.chmod(0o644)
 warnings=[]
 os.chown(data,account.pw_uid,account.pw_gid)
 with zipfile.ZipFile(io.BytesIO(base64.b64decode(r['bundle'],validate=True))) as z:
