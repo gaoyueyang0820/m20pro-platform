@@ -18,8 +18,8 @@
 
 `requirements-video.txt` 固定 NumPy、OpenCV 和 imageio-ffmpeg 版本。后者提供适合运行平台的 FFmpeg 二进制；普通前后视不要求安装 Torch/YOLO。首次安装需要联网下载公开发行包。
 
-- macOS：双击 `安装视频依赖.command`，然后从原“启动平台”入口启动。
-- Windows：标准 64 位 Python 3.11–3.13，双击 `Setup-Video-Windows.cmd` 安装视频部分。`Setup-Windows.cmd` 安装包含视频、模型推理与 SSH 的完整环境。
+- macOS：双击 `scripts/macos/安装视频依赖.command`，然后从原“启动平台”入口启动。
+- Windows：标准 64 位 Python 3.11–3.13，双击 `windows/Setup-Video-Windows.cmd` 安装视频部分。`Setup-Windows.cmd` 安装包含视频、模型推理与 SSH 的完整环境。
 - Linux 或命令行：在独立虚拟环境安装 `pip install --only-binary=:all: -r requirements-video.txt`。
 
 安装后运行 `python tools/check_video.py --bundled`（使用平台虚拟环境的 Python），检查包内 FFmpeg 6+、合成 HEVC 解码与 JPEG 转换。不连接机器人，不把此结果当成相机推流已经正常。
