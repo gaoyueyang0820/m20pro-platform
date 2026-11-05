@@ -18,7 +18,7 @@ from urllib.request import Request, urlopen
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'bridge'))
 import m20_platform as web
-from platform_core import JOINTS, NEUTRAL, ROOT, RobotLink, Store, Training, explain_error, leg_target, number
+from m20.platform_core import JOINTS, NEUTRAL, ROOT, RobotLink, Store, Training, explain_error, leg_target, number
 from sdk_bridge import JointController
 
 

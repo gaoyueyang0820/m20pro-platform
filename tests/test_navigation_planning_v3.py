@@ -6,8 +6,8 @@ import math,sys,unittest
 from pathlib import Path
 import numpy as np
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from navigation_planner import GridPlanner
-from robot_geometry import CLEARANCE_HALF_LENGTH,CLEARANCE_HALF_WIDTH
+from m20.navigation_planner import GridPlanner
+from m20.robot_geometry import CLEARANCE_HALF_LENGTH,CLEARANCE_HALF_WIDTH
 
 
 def image_room(width=120,height=100):

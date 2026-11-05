@@ -13,7 +13,7 @@ ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
 def check(bundled=False):
     import cv2
     import numpy as np
-    from ffmpeg_capture import FFmpegCapture,find_ffmpeg
+    from m20.ffmpeg_capture import FFmpegCapture,find_ffmpeg
     if bundled:
         import imageio_ffmpeg
         binary=imageio_ffmpeg.get_ffmpeg_exe()
@@ -22,7 +22,7 @@ def check(bundled=False):
     version=subprocess.check_output([binary,'-version'],text=True,timeout=3).splitlines()[0]
     match=re.search(r'ffmpeg version (\d+)\.',version)
     if not match or int(match.group(1))<6:raise ValueError('FFmpeg 6+ required: '+version)
-    fixture=ROOT/'data/network/camera-codec-fixture.mp4'
+    fixture=ROOT/'tests/fixtures/video/camera-codec-fixture.mp4'
     if not fixture.is_file():raise ValueError('Synthetic video fixture is missing; download the complete source')
     capture=FFmpegCapture(cv2,str(fixture),binary)
     try:

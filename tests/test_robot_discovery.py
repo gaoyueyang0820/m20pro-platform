@@ -15,9 +15,9 @@ import threading
 import unittest
 from unittest.mock import MagicMock,patch
 
-from connection_manager import Connections,target_config
-import robot_discovery as discovery
-from ssh_identity import write_alias
+from m20.connection_manager import Connections,target_config
+import m20.robot_discovery as discovery
+from m20.ssh_identity import write_alias
 
 
 def public_key(seed=1):
@@ -131,7 +131,7 @@ class IdentitySearchTests(unittest.TestCase):
 
 class ConnectionsDiscoveryTests(unittest.TestCase):
     def setUp(self):
-        self.temp=tempfile.TemporaryDirectory();self.files=patch('platform_host.private_file',lambda path:None);self.files.start()
+        self.temp=tempfile.TemporaryDirectory();self.files=patch('m20.platform_host.private_file',lambda path:None);self.files.start()
         self.c=Connections(Path(self.temp.name));self.alias='m20-aos-'+'a'*32
         self.c.value.update(aos_ip='192.0.2.10',aos_identity_alias=self.alias,auto_connect=True)
         self.c.value['targets']['sdk']=target_config('sdk',dict(host='192.0.2.10',follows_aos=True,enabled=True),{})

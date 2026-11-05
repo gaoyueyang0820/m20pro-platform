@@ -5,7 +5,7 @@ from unittest.mock import patch
 import numpy as np
 sys.path[:0]=[str(Path(__file__).resolve().parents[1]),str(Path(__file__).resolve().parent)]
 from test_start_pose_recovery import planner,room,observe,body_oracle
-from start_recovery_runtime import plan_with_recovery,TranslationRecovery
+from m20.start_recovery_runtime import plan_with_recovery,TranslationRecovery
 
 
 def recovery_scene():
@@ -112,7 +112,7 @@ class PointRecoveryLifecycleTests(unittest.TestCase):
   self.assertFalse(any(any(r['v']) for r in a.link.velocities))
  def _exercise(self,action=None):
   import hashlib
-  import point_navigation as runtime
+  import m20.point_navigation as runtime
   from test_point_navigation_runtime import PointNavigationRuntimeTests,DeferredWorkers
   self.ready=PointNavigationRuntimeTests.ready.__get__(self)
   clock=[200.];initial_time=clock[0];pose=np.array([3.56,4.,0.]);velocity=np.zeros(2);history=[];event=[None]

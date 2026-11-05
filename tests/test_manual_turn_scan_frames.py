@@ -5,8 +5,8 @@ import sys
 import unittest
 import numpy as np
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from autonomy_sensing import _numpy_supported_floor
-from autonomy_core import Explorer,clearance
+from m20.autonomy_sensing import _numpy_supported_floor
+from m20.autonomy_core import Explorer,clearance
 
 
 class ManualTurnFrameTests(unittest.TestCase):

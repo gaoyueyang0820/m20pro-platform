@@ -3,7 +3,7 @@ import json
 import os
 from urllib.request import Request,urlopen
 from urllib.error import HTTPError,URLError
-from observation_errors import sync_error
+from m20.observation_errors import sync_error
 
 
 class SensorClient:

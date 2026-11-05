@@ -1,9 +1,9 @@
 import math
 import unittest
 import numpy as np
-from local_trajectory import TrajectoryFollower,LocalSurface
-from navigation_planner import GridPlanner
-from point_navigation import simulated_scan
+from m20.local_trajectory import TrajectoryFollower,LocalSurface
+from m20.navigation_planner import GridPlanner
+from m20.point_navigation import simulated_scan
 
 
 def grid_planner(grid):
@@ -117,9 +117,9 @@ class TrajectoryTests(unittest.TestCase):
         import tempfile,threading,time
         from pathlib import Path
         from unittest.mock import patch
-        from platform_core import Store
+        from m20.platform_core import Store
         from m20_platform import Platform
-        from autonomy_core import Explorer
+        from m20.autonomy_core import Explorer
         with tempfile.TemporaryDirectory() as directory:
             app=Platform(Store(Path(directory)/'workspace.json'));a=app.autonomy
             reached=threading.Event();driven=threading.Event();requests=[];original=a._drive
@@ -169,7 +169,7 @@ class TrajectoryTests(unittest.TestCase):
         self.assertFalse(LocalSurface(precise).valid(0,.1,0))
 
     def test_sensor_reduction_retains_all_obstacle_extents(self):
-        from autonomy_sensing import supported_floor
+        from m20.autonomy_sensing import supported_floor
         floor=np.array([[x,y,-.55] for x in np.arange(-2,2,.08) for y in np.arange(-2,2,.08)])
         obstacles=np.array([[1.02,.21,-.3],[1.08,.25,-.3],[1.01,.29,-.3]])
         s=supported_floor(np.vstack([floor,obstacles]));self.assertEqual(s['geometry_version'],2)

@@ -11,13 +11,13 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 import numpy as np
 
-from autonomy_sensing import supported_floor,xyz
-from observation_errors import GroundObservationPending,ObservationSyncPending,error_payload,sync_error
-from latest_observation import LatestObservationPump
+from m20.autonomy_sensing import supported_floor,xyz
+from m20.observation_errors import GroundObservationPending,ObservationSyncPending,error_payload,sync_error
+from m20.latest_observation import LatestObservationPump
 from bridge.ros_sensors import RosSensors
 from bridge.sensor_client import SensorClient
 import bridge.http_agent as http_agent
-import platform_core
+import m20.platform_core as platform_core
 
 
 def floor_points():
@@ -170,7 +170,7 @@ class GroundProtocolTests(unittest.TestCase):
             payload,request=two_hops(GroundObservationPending('等待地面恢复','floor_coverage_narrow'),mapping)
             self.assertEqual(payload['error_type'],'ground_observation_pending')
             self.assertEqual(payload['reason_code'],'floor_coverage_narrow')
-            with patch('platform_core.urlopen',side_effect=lambda *a,**k:(_ for _ in ()).throw(http_failure(payload))):
+            with patch('m20.platform_core.urlopen',side_effect=lambda *a,**k:(_ for _ in ()).throw(http_failure(payload))):
                 with self.assertRaises(GroundObservationPending) as caught:platform_core.rpc('http://offline.invalid','/sensors/autonomy',request)
             self.assertEqual(caught.exception.reason_code,'floor_coverage_narrow')
 
@@ -178,7 +178,7 @@ class GroundProtocolTests(unittest.TestCase):
         request={'mapping':False};payload=error_payload(GroundObservationPending('wait','floor_insufficient'),'/sensors/autonomy',request)
         for client in ('inner','outer'):
             response=io.BytesIO(json.dumps(payload).encode())
-            with patch('bridge.sensor_client.urlopen' if client=='inner' else 'platform_core.urlopen',return_value=response):
+            with patch('bridge.sensor_client.urlopen' if client=='inner' else 'm20.platform_core.urlopen',return_value=response):
                 with self.assertRaises(GroundObservationPending):
                     if client=='inner':SensorClient().call('/sensors/autonomy',request)
                     else:platform_core.rpc('http://offline.invalid','/sensors/autonomy',request)

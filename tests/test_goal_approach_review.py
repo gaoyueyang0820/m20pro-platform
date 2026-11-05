@@ -5,8 +5,8 @@ from unittest.mock import patch
 import numpy as np
 from test_start_pose_recovery import planner,room,observe,body_oracle
 from test_start_recovery_runtime import scan_at
-from start_pose_recovery import _Geometry
-from start_recovery_runtime import plan_with_recovery,TranslationRecovery
+from m20.start_pose_recovery import _Geometry
+from m20.start_recovery_runtime import plan_with_recovery,TranslationRecovery
 
 
 def two_sided_scene():

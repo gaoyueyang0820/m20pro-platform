@@ -26,17 +26,17 @@ class ConnectionRecoveryTests(unittest.TestCase):
         self.app.connect=Mock(return_value={'ok':True})
     def test_fresh_connection_never_starts_network_discovery(self):
         self.offline();self.app.link.records[1002,6]['at']=time.time()
-        with patch('platform_hub.threading.Thread') as thread:self.app.hub.maintain_connection()
+        with patch('m20.platform_hub.threading.Thread') as thread:self.app.hub.maintain_connection()
         thread.assert_not_called();self.app.connect.assert_not_called()
     def test_background_search_restores_new_address_once_without_resuming_jobs(self):
         self.offline();hub=self.app.hub
-        with patch('platform_hub.threading.Thread',DeferredThread),patch.object(hub.connections,'discover',return_value={'found':True}) as discover:
+        with patch('m20.platform_hub.threading.Thread',DeferredThread),patch.object(hub.connections,'discover',return_value={'found':True}) as discover:
             hub.maintain_connection();worker=hub._connection_search;hub.maintain_connection();worker.run();hub.maintain_connection()
         discover.assert_called_once();self.app.connect.assert_called_once_with({'mode':'live','ip':'192.0.2.20','port':30000})
     def test_newer_connection_or_recovered_current_link_is_not_replaced(self):
         for change in ['context','fresh']:
             self.offline();hub=self.app.hub;hub._connection_search_at=-30
-            with patch('platform_hub.threading.Thread',DeferredThread),patch.object(hub.connections,'discover',return_value={'found':True}):
+            with patch('m20.platform_hub.threading.Thread',DeferredThread),patch.object(hub.connections,'discover',return_value={'found':True}):
                 hub.maintain_connection()
                 if change=='context':hub._context_generation+=1
                 else:self.app.link.records[1002,6]['at']=time.time()
@@ -44,7 +44,7 @@ class ConnectionRecoveryTests(unittest.TestCase):
             self.app.connect.assert_not_called()
     def test_search_result_never_switches_demonstration_to_live(self):
         self.offline();hub=self.app.hub
-        with patch('platform_hub.threading.Thread',DeferredThread),patch.object(hub.connections,'discover',return_value={'found':True}):
+        with patch('m20.platform_hub.threading.Thread',DeferredThread),patch.object(hub.connections,'discover',return_value={'found':True}):
             hub.maintain_connection();self.app.demo=True;hub._connection_search.run()
         self.app.connect.assert_not_called()
 

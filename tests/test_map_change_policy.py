@@ -4,7 +4,7 @@ from pathlib import Path
 import sys
 import unittest
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from map_change_policy import ChangePolicy,classify_cell,gate_alignment
+from m20.map_change_policy import ChangePolicy,classify_cell,gate_alignment
 
 
 def evidence(vote,count,start=0,dynamic=False,stationary=False):

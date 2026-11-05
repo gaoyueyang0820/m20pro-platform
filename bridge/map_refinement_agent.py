@@ -2,7 +2,7 @@
 import base64,copy,json,math,threading,time,uuid
 from pathlib import Path
 import numpy as np
-from map_refinement import base_fingerprint
+from m20.map_refinement import base_fingerprint
 
 
 class RefinementAgent:
@@ -58,8 +58,8 @@ class RefinementAgent:
             if elapsed<.5 and displacement>1 or elapsed>0 and displacement/elapsed>2.5:raise ValueError('定位位置跳变，暂停积累地图观测')
             if elapsed<3 or displacement<.25:
                 self.row.update(state='waiting_motion',message='已接通定位观测，等待行走带来新的视角');return False
-        from map_fusion import pose_matrix,transform
-        from autonomy_sensing import supported_floor
+        from m20.map_fusion import pose_matrix,transform
+        from m20.autonomy_sensing import supported_floor
         supported_floor(transform(points,np.linalg.inv(pose_matrix(pose))))
         if self.row['frames']>=500 or self.row.get('bytes',0)>256*1024**2:raise ValueError('本轮采集已达到容量，请生成版本后启用新图继续')
         folder=self.root/'sessions'/self.row['session'];name='frame-%06d.npz'%self.row['frames'];path=folder/name
@@ -79,7 +79,7 @@ class RefinementAgent:
         try:
             name=self.row['base'][:55]+'-walk-'+time.strftime('%Y%m%d-%H%M%S')+'-'+uuid.uuid4().hex[:4]
             if self.maps.demo:
-                from map_refinement import refine_map
+                from m20.map_refinement import refine_map
                 r=refine_map(self.maps.path(base),self.root/'sessions'/session,self.maps.maps/name,self.row['grid_id'],self.row['fingerprint'])
             else:r=self.maps.privileged('refine_map',dict(session=session,name=name))
             with self.lock:

@@ -6,8 +6,8 @@ regression does not depend on private robot recordings or a data/ backup file.
 import math
 import unittest
 import numpy as np
-from autonomy_core import RESOLUTION
-from autonomy_sensing import supported_floor
+from m20.autonomy_core import RESOLUTION
+from m20.autonomy_sensing import supported_floor
 
 def legacy_supported_floor(points):
     points = np.asarray(points,dtype=float)

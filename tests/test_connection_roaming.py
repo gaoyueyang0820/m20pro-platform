@@ -10,9 +10,9 @@ import subprocess
 import tempfile
 import unittest
 from unittest.mock import MagicMock,patch
-from connection_manager import Connections,target_config
-from ssh_identity import known_keys,write_alias
-from windows_ssh import bind_host_identity
+from m20.connection_manager import Connections,target_config
+from m20.ssh_identity import known_keys,write_alias
+from m20.windows_ssh import bind_host_identity
 
 
 def public_key(seed=1):
@@ -24,8 +24,8 @@ def public_key(seed=1):
 class ConnectionRoamingTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.root=Path(self.temp.name)
-        self.acl=patch('platform_host.private_file',lambda path:None);self.acl.start()
-        self.executables=patch('platform_host.ssh_executable',side_effect=lambda name:name);self.executables.start()
+        self.acl=patch('m20.platform_host.private_file',lambda path:None);self.acl.start()
+        self.executables=patch('m20.platform_host.ssh_executable',side_effect=lambda name:name);self.executables.start()
         c=Connections(self.root)
         c.value.update(aos_ip='192.0.2.10',aos_ssh_port=22,aos_ssh_user='user')
         c.value['targets']['sdk']=target_config('sdk',dict(host='192.0.2.10',enabled=True),{})
@@ -38,7 +38,7 @@ class ConnectionRoamingTests(unittest.TestCase):
     def tearDown(self):self.c.close();self.executables.stop();self.acl.stop();self.temp.cleanup()
     def test_network_move_keeps_identity_and_service_deployment(self):
         c=self.c;alias=c.value['aos_identity_alias'];before=c.known.read_text()
-        with patch('connection_manager.subprocess.run',side_effect=AssertionError('save must not scan network')):
+        with patch('m20.connection_manager.subprocess.run',side_effect=AssertionError('save must not scan network')):
             c.save(dict(aos_ip='198.51.100.7'))
         self.assertEqual(c.value['aos_identity_alias'],alias);self.assertEqual(c.known.read_text(),before)
         self.assertEqual(c.value['targets']['sdk']['host'],'198.51.100.7');self.assertTrue(c.value['targets']['sdk']['deployed'])
@@ -82,7 +82,7 @@ class ConnectionRoamingTests(unittest.TestCase):
         c.trust(dict(scan_id='fixture',confirmed=True));self.assertEqual(known_keys(c.known,alias),[('ssh-ed25519',public_key(4))])
     def test_aos_remote_keyscan_program_is_self_contained(self):
         result=subprocess.CompletedProcess([],0,'fixture output','')
-        with patch('connection_manager.subprocess.run',return_value=result) as run:
+        with patch('m20.connection_manager.subprocess.run',return_value=result) as run:
             self.c.scan_via_aos(self.c.value['targets']['nos'])
         command=shlex.split(run.call_args.args[0][-1]);program=command[command.index('-c')+1]
         stream=MagicMock();stream.recv.return_value=b'SSH-2.0-fixture'

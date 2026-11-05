@@ -2,7 +2,7 @@
 import math
 import unittest
 from test_navigation_planning_v3 import image_room, planner, validate_sampled_body
-from navigation_planner import GoalSpaceError
+from m20.navigation_planner import GoalSpaceError
 
 
 class GoalApproachTests(unittest.TestCase):
@@ -47,7 +47,7 @@ class GoalApproachTests(unittest.TestCase):
         self.assertEqual(p.goal_tolerance,.65,'start recovery keeps this explicit goal policy')
 
     def test_replanning_to_actual_endpoint_preserves_original_click_for_display(self):
-        from point_navigation import PointNavigator
+        from m20.point_navigation import PointNavigator
         from types import SimpleNamespace
         p=planner(image_room(100,80));original=p.plan([2.,3.,0.],[.4,3.],0.,goal_tolerance=.65)
         runtime=PointNavigator(SimpleNamespace());runtime.goal_intent=original

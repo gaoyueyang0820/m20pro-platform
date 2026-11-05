@@ -4,10 +4,10 @@ from pathlib import Path
 import numpy as np
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0,str(Path(__file__).resolve().parent))
-from navigation_planner import GridPlanner
-from point_navigation import simulated_scan
-from robot_geometry import BODY_HALF_LENGTH,BODY_HALF_WIDTH
-from start_pose_recovery import recover_start,check_recovery_step
+from m20.navigation_planner import GridPlanner
+from m20.point_navigation import simulated_scan
+from m20.robot_geometry import BODY_HALF_LENGTH,BODY_HALF_WIDTH
+from m20.start_pose_recovery import recover_start,check_recovery_step
 from test_navigation_planning_v3 import validate_sampled_body
 
 

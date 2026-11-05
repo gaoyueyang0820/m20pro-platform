@@ -22,9 +22,9 @@ import zipfile
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT));sys.path.insert(0,str(ROOT/'bridge'))
 import m20_platform as web
-from connection_manager import Connections,target_config,host
-from map_formats import Files,CHUNK,digest,inspect_package,pack_map,unpack_package,preview_pcd,lzf_decode
-from platform_core import Store,JOINTS,NEUTRAL,leg_forward,leg_target
+from m20.connection_manager import Connections,target_config,host
+from m20.map_formats import Files,CHUNK,digest,inspect_package,pack_map,unpack_package,preview_pcd,lzf_decode
+from m20.platform_core import Store,JOINTS,NEUTRAL,leg_forward,leg_target
 from bridge.map_service import MapService
 from bridge import root_actions,mapping_job
 from bridge.install_remote import ROOT_SETUP
@@ -241,7 +241,7 @@ class ConnectionTests(unittest.TestCase):
         c.known.write_text('10.21.31.106 ssh-ed25519 AAAA\n10.21.31.104 ssh-ed25519 AAAA\n')
         from unittest.mock import MagicMock
         nos=MagicMock();gos=MagicMock();nos.poll.return_value=None;gos.poll.return_value=None
-        with patch('connection_manager.subprocess.Popen',side_effect=[nos,gos]) as start:
+        with patch('m20.connection_manager.subprocess.Popen',side_effect=[nos,gos]) as start:
             c.start('nos');c.start('gos')
             self.assertEqual(set(c.processes),{'nos','gos'})
             self.assertIn('127.0.0.1:8093:127.0.0.1:8093',start.call_args_list[0].args[0])
@@ -251,7 +251,7 @@ class ConnectionTests(unittest.TestCase):
     def test_invalid_ros_data_source_rejected(self):
         with self.assertRaises(ValueError):self.connections.save(dict(sensor_source='aos'))
     def test_fingerprint_timeout_identifies_target_without_starting_keyscan(self):
-        with patch('connection_manager.socket.create_connection',side_effect=TimeoutError),patch('connection_manager.subprocess.run') as keyscan:
+        with patch('m20.connection_manager.socket.create_connection',side_effect=TimeoutError),patch('m20.connection_manager.subprocess.run') as keyscan:
             with self.assertRaisesRegex(ValueError,'10.21.31.104:22.*超时'):
                 self.connections.scan('gos')
             keyscan.assert_not_called()
@@ -260,19 +260,19 @@ class ConnectionTests(unittest.TestCase):
         stream=MagicMock();stream.__enter__.return_value=stream;stream.recv.return_value=b'SSH-2.0-OpenSSH_8.2\r\n'
         key=base64.b64encode(b'public-key-fixture').decode()
         output=SimpleNamespace(stdout='10.21.31.104 ssh-ed25519 '+key+'\n',returncode=0)
-        with patch('connection_manager.socket.create_connection',return_value=stream),patch('connection_manager.subprocess.run',return_value=output):
+        with patch('m20.connection_manager.socket.create_connection',return_value=stream),patch('m20.connection_manager.subprocess.run',return_value=output):
             result=self.connections.scan('gos')
         self.assertEqual(result['host'],'10.21.31.104');self.assertEqual(result['port'],22)
         self.assertEqual(result['fingerprints'][0]['algorithm'],'ssh-ed25519')
         self.assertFalse(self.connections.public()['targets']['gos']['trusted'])
     def test_fingerprint_rejects_non_ssh_port(self):
         stream=MagicMock();stream.__enter__.return_value=stream;stream.recv.return_value=b'HTTP/1.1 200 OK\r\n'
-        with patch('connection_manager.socket.create_connection',return_value=stream),patch('connection_manager.subprocess.run') as keyscan:
+        with patch('m20.connection_manager.socket.create_connection',return_value=stream),patch('m20.connection_manager.subprocess.run') as keyscan:
             with self.assertRaisesRegex(ValueError,'未返回 SSH 标识'):self.connections.scan('gos')
             keyscan.assert_not_called()
     def test_fingerprint_keyscan_has_bounded_timeout(self):
         stream=MagicMock();stream.__enter__.return_value=stream;stream.recv.return_value=b'SSH-2.0-OpenSSH_8.2\r\n'
-        with patch('connection_manager.socket.create_connection',return_value=stream),patch('connection_manager.subprocess.run',side_effect=subprocess.TimeoutExpired('ssh-keyscan',10)):
+        with patch('m20.connection_manager.socket.create_connection',return_value=stream),patch('m20.connection_manager.subprocess.run',side_effect=subprocess.TimeoutExpired('ssh-keyscan',10)):
             with self.assertRaisesRegex(ValueError,'公钥读取超时'):self.connections.scan('gos')
     def test_host_options_and_duplicate_forward_ports_rejected(self):
         for value in ['-oProxyCommand=evil','host;touch /tmp/x','user@host','a\nHost b']:

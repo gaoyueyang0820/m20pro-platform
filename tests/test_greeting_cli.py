@@ -7,8 +7,8 @@ from contextlib import redirect_stdout, redirect_stderr
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import greeting as g
-import m20_greet as cli
+import m20.greeting as g
+import m20.m20_greet as cli
 
 
 class Clock:

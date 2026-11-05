@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 import test_platform as cases
-from platform_core import Store
+from m20.platform_core import Store
 import m20_platform as web
 
 

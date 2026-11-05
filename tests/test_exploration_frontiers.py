@@ -4,8 +4,8 @@ import sys
 import unittest
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from exploration_frontiers import FrontierSelector,reachable,ray_cells
-from autonomy_core import Explorer,disk
+from m20.exploration_frontiers import FrontierSelector,reachable,ray_cells
+from m20.autonomy_core import Explorer,disk
 
 
 class FrontierTests(unittest.TestCase):
@@ -57,7 +57,7 @@ class FrontierTests(unittest.TestCase):
         self.assertGreater(e.frontier_metrics['deferred_regions'],0)
 
     def test_two_rooms_with_occluded_doorway_reach_98_percent_coverage(self):
-        from tools.benchmark_frontier_exploration import run
+        from tools.benchmarks.benchmark_frontier_exploration import run
         result=run(Explorer,2,max_steps=250)
         self.assertGreaterEqual(result['coverage'],.98)
         self.assertEqual(result['rooms_entered'],2)
@@ -65,7 +65,7 @@ class FrontierTests(unittest.TestCase):
         self.assertLess(result['goal_changes'],25)
 
     def test_three_rooms_with_offset_doors_complete_without_dense_rescanning(self):
-        from tools.benchmark_frontier_exploration import run
+        from tools.benchmarks.benchmark_frontier_exploration import run
         result=run(Explorer,3,max_steps=350)
         self.assertGreaterEqual(result['coverage'],.98)
         self.assertEqual(result['rooms_entered'],3)

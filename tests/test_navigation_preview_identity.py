@@ -6,7 +6,7 @@ import time
 import unittest
 from unittest.mock import Mock,patch
 import test_platform as cases
-from navigation_validation import NavigationEvidenceError,error_summary
+from m20.navigation_validation import NavigationEvidenceError,error_summary
 
 
 class PreviewIdentityTests(unittest.TestCase):
@@ -86,8 +86,8 @@ class PreviewIdentityTests(unittest.TestCase):
         self.assertEqual(self.app.nav['status'],'idle');self.assertEqual(self.app.velocity,[0,0,0])
 
     def test_temporary_vote_shortfall_gets_only_one_read_only_recheck(self):
-        from navigation_planner import GridPlanner
-        from autonomy_core import disk
+        from m20.navigation_planner import GridPlanner
+        from m20.autonomy_core import disk
         a=self.ready();counter=[0]
         def surface(*args,**kwargs):
             counter[0]+=1;stamp=100+counter[0]*.2
@@ -97,7 +97,7 @@ class PreviewIdentityTests(unittest.TestCase):
             return scan,dict(normal=True,confidence=.99,age=.05,pose=[0.,0.,0.],epoch='same-context')
         a.navigation_surface=surface
         temporary=ValueError('need independent frames');temporary.recovery=dict(classification='map_surface_disagreement',reason_code='insufficient_ground_votes')
-        with patch.object(GridPlanner,'plan',side_effect=ValueError('起点余量不足')),patch('start_recovery_runtime.plan_with_recovery',side_effect=temporary) as recovery:
+        with patch.object(GridPlanner,'plan',side_effect=ValueError('起点余量不足')),patch('m20.start_recovery_runtime.plan_with_recovery',side_effect=temporary) as recovery:
             with self.assertRaises(ValueError) as caught:a.plan_goal(dict(map_id='test',x=1,y=0,engine='platform'))
         self.assertIs(caught.exception,temporary)
         self.assertEqual(recovery.call_count,2,'the second shortfall must leave, not loop')

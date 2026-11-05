@@ -10,8 +10,8 @@ from unittest.mock import patch
 import numpy as np
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0,str(Path(__file__).resolve().parent))
-from autonomy_core import Explorer,PriorMap,PersonLock,clearance,disk,body_offsets,RESOLUTION
-from autonomy_sensing import supported_floor,xyz
+from m20.autonomy_core import Explorer,PriorMap,PersonLock,clearance,disk,body_offsets,RESOLUTION
+from m20.autonomy_sensing import supported_floor,xyz
 import test_platform as cases
 
 
@@ -169,12 +169,12 @@ class PlatformAutonomyTests(unittest.TestCase):
     def test_general_ranges_normalize_legacy_requests_and_accept_configured_radius(self):
         a=self.app.autonomy
         for requested,expected in [('room','radius'),('floor','map'),('radius','radius'),('map','map')]:
-            with self.subTest(scope=requested),patch('autonomy_runtime.threading.Thread'):
+            with self.subTest(scope=requested),patch('m20.autonomy_runtime.threading.Thread'):
                 result=a.start(dict(mode='explore',scope=requested,extend=True,radius=40,minutes=45))
                 self.assertEqual(a.snapshot()['scope'],expected);self.assertEqual(a.explorer.radius,40)
                 self.assertAlmostEqual(a.deadline-a.started,45*60);self.assertTrue(result['ok'])
                 a.pause()
-        with patch('autonomy_runtime.threading.Thread'):
+        with patch('m20.autonomy_runtime.threading.Thread'):
             a.start(dict(mode='explore',scope='map'))
         self.assertEqual(a.scope,'radius');a.pause()
 
@@ -182,7 +182,7 @@ class PlatformAutonomyTests(unittest.TestCase):
         import base64
         a=self.app.autonomy
         grid=dict(pgm=base64.b64encode(b'P5\n100 80\n255\n'+bytes([254])*8000).decode(),resolution=.2)
-        with patch('autonomy_runtime.threading.Thread'):
+        with patch('m20.autonomy_runtime.threading.Thread'):
             result=a.start(dict(mode='explore',scope='map',extend=True,base='site-map',radius=6))
         with patch.object(a,'_check_observation'),patch.object(self.app.hub,'remote_maps',return_value=grid),\
              patch.object(self.app.hub,'post',return_value=dict(job_id='prepared')),patch.object(a,'_run') as run:
@@ -305,7 +305,7 @@ class PlatformAutonomyTests(unittest.TestCase):
     def test_sensor_warmup_retries_without_map_or_motion_commands(self):
         from unittest.mock import patch
         cases.PlatformTests.live(self);a=self.app.autonomy
-        with patch.object(a,'scan_now',side_effect=[ValueError('正在启动'),dict(scan(),stamp=1),dict(scan(),stamp=1),dict(scan(),stamp=2)]) as reader,patch('autonomy_runtime.time.sleep'):
+        with patch.object(a,'scan_now',side_effect=[ValueError('正在启动'),dict(scan(),stamp=1),dict(scan(),stamp=1),dict(scan(),stamp=2)]) as reader,patch('m20.autonomy_runtime.time.sleep'):
             a._check_observation()
         self.assertEqual(reader.call_count,4)
         self.assertFalse(a.active);self.assertEqual(self.app.velocity,[0.,0.,0.])
@@ -313,32 +313,32 @@ class PlatformAutonomyTests(unittest.TestCase):
         cases.PlatformTests.live(self);a=self.app.autonomy
         s=scan();s['obstacles']=[[-3,0]]
         self.assertTrue(clearance(s,.35,0)[0]);self.assertFalse(clearance(s,0,.7)[0])
-        with patch.object(a,'scan_now',side_effect=[dict(s,stamp=1),dict(s,stamp=2)]),patch('autonomy_runtime.time.sleep'):
+        with patch.object(a,'scan_now',side_effect=[dict(s,stamp=1),dict(s,stamp=2)]),patch('m20.autonomy_runtime.time.sleep'):
             a._check_observation()
         self.assertEqual(self.app.link.sent,[]);self.assertFalse(a.active)
 
     def test_yaw_oscillation_does_not_keep_stationary_exploration_alive(self):
-        from autonomy_runtime import MotionProgress
+        from m20.autonomy_runtime import MotionProgress
         progress=MotionProgress()
         for i in range(70):progress.update((0,0,.3 if i%2 else -.3),(2,0),10,i,moving=False)
         self.assertTrue(progress.stalled(70))
         self.assertLessEqual(progress.last_at,10)
 
     def test_changing_goals_and_noisy_coverage_cannot_keep_turning_alive(self):
-        from autonomy_runtime import MotionProgress
+        from m20.autonomy_runtime import MotionProgress
         progress=MotionProgress()
         for i in range(70):progress.update((.03*(i%2),0,.4*(i%3)),(2,0) if i%2 else (-2,0),10+i*.6,i,moving=False)
         self.assertTrue(progress.stalled(70));self.assertLess(progress.last_at,20)
 
     def test_real_translation_and_bounded_alignment_count_as_progress(self):
-        from autonomy_runtime import MotionProgress
+        from m20.autonomy_runtime import MotionProgress
         progress=MotionProgress();progress.update((0,0,1.5),(3,0),10,0)
         progress.update((0,0,.8),(3,0),10,5);self.assertFalse(progress.stalled(29))
         progress.update((.3,0,.1),(3,0),10,30,moving=True)
         self.assertFalse(progress.stalled(50));self.assertEqual(progress.moved_at,30)
 
     def test_static_feedback_does_not_turn_slam_drift_into_movement(self):
-        from autonomy_runtime import MotionProgress
+        from m20.autonomy_runtime import MotionProgress
         progress=MotionProgress()
         for i in range(60):progress.update((i*.02,0,0),None,10,i,moving=False)
         self.assertTrue(progress.stalled(60));self.assertEqual(progress.moved_at,0)
@@ -534,7 +534,7 @@ class PlatformAutonomyTests(unittest.TestCase):
         calls=[];clock={'now':0.}
         fake_time=SimpleNamespace(monotonic=lambda:clock['now'],time=time.time,sleep=lambda s:clock.update(now=clock['now']+1))
         def remote(path,req=None,**kw):calls.append(path);return dict(request_protocol=1,phase='idle',in_progress=False)
-        with patch.object(self.app.hub,'remote_maps',side_effect=remote),patch('platform_hub.time',fake_time):
+        with patch.object(self.app.hub,'remote_maps',side_effect=remote),patch('m20.platform_hub.time',fake_time):
             job=self.await_job(self.app.hub.post('/api/maps/start-here',dict(name='not-awake')))
         self.assertEqual(job['status'],'failed');self.assertIn('休眠',job['error'])
         self.assertNotIn('/maps/build',calls)
@@ -598,7 +598,7 @@ class PlatformAutonomyTests(unittest.TestCase):
         self.assertFalse(self.app.autonomy.active);self.assertEqual(self.app.link.sent,[])
 
     def test_worker_start_failure_does_not_leave_preparing_task(self):
-        with patch('autonomy_runtime.threading.Thread.start',side_effect=RuntimeError('thread unavailable')):
+        with patch('m20.autonomy_runtime.threading.Thread.start',side_effect=RuntimeError('thread unavailable')):
             with self.assertRaises(RuntimeError):self.app.autonomy.start(dict(mode='explore'))
         self.assertFalse(self.app.autonomy.active);self.assertIsNone(self.app.autonomy.run_id)
         self.assertFalse(self.app.mapping);self.assertEqual(self.app.velocity,[0.,0.,0.])

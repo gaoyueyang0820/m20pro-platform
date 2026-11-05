@@ -1,7 +1,7 @@
 """Timestamp alignment uses measured motion without rewriting the scan pose."""
 import math
 import unittest
-from navigation_validation import align_observed_pose,poses_consistent
+from m20.navigation_validation import align_observed_pose,poses_consistent
 from test_live_surface_localization import planner,packet
 from test_start_pose_recovery import room
 

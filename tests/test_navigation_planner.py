@@ -3,7 +3,7 @@ from pathlib import Path
 import numpy as np
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from navigation_planner import GridPlanner
+from m20.navigation_planner import GridPlanner
 
 class PlanningTests(unittest.TestCase):
  def plan(self,image,start,goal,yaw=None):
@@ -36,7 +36,7 @@ class PlanningTests(unittest.TestCase):
   a=self.room();h,w=a.shape;raw=('P5\n%d %d\n255\n'%(w,h)).encode()+a.tobytes()
   p=GridPlanner(raw,.1,[0,0,0]);clock=[0.]
   def now():clock[0]+=.05;return clock[0]
-  with patch('navigation_planner.time.monotonic',side_effect=now):
+  with patch('m20.navigation_planner.time.monotonic',side_effect=now):
    with self.assertRaisesRegex(ValueError,'搜索超时'):p.plan([2,3,0],[8,3],budget=.1)
   self.assertIsNone(p._deadline)
   self.assertTrue(p.plan([2,3,0],[8,3])['ok'])
@@ -45,7 +45,7 @@ class PlanningTests(unittest.TestCase):
   r=self.plan(a,[3,2,math.pi/2],[3,6],0);self.assertAlmostEqual(r['goal']['yaw'],0)
  def test_live_obstacles_only_add_blocks_and_require_fresh_aligned_pose(self):
   import base64
-  from navigation_planner import live_obstacles
+  from m20.navigation_planner import live_obstacles
   axis=np.arange(-3,3,.1);xx,yy=np.meshgrid(axis,axis);floor=np.column_stack([xx.ravel(),yy.ravel(),np.zeros(xx.size)])
   pts=np.vstack([floor,[[1,0,.5],[1,.1,.5]]]).astype('<f4')
   packet=dict(protocol=1,frame_id='map',age=.1,quality=[.02,.98],pose=[0,0,.55,0,0,0,1],points=base64.b64encode(pts.tobytes()).decode())

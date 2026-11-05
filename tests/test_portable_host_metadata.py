@@ -21,12 +21,12 @@ class PortableHostMetadataTests(unittest.TestCase):
 import importlib.util,json,sys
 spec=importlib.util.spec_from_file_location('portable_metadata_test',sys.argv[1])
 runner=importlib.util.module_from_spec(spec);spec.loader.exec_module(runner)
-for name in ['numpy','cv2','m20_platform','platform_core']:
+for name in ['numpy','cv2','m20_platform','m20.platform_core']:
     assert name not in sys.modules,name
 prepared=runner.prepare_host_metadata()
 assert prepared['stage']=='before_test_effect_guard'
 assert not prepared['hostname_recorded']
-for name in ['numpy','cv2','m20_platform','platform_core']:
+for name in ['numpy','cv2','m20_platform','m20.platform_core']:
     assert name not in sys.modules,name
 blocked,suppressed,self_test=runner.python_guard()
 assert runner.verify_host_metadata_cache(prepared)['passed']

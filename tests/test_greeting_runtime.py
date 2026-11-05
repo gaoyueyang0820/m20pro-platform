@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 sys.path[:0]=[str(Path(__file__).resolve().parents[1]),str(Path(__file__).resolve().parent)]
 import test_platform as cases
-import greeting
+import m20.greeting as greeting
 
 
 class RecordingLink(cases.FakeLink):
@@ -52,7 +52,7 @@ def restore(row):return (row.get('type'),row.get('command')) in [(1101,5),(2,23)
 
 class GreetingRuntimeTests(unittest.TestCase):
     def setUp(self):
-        self.runtime=importlib.import_module('greeting_runtime')
+        self.runtime=importlib.import_module('m20.greeting_runtime')
         self.gate=threading.Event();self.release=threading.Event();self.phase=None;self.threads=[];self.start_fails=False;self.link=None
         outer=self
         class ControlledEvent(threading.Event):

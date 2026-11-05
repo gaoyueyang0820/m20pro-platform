@@ -2,7 +2,7 @@
 import copy,threading,time,unittest
 from unittest.mock import patch
 import test_platform as cases
-from autonomy_core import Explorer,disk
+from m20.autonomy_core import Explorer,disk
 
 A='a'*32
 class ResumeTests(unittest.TestCase):
@@ -48,7 +48,7 @@ class ResumeTests(unittest.TestCase):
    a.resume();self.wait(lambda:not a.active)
    run.assert_not_called();self.assertIs(a.explorer,e);self.assertEqual(a.capture_id,A);self.assertIn('采集',a.message)
  def test_structured_sync_pending_retries_but_coordinate_error_does_not(self):
-  from observation_errors import ObservationSyncPending
+  from m20.observation_errors import ObservationSyncPending
   a,e=self.paused();sample=dict(pose=[1.,0.,0.],floor=[list(q) for q in disk(3)],obstacles=[],stamp=11.,_valid_until=time.monotonic()+.6)
   with patch.object(a,'scan_now',side_effect=[ObservationSyncPending('wait','slam_pose_sync'),sample,dict(sample,stamp=12.)]) as read,patch.object(a,'_run') as run:
    a.resume();self.wait(lambda:run.called);self.assertEqual(read.call_count,3)

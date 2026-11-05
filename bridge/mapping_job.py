@@ -7,7 +7,7 @@ import subprocess
 import sys
 import time
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from map_fusion import FusionDecisionError
+from m20.map_fusion import FusionDecisionError
 
 
 LOGS = Path('/var/log/m20-platform')
@@ -285,9 +285,9 @@ def worker(kind, logs, name=None, context=None, request_id=None, expected_start_
                 for folder in maps.glob(name+'-*'):
                     if folder.is_dir():(folder/'.m20-session-source.json').write_text(json.dumps(context))
             else:
-                from map_fusion import fuse_maps
+                from m20.map_fusion import fuse_maps
                 from datetime import datetime,timezone,timedelta
-                from map_formats import map_name
+                from m20.map_formats import map_name
                 base=maps/map_name(context['base'])
                 candidates=[p for p in maps.glob(previous['name']+'-*') if p.is_dir() and (p/'full_cloud.pcd').is_file() and p.stat().st_mtime>=previous.get('started',0)]
                 if len(candidates)!=1:raise ValueError('未找到本轮完整扫描，原图保持不变，请查看采集日志')

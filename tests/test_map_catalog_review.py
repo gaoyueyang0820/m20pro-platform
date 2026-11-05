@@ -7,7 +7,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from map_catalog import MapCatalog
+from m20.map_catalog import MapCatalog
 
 
 class MapCatalogReviewTests(unittest.TestCase):
@@ -37,7 +37,7 @@ class MapCatalogReviewTests(unittest.TestCase):
             if (target/'meta.json').exists():(target/'meta.json').unlink()
             original.unlink()
             raise OSError('synthetic disk I/O failure')
-        with patch('map_catalog.shutil.rmtree',side_effect=fail_after_one_file):
+        with patch('m20.map_catalog.shutil.rmtree',side_effect=fail_after_one_file):
             with self.assertRaises((OSError,ValueError)):
                 self.catalog.execute('purge',dict(id=key,confirmed_name='old'))
         self.assertTrue((record/'meta.json').is_file(),'failed purge lost the only identity record')
@@ -125,7 +125,7 @@ class MapCatalogReviewTests(unittest.TestCase):
 
     def test_restore_metadata_write_failure_keeps_restored_map_listable(self):
         result=self.catalog.execute('delete',dict(name='old'));key=result['trash_id']
-        with patch('map_catalog.atomic_json',side_effect=OSError('synthetic metadata failure')):
+        with patch('m20.map_catalog.atomic_json',side_effect=OSError('synthetic metadata failure')):
             restored=self.catalog.execute('restore',dict(id=key))
         self.assertTrue(restored['ok'])
         self.assertTrue((self.maps/'old/full_cloud.pcd').exists())
@@ -170,7 +170,7 @@ class MapCatalogReviewTests(unittest.TestCase):
         self.assertEqual((external/'keep').read_text(),'owned elsewhere')
 
     def test_archive_metadata_failure_does_not_hide_or_move_source(self):
-        with patch('map_catalog.atomic_json',side_effect=OSError('synthetic journal I/O failure')):
+        with patch('m20.map_catalog.atomic_json',side_effect=OSError('synthetic journal I/O failure')):
             with self.assertRaises(OSError):self.catalog.execute('delete',dict(name='old'))
         self.assertEqual((self.maps/'old/full_cloud.pcd').read_bytes(),b'synthetic-cloud')
         self.assertEqual(self.catalog.trash_list(),[])

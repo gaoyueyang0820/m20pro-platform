@@ -1,7 +1,7 @@
 import sys,tempfile,unittest
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from navigation_diagnostics import parse_navigation_monitor,read_navigation_diagnostics
+from m20.navigation_diagnostics import parse_navigation_monitor,read_navigation_diagnostics
 
 def monitor(goal='YES',cancel='NO',speed='0.000',path=8):
     return f'''| Odom[OK] | Map[OK] | Goal[{goal}] | Cancel[{cancel}] | Mode: 自主导航(避障)

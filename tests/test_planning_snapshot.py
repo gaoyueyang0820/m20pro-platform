@@ -7,8 +7,8 @@ from unittest.mock import patch
 
 sys.path[:0]=[str(Path(__file__).resolve().parents[1]),str(Path(__file__).resolve().parent)]
 from test_live_surface_localization import planner,door_world,packet
-from start_pose_recovery import recover_start,check_recovery_step
-import start_pose_recovery
+from m20.start_pose_recovery import recover_start,check_recovery_step
+import m20.start_pose_recovery as start_pose_recovery
 
 
 class PlanningSnapshotTests(unittest.TestCase):

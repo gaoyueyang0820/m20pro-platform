@@ -3,10 +3,10 @@ import json,math,sys,tempfile,unittest
 from pathlib import Path
 import numpy as np
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from map_registration import fit_structure,structure_error,independently_validated_correction
-from map_visibility import RangeVisibility,confirmed_surface_removals
-from map_refinement import refine_map,base_fingerprint,aligned_observations
-from map_fusion import write_pcd,read_pcd,read_grid,refine_slam_structure,pose_matrix,transform
+from m20.map_registration import fit_structure,structure_error,independently_validated_correction
+from m20.map_visibility import RangeVisibility,confirmed_surface_removals
+from m20.map_refinement import refine_map,base_fingerprint,aligned_observations
+from m20.map_fusion import write_pcd,read_pcd,read_grid,refine_slam_structure,pose_matrix,transform
 
 
 def corner():

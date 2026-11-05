@@ -15,8 +15,8 @@ from types import SimpleNamespace as Obj
 import unittest
 from unittest.mock import patch
 import numpy as np
-import native_sensing
-from autonomy_sensing import xyz
+import m20.native_sensing as native_sensing
+from m20.autonomy_sensing import xyz
 from test_sensing_equivalence import legacy_supported_floor,generated
 
 
@@ -137,7 +137,7 @@ class NativeSensingTests(unittest.TestCase):
     def test_incompatible_abi_is_diagnosable_and_falls_back(self):
         with tempfile.NamedTemporaryFile(suffix='.so') as file:
             fake=Obj(m20_sensing_abi_version=lambda:99,m20_sensing_result_size=lambda:ctypes.sizeof(native_sensing._Result))
-            with patch.dict(os.environ,{'M20_SENSING_LIBRARY':file.name}),patch('native_sensing.ctypes.CDLL',return_value=fake):
+            with patch.dict(os.environ,{'M20_SENSING_LIBRARY':file.name}),patch('m20.native_sensing.ctypes.CDLL',return_value=fake):
                 self.assertIsNone(native_sensing.try_reduce(flat_cloud()))
                 self.assertIn('ABI mismatch',native_sensing.backend_status()['load_error'])
         self.assertTrue(native_sensing.backend_status()['available'])

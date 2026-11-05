@@ -6,7 +6,7 @@ import sys
 import unittest
 import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from localization_recovery import match_pose, verify_pose, saved_slam_pose, verify_transform
+from m20.localization_recovery import match_pose, verify_pose, saved_slam_pose, verify_transform
 
 
 def structure():

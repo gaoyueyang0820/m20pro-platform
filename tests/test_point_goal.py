@@ -53,7 +53,7 @@ class PlannedGoalTests(unittest.TestCase):
         with self.assertRaises(ValueError):a.start_goal(dict(map_id='demo',plan_id=p['plan_id']))
         self.assertEqual(a.nav['status'],'idle')
     def test_late_plan_is_not_cached_after_connection_changes(self):
-        from navigation_planner import GridPlanner
+        from m20.navigation_planner import GridPlanner
         a=self.app;entered=threading.Event();release=threading.Event();errors=[];original=GridPlanner.plan
         def slow(planner,*args,**kwargs):entered.set();release.wait(2);return original(planner,*args,**kwargs)
         def preview():
@@ -67,7 +67,7 @@ class PlannedGoalTests(unittest.TestCase):
                 self.assertTrue(any('连接' in error for error in errors))
             finally:release.set();worker.join(3)
     def test_stop_or_manual_input_during_implicit_plan_cannot_start_later(self):
-        from navigation_planner import GridPlanner
+        from m20.navigation_planner import GridPlanner
         original=GridPlanner.plan
         for action in ['stop','velocity','mode']:
             a=self.app;entered=threading.Event();release=threading.Event();errors=[]

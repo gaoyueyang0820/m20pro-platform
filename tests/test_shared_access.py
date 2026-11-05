@@ -10,9 +10,9 @@ from urllib.request import Request, build_opener, ProxyHandler
 from unittest.mock import patch
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
-from shared_access import SharedAccess
+from m20.shared_access import SharedAccess
 import m20_platform as web
-from platform_core import Store
+from m20.platform_core import Store
 
 class SharedAccessTests(unittest.TestCase):
     def test_private_wifi_needs_no_password_or_session(self):

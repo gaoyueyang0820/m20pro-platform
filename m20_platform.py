@@ -24,19 +24,19 @@ from http.server import ThreadingHTTPServer
 from urllib.parse import urlparse,parse_qs,quote
 from urllib.request import Request, urlopen
 
-import m20_console as original
-from navigation_validation import NavigationEvidenceError, validate_map_identity, error_summary
-import greeting
-from greeting_runtime import GreetingSession
-from platform_core import ROOT, JOINTS, LEGS, NEUTRAL, ERRORS, RobotLink, Store, Training, number, integer, rpc, explain_error, leg_target, age_of
-from platform_hub import Hub
-from shared_access import SharedAccess, lan_addresses, shared_listener
-from camera_streams import Cameras
-from autonomy_runtime import Autonomy
-from vision_models import ModelChecks, catalog as vision_catalog, default_path
-from ppe_runtime import SharedPPEDetector
-from map_learning_runtime import MapLearning
-from people_counting import PeopleCounter
+import m20.m20_console as original
+from m20.navigation_validation import NavigationEvidenceError, validate_map_identity, error_summary
+import m20.greeting as greeting
+from m20.greeting_runtime import GreetingSession
+from m20.platform_core import ROOT, JOINTS, LEGS, NEUTRAL, ERRORS, RobotLink, Store, Training, number, integer, rpc, explain_error, leg_target, age_of
+from m20.platform_hub import Hub
+from m20.shared_access import SharedAccess, lan_addresses, shared_listener
+from m20.camera_streams import Cameras
+from m20.autonomy_runtime import Autonomy
+from m20.vision_models import ModelChecks, catalog as vision_catalog, default_path
+from m20.ppe_runtime import SharedPPEDetector
+from m20.map_learning_runtime import MapLearning
+from m20.people_counting import PeopleCounter
 
 if not os.environ.get('M20_PPE_MODEL'):
     original.PPE_MODEL_PATH=str(default_path('ppe'))
@@ -113,7 +113,7 @@ class Platform:
         self._greet_busy=False
         self.greeting=GreetingSession(self)
         self._greet_demo=None  # (结束时刻, 'nod'/'bob', 开始时刻)：演示模式的合成问候姿态
-        from pose_monitor import PoseMonitor
+        from m20.pose_monitor import PoseMonitor
         self.pose_monitor=PoseMonitor()
         self.store = store or Store()
         self.link = None
@@ -154,18 +154,18 @@ class Platform:
         self.add_log('system', '平台已启动，当前为演示模式。运动、遥测和训练曲线为模拟数据。')
         self.hub=Hub(self)
         self.autonomy=Autonomy(self)
-        from point_navigation import PointNavigator
+        from m20.point_navigation import PointNavigator
         self.point_navigation=PointNavigator(self)
         self.model_checks=ModelChecks(self.store.path.parent)
         self.map_learning=MapLearning(self)
         self.goal_plans={}
         self._plan_generation=0;self._nav_start_generation=0
-        from navigation_intents import NavigationIntents
+        from m20.navigation_intents import NavigationIntents
         self.navigation_intents=NavigationIntents()
-        from resident_navigation_client import ResidentNavigationClient
+        from m20.resident_navigation_client import ResidentNavigationClient
         self.resident_navigation=ResidentNavigationClient(self)
         self.people=PeopleCounter(self)
-        from localization_runtime import AutomaticLocalizer
+        from m20.localization_runtime import AutomaticLocalizer
         self.localizer=AutomaticLocalizer(self)
 
     def add_log(self, kind, text):
@@ -560,7 +560,7 @@ class Platform:
             if gait not in ['flat','stair']:raise ValueError('路线步态无效')
             value['options']=dict(nav_mode=integer(options.get('nav_mode',1),0,1),speed=integer(options.get('speed',1),0,2),
                                   gait=gait,manner=integer(options.get('manner',0),0,1),pause_at_point=options.get('pause_at_point',False),disconnect_policy=options.get('disconnect_policy','stop'))
-            from navigation_disconnect import POLICIES
+            from m20.navigation_disconnect import POLICIES
             if value['options']['disconnect_policy'] not in POLICIES:raise ValueError('断联策略无效')
             if 'engine' in options:
                 if options['engine'] not in ['platform','native']:raise ValueError('未知寻路方式')
@@ -624,7 +624,7 @@ class Platform:
         return scan,loc
 
     def plan_goal(self, req):
-        from navigation_planner import GridPlanner,live_obstacles
+        from m20.navigation_planner import GridPlanner,live_obstacles
         engine=req.get('engine','native')
         if engine not in ['native','platform']:raise ValueError('未知导航执行器')
         x,y=number(req.get('x')),number(req.get('y'));yaw=None if req.get('yaw') is None else number(req['yaw'],-math.pi,math.pi)
@@ -692,7 +692,7 @@ class Platform:
                 raise NavigationEvidenceError('没有足够的新鲜同步观测核对起点：'+(last_error or obstacle_note),
                     classification='observation_unavailable',reason_code='observation_unavailable',
                     recommended_action='revalidate_observation') from exc
-            from start_recovery_runtime import plan_with_recovery
+            from m20.start_recovery_runtime import plan_with_recovery
             scan,loc=latest_surface
             if '_valid_until' in scan:scan['age']=max(0.,.65+time.monotonic()-scan['_valid_until'])
             record=planning_link.record(1002,6);basic=record.get('items',{}).get('BasicStatus',{})
@@ -828,7 +828,7 @@ class Platform:
             route=copy.deepcopy(goal or next((r for r in self.store.value['routes'] if r['id']==req.get('id')),None))
             if not route:raise ValueError('路线不存在，请先保存路线')
             saved=route.get('options',{});pause=req.get('pause_at_point',saved.get('pause_at_point',False))
-            from navigation_disconnect import POLICIES
+            from m20.navigation_disconnect import POLICIES
             disconnect_policy=req.get('disconnect_policy',saved.get('disconnect_policy','stop'))
             if disconnect_policy not in POLICIES:raise ValueError('未知断联策略')
             if disconnect_policy!='stop' and self.demo:raise ValueError('驻机断联任务需连接已配置的机器人端服务')
@@ -1557,13 +1557,13 @@ class Handler(original.Handler):
             if p in ['/api/people/frame','/api/people/snapshot']:return self._people_frame(parse_qs(urlparse(self.path).query),p.endswith('snapshot'))
             if p=='/api/vision/models':return self._json(dict(ok=True,models=vision_catalog()))
             if p.startswith('/api/vision/check-image/'):
-                from map_formats import identifier
+                from m20.map_formats import identifier
                 return self._file(APP.model_checks.directory/(identifier(p.rsplit('/',1)[-1])+'.jpg'),'image/jpeg')
             if p=='/api/sharing':
                 return self._json(ACCESS.status(peer=self.client_address[0]) if ACCESS else dict(ok=True,enabled=False))
             if p.startswith('/api/files/download/'):return self._download(p.rsplit('/',1)[-1])
             if p.startswith('/api/cloud/data/'):
-                from map_formats import identifier
+                from m20.map_formats import identifier
                 return self._file(APP.hub.previews/(identifier(p.rsplit('/',1)[-1])+'.json'),'application/json')
             if p.startswith('/api/'):
                 result=APP.hub.get(p,parse_qs(urlparse(self.path).query))
@@ -1581,7 +1581,7 @@ class Handler(original.Handler):
                 if APP.demo: return self._json(dict(ok=False,err='演示模式没有实机视频流'),409)
                 if p=='/video/ppe': return self._video_ppe()
                 if p.split('/')[-1] in ['front','rear']: return self._video(p.split('/')[-1])
-            if p=='/docs': return self._file(ROOT/'API.md','text/plain; charset=utf-8')
+            if p=='/docs': return self._file(ROOT/'docs/api.md','text/plain; charset=utf-8')
             if p=='/calibration.example.json':return self._file(ROOT/'bridge/calibration.example.json','application/json')
             base=APP.store.path.parent/'maps' if p.startswith('/maps/') else ROOT/'platform_web'
             rel=p[len('/maps/'):] if p.startswith('/maps/') else p.lstrip('/') or 'index.html'
@@ -1788,7 +1788,7 @@ def main():
         ap.error('开放局域网访问需通过 M20_API_TOKEN 配置令牌')
     if args.ppe_model: original.PPE_MODEL_PATH=args.ppe_model
     store=Store(Path(args.data_dir)/'workspace.json') if args.data_dir else Store()
-    from platform_host import lock_workspace
+    from m20.platform_host import lock_workspace
     try:instance_lock=lock_workspace(store.path.parent)
     except ValueError as exc:ap.error(str(exc))
     APP=Platform(store)

@@ -5,7 +5,7 @@ from types import SimpleNamespace as NS
 from unittest.mock import patch
 import cv2,numpy as np
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from people_counting import CountLedger,PeopleCounter,TRACKER
+from m20.people_counting import CountLedger,PeopleCounter,TRACKER
 
 class LedgerTests(unittest.TestCase):
     def test_confirmation_stops_one_frame_false_positive(self):
@@ -97,7 +97,7 @@ class ActualWeightsTests(unittest.TestCase):
 class FrameHTTPTests(unittest.TestCase):
     def test_snapshot_has_filename_and_frame_age(self):
         import m20_platform as web
-        from platform_core import Store
+        from m20.platform_core import Store
         from urllib.request import urlopen
         old=web.APP
         with tempfile.TemporaryDirectory() as directory:

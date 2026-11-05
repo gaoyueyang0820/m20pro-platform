@@ -3,7 +3,7 @@ import hashlib,json,sys,tempfile,unittest
 from pathlib import Path
 import numpy as np
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from map_fusion import read_pcd,write_pcd,pose_matrix,transform,fuse_grid,read_grid,fuse_maps,validate_alignment
+from m20.map_fusion import read_pcd,write_pcd,pose_matrix,transform,fuse_grid,read_grid,fuse_maps,validate_alignment
 from bridge.mapping_job import mapping_phase
 
 def fixture(folder,points,origin=(0,0),grid=None):
@@ -115,7 +115,7 @@ class ExtensionWorkerTests(unittest.TestCase):
         calls=[]
         def run(argv,**kwargs):calls.append(argv);return SimpleNamespace(returncode=0,stdout='',stderr='')
         def fuse(base,source,out,*args):out.mkdir();return dict(ok=True,report=dict(base_map='base'),revision=2)
-        with patch('bridge.mapping_job.subprocess.run',side_effect=run),patch('map_fusion.fuse_maps',side_effect=fuse):mapping_job.worker('stop_mapping',self.logs)
+        with patch('bridge.mapping_job.subprocess.run',side_effect=run),patch('m20.map_fusion.fuse_maps',side_effect=fuse):mapping_job.worker('stop_mapping',self.logs)
         result=mapping_job.read_job('stop_mapping',self.logs)
         self.assertEqual(result['state'],'command_finished');self.assertEqual(result['revision'],2);self.assertEqual(calls,[['drmap','stop_mapping']]);self.assertFalse(result['activated'])
         self.assertEqual(len(result['result_maps']),1)
@@ -123,7 +123,7 @@ class ExtensionWorkerTests(unittest.TestCase):
         from bridge import mapping_job
         from unittest.mock import patch
         from types import SimpleNamespace
-        with patch('bridge.mapping_job.subprocess.run',return_value=SimpleNamespace(returncode=0,stdout='',stderr='')) as run,patch('map_fusion.fuse_maps',side_effect=ValueError('bad overlap')):
+        with patch('bridge.mapping_job.subprocess.run',return_value=SimpleNamespace(returncode=0,stdout='',stderr='')) as run,patch('m20.map_fusion.fuse_maps',side_effect=ValueError('bad overlap')):
             mapping_job.worker('stop_mapping',self.logs)
         result=mapping_job.read_job('stop_mapping',self.logs);self.assertEqual(result['state'],'failed');self.assertIn('bad overlap',result['message']);self.assertEqual(run.call_count,1)
     def test_repeat_stop_returns_saved_result_without_starting_another_worker(self):
@@ -190,17 +190,17 @@ class NativeSessionChangeTests(unittest.TestCase):
         self.assertEqual(r['report']['confirmed_known_changes'],0)
         self.assertEqual(len(self.object_points(out)),0)
     def test_frame_pose_matrix_roundtrip_keeps_rotation_and_translation(self):
-        from map_refinement import matrix_pose
+        from m20.map_refinement import matrix_pose
         T=pose_matrix([3,2,.5,.1,.2,.3,.92]);np.testing.assert_allclose(pose_matrix(matrix_pose(T)),T,atol=1e-9)
     def test_long_dense_batch_defers_without_silent_keyframe_sampling(self):
-        from map_refinement import session_evidence
+        from m20.map_refinement import session_evidence
         from unittest.mock import patch
         poses=np.tile([0,0,0,.55,0,0,0,1.],(121,1));poses[:,0]=np.arange(121)
-        with patch('map_refinement.read_pcd') as read:
+        with patch('m20.map_refinement.read_pcd') as read:
             evidence,report=session_evidence(self.root/'not-read',poses,np.eye(4),{})
         self.assertIsNone(evidence);self.assertEqual(report['reason'],'keyframe_budget_exceeded');read.assert_not_called()
     def test_nonmonotonic_native_timestamps_cannot_become_repeated_visits(self):
-        from map_refinement import session_evidence
+        from m20.map_refinement import session_evidence
         poses=np.array([[100,0,0,.55,0,0,0,1],[99,0,0,.55,0,0,0,1],[101,0,0,.55,0,0,0,1]],float)
         with self.assertRaisesRegex(ValueError,'时间非单调'):session_evidence(self.root/'not-read',poses,np.eye(4),{})
 

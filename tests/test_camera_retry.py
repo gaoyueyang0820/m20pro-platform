@@ -4,7 +4,7 @@ import time
 import unittest
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from camera_streams import Cameras
+from m20.camera_streams import Cameras
 
 class MissingStream:
     CAP_FFMPEG=1;CAP_PROP_OPEN_TIMEOUT_MSEC=2;CAP_PROP_READ_TIMEOUT_MSEC=3

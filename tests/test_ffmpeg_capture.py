@@ -3,7 +3,7 @@ from pathlib import Path
 import io,sys,time,unittest
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from ffmpeg_capture import FFmpegCapture,capture_command,find_ffmpeg,read_exact
+from m20.ffmpeg_capture import FFmpegCapture,capture_command,find_ffmpeg,read_exact
 try:import cv2
 except ImportError:cv2=None
 ROOT=Path(__file__).resolve().parents[1]
@@ -22,18 +22,18 @@ class CaptureContractTests(unittest.TestCase):
 @unittest.skipUnless(cv2,'OpenCV not installed')
 class CaptureLifecycleTests(unittest.TestCase):
     def test_open_timeout_terminates_child_and_both_pipe_threads(self):
-        with patch('ffmpeg_capture.capture_command',return_value=[sys.executable,'-c','import time;time.sleep(30)']):
+        with patch('m20.ffmpeg_capture.capture_command',return_value=[sys.executable,'-c','import time;time.sleep(30)']):
             cap=FFmpegCapture(cv2,'fixture','unused',open_timeout=.1)
         self.assertFalse(cap.isOpened());self.assertIsNotNone(cap.process.poll())
         self.assertFalse(cap.reader.is_alive());self.assertFalse(cap.errors.is_alive())
         cap.release()  # Idempotent cleanup.
     def test_invalid_image_header_is_bounded_and_releases_process(self):
         child="import sys,time;sys.stdout.buffer.write(b'P6\\n99999999 99999999\\n255\\n');sys.stdout.flush();time.sleep(30)"
-        with patch('ffmpeg_capture.capture_command',return_value=[sys.executable,'-c',child]):cap=FFmpegCapture(cv2,'fixture','unused',open_timeout=.5)
+        with patch('m20.ffmpeg_capture.capture_command',return_value=[sys.executable,'-c',child]):cap=FFmpegCapture(cv2,'fixture','unused',open_timeout=.5)
         self.assertFalse(cap.isOpened());self.assertIsNotNone(cap.process.poll());self.assertIn('dimensions',cap.error)
     @unittest.skipUnless(find_ffmpeg(),'FFmpeg 6+ not installed')
     def test_local_hevc_is_color_and_slow_consumers_receive_latest_only(self):
-        cap=FFmpegCapture(cv2,str(ROOT/'data/network/camera-codec-fixture.mp4'),find_ffmpeg())
+        cap=FFmpegCapture(cv2,str(ROOT/'tests/fixtures/video/camera-codec-fixture.mp4'),find_ffmpeg())
         try:
             self.assertTrue(cap.isOpened(),cap.error);ok,frame=cap.read();self.assertTrue(ok)
             self.assertEqual(frame.shape,(600,800,3));self.assertGreater(float(frame.std()),10)

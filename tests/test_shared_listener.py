@@ -3,17 +3,17 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
-from shared_access import shared_listener
+from m20.shared_access import shared_listener
 
 
 class SharedListenerTests(unittest.TestCase):
     def test_missing_configured_wifi_keeps_localhost_available(self):
-        with patch('shared_access.lan_addresses',return_value=[]):
+        with patch('m20.shared_access.lan_addresses',return_value=[]):
             access,bind,message=shared_listener('unused','192.168.88.0/24',8080)
         self.assertIsNone(access);self.assertEqual(bind,'127.0.0.1');self.assertIn('配置保留',message)
 
     def test_matching_wifi_keeps_the_existing_private_scope(self):
-        with patch('shared_access.lan_addresses',return_value=['192.168.88.8']):
+        with patch('m20.shared_access.lan_addresses',return_value=['192.168.88.8']):
             access,bind,message=shared_listener('unused','192.168.88.0/24',8080)
         self.assertEqual(bind,'0.0.0.0');self.assertIsNone(message)
         self.assertEqual(access.urls,['http://192.168.88.8:8080/'])
@@ -37,7 +37,7 @@ class SharedStartupTests(unittest.TestCase):
             def start(self):pass
         old=(web.APP,web.ACCESS,web.TOKEN)
         try:
-            with tempfile.TemporaryDirectory() as folder,patch.object(sys,'argv',['m20_platform.py','--demo','--data-dir',folder,'--share','192.168.88.0/24']),patch('shared_access.lan_addresses',return_value=[]),patch.object(web,'ThreadingHTTPServer',Server),patch.object(web.threading,'Thread',Thread):
+            with tempfile.TemporaryDirectory() as folder,patch.object(sys,'argv',['m20_platform.py','--demo','--data-dir',folder,'--share','192.168.88.0/24']),patch('m20.shared_access.lan_addresses',return_value=[]),patch.object(web,'ThreadingHTTPServer',Server),patch.object(web.threading,'Thread',Thread):
                 web.main()
                 self.assertEqual(addresses,[('127.0.0.1',8080)])
                 self.assertTrue(web.APP.demo);self.assertIsNone(web.APP.link);self.assertIsNone(web.ACCESS)

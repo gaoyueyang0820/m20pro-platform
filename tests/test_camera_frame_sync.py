@@ -2,7 +2,7 @@
 import sys,threading,time,unittest
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from camera_streams import Cameras,decoded_frame_type
+from m20.camera_streams import Cameras,decoded_frame_type
 
 class Decoder:
     CAP_FFMPEG=1;CAP_PROP_OPEN_TIMEOUT_MSEC=2;CAP_PROP_READ_TIMEOUT_MSEC=3
@@ -66,7 +66,7 @@ class FrameSyncTests(unittest.TestCase):
                 if self.opens>=2:self.ready.set()
                 return capture
         for view in ['front','rear']:
-            with self.subTest(view=view),patch('camera_streams.MAX_KEYFRAME_WAIT',.06):
+            with self.subTest(view=view),patch('m20.camera_streams.MAX_KEYFRAME_WAIT',.06):
                 decoder=RecoveringDecoder();pool=Cameras(decoder,lambda:'127.0.0.1');feed=pool.get(view)
                 try:
                     feed.subscribe();packet=feed.read(timeout=2)

@@ -9,9 +9,9 @@ from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from ppe_runtime import HelmetAlerts,SharedPPEDetector
-from vision_models import ModelChecks,catalog,default_path
-import m20_console as original
+from m20.ppe_runtime import HelmetAlerts,SharedPPEDetector
+from m20.vision_models import ModelChecks,catalog,default_path
+import m20.m20_console as original
 
 
 def detection(name='NO-Hardhat',x=100):
@@ -49,7 +49,7 @@ class PPEStreamTests(unittest.TestCase):
     def test_ppe_http_frame_exposes_latest_sequence_and_capture_age(self):
         from urllib.request import urlopen
         import m20_platform as web
-        from platform_core import Store
+        from m20.platform_core import Store
         old=web.APP;old_ppe=original.PPE
         with tempfile.TemporaryDirectory() as directory:
             web.APP=web.Platform(Store(Path(directory)/'workspace.json'));web.APP.demo=False
@@ -85,7 +85,7 @@ class PPEStreamTests(unittest.TestCase):
         def get(camera):requested.append(camera);return feed
         detector=SharedPPEDetector(NS(cameras=NS(get=get)))
         detector.model=NS(names={0:'Hardhat',2:'NO-Hardhat',5:'Person'})
-        with patch.object(original,'PPE_MODEL_PATH',str(default_path('ppe'))),patch.object(detector,'_load_model',return_value=True),patch('ppe_runtime.detections',return_value=[detection()]),patch.object(original.cv2,'VideoCapture',side_effect=AssertionError('duplicate RTSP')):
+        with patch.object(original,'PPE_MODEL_PATH',str(default_path('ppe'))),patch.object(detector,'_load_model',return_value=True),patch('m20.ppe_runtime.detections',return_value=[detection()]),patch.object(original.cv2,'VideoCapture',side_effect=AssertionError('duplicate RTSP')):
             ok,_=detector.start('front');self.assertTrue(ok)
             packet=detector.frame(-1,2);self.assertIsNotNone(packet);self.assertTrue(packet[1].startswith(b'\xff\xd8'))
             self.assertTrue(detector.status()['fresh']);self.assertEqual(requested,['front'])

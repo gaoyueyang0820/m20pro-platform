@@ -4,7 +4,7 @@ from pathlib import Path
 import sys
 import unittest
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from terrain_profiles import recommend_profile,transition_step,GAITS
+from m20.terrain_profiles import recommend_profile,transition_step,GAITS
 
 
 class TerrainProfilesTests(unittest.TestCase):

@@ -19,7 +19,7 @@ class DiscardWorkerTests(unittest.TestCase):
   (self.logs/'mapping.json').write_text(json.dumps(self.capture));self.folder=self.maps/(self.capture['name']+'-20261102');self.folder.mkdir();(self.folder/'full_cloud.pcd').write_bytes(b'raw observation')
  def tearDown(self):self.tmp.cleanup()
  def run_worker(self):
-  with patch.object(mapping_job.subprocess,'run',return_value=SimpleNamespace(returncode=0)) as command,patch.object(mapping_job,'slam_processes',return_value={}),patch('map_fusion.fuse_maps',side_effect=AssertionError('discard cannot fuse')) as fuse:
+  with patch.object(mapping_job.subprocess,'run',return_value=SimpleNamespace(returncode=0)) as command,patch.object(mapping_job,'slam_processes',return_value={}),patch('m20.map_fusion.fuse_maps',side_effect=AssertionError('discard cannot fuse')) as fuse:
    mapping_job.worker('stop_mapping',self.logs,context=dict(self.context,discard=True),request_id=B,expected_start_request_id=A)
   command.assert_called_once();self.assertEqual(command.call_args.args[0],['drmap','stop_mapping']);fuse.assert_not_called()
   return mapping_job.read_job('stop_mapping',self.logs)
@@ -58,12 +58,12 @@ class DiscardLifecycleTests(unittest.TestCase):
  def test_real_hub_status_updates_live_capability_and_snapshot(self):
   a,e=self.paused();self.app.demo=False;self.app.link=cases.FakeLink();a.context=self.app.hub.context();self.app.proxy=lambda *args,**kwargs:dict(discard_protocol=1,request_protocol=1,phase='collecting',in_progress=True,mapping=dict(request_id=A))
   self.assertFalse(a.snapshot()['discard_supported'])
-  with patch('platform_hub.rpc',return_value=dict(discard_protocol=1,request_protocol=1,phase='collecting',in_progress=True,mapping=dict(request_id=A))):self.app.hub.remote_maps('/maps/build/status')
+  with patch('m20.platform_hub.rpc',return_value=dict(discard_protocol=1,request_protocol=1,phase='collecting',in_progress=True,mapping=dict(request_id=A))):self.app.hub.remote_maps('/maps/build/status')
   self.assertTrue(a.snapshot()['discard_supported']);self.assertTrue(a.snapshot()['can_discard'])
  def test_late_old_connection_capability_does_not_enable_new_robot(self):
   a,e=self.paused();self.app.demo=False;self.app.link=cases.FakeLink();a.context=self.app.hub.context()
   def read(*args,**kwargs):self.app.hub._context_generation+=1;return dict(discard_protocol=1)
-  with patch('platform_hub.rpc',side_effect=read):self.app.hub.remote_maps('/maps/build/status')
+  with patch('m20.platform_hub.rpc',side_effect=read):self.app.hub.remote_maps('/maps/build/status')
   self.assertFalse(a.snapshot()['discard_supported'])
  def test_active_capture_can_discard_directly_without_a_separate_pause(self):
   a,e=self.paused();a.active=True;a.state='exploring';a.run_id='active-run';a.started=time.monotonic();a.lease=a.started;self.app.velocity=[.2,0,0]

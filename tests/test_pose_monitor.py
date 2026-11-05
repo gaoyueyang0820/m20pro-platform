@@ -10,7 +10,7 @@ from pathlib import Path
 import sys
 import unittest
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from pose_monitor import PoseMonitor
+from m20.pose_monitor import PoseMonitor
 
 # Synthetic velocity cases; recorded poses are loaded only by the optional test.
 REAL_STATIC_MOTION=(-.045,.001,0.)

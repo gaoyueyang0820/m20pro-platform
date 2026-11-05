@@ -21,20 +21,20 @@ flowchart LR
 
 | 层 | 主要文件 | 修改时需要保留的边界 |
 |---|---|---|
-| HTTP 与状态组合 | `m20_platform.py`、`platform_hub.py`、`operations.py` | 后台任务是否接受、完成或被取消分别报告；不把 ACK 当作动作完成 |
-| 原始通信与控制时钟 | `platform_core.py`、`m20_console.py` | 观察时效、命令失效与真实停止反馈不能被页面缓存代替 |
-| 点目标和局部行走 | `navigation_planner.py`、`point_navigation.py`、`local_trajectory.py` | 原厂执行与平台执行分别维护控制归属，规划预览不等于已执行 |
-| 自主探索 | `autonomy_runtime.py`、`autonomy_core.py`、`exploration_frontiers.py` | 未知区探索、旧区复查、地图保存与重新启用是不同阶段 |
-| 定位恢复与显示 | `localization_runtime.py`、`localization_recovery.py`、`pose_monitor.py` | 新帧独立验证与显示平滑分开；显示位置不能替换控制使用的原始定位 |
-| 地图更新 | `map_fusion.py`、`map_refinement.py`、`map_registration.py`、`map_change_policy.py`、`map_visibility.py` | 保存观测、生成候选和启用候选分开；不能把配准偏差直接解释为环境变化 |
-| 视频与视觉 | `camera_streams.py` 及视觉模块 | 图像新鲜度、检测结果与运动控制权分开；不重复打开无用的取流链路 |
-| 页面 | `platform_web/`、`viewer-src.js` | 前端脚本有加载顺序和缓存版本；保留其他页面的状态所有权与迟到结果失效处理 |
+| HTTP 与状态组合 | `m20_platform.py`、`m20/platform_hub.py`、`m20/operations.py` | 后台任务是否接受、完成或被取消分别报告；不把 ACK 当作动作完成 |
+| 原始通信与控制时钟 | `m20/platform_core.py`、`m20/m20_console.py` | 观察时效、命令失效与真实停止反馈不能被页面缓存代替 |
+| 点目标和局部行走 | `m20/navigation_planner.py`、`m20/point_navigation.py`、`m20/local_trajectory.py` | 原厂执行与平台执行分别维护控制归属，规划预览不等于已执行 |
+| 自主探索 | `m20/autonomy_runtime.py`、`m20/autonomy_core.py`、`m20/exploration_frontiers.py` | 未知区探索、旧区复查、地图保存与重新启用是不同阶段 |
+| 定位恢复与显示 | `m20/localization_runtime.py`、`m20/localization_recovery.py`、`m20/pose_monitor.py` | 新帧独立验证与显示平滑分开；显示位置不能替换控制使用的原始定位 |
+| 地图更新 | `m20/map_fusion.py`、`m20/map_refinement.py`、`m20/map_registration.py`、`m20/map_change_policy.py`、`m20/map_visibility.py` | 保存观测、生成候选和启用候选分开；不能把配准偏差直接解释为环境变化 |
+| 视频与视觉 | `m20/camera_streams.py` 及视觉模块 | 图像新鲜度、检测结果与运动控制权分开；不重复打开无用的取流链路 |
+| 页面 | `platform_web/`、`platform_web/viewer-src.js` | 前端脚本有加载顺序和缓存版本；保留其他页面的状态所有权与迟到结果失效处理 |
 
 `platform_web/vendor/viewer.js` 由 `npm run build` 生成。Node 主要服务于构建与前端回归，运行控制台不需要 Node 或 ROS。
 
 ## 机器人代理与职责
 
-`connection_manager.py` 管理已有授权范围内的连接与代理，不是机器人运控的替代品。AOS 承担厂商运控/基础协议，NOS 承担建图、定位、规划和地图管理，GOS 面向用户应用；SDK 执行环境按设备已核实的部署配置确定。不要把“普通遥控模式”和“底层 SDK 模式”合并成一个开关。
+`m20/connection_manager.py` 管理已有授权范围内的连接与代理，不是机器人运控的替代品。AOS 承担厂商运控/基础协议，NOS 承担建图、定位、规划和地图管理，GOS 面向用户应用；SDK 执行环境按设备已核实的部署配置确定。不要把“普通遥控模式”和“底层 SDK 模式”合并成一个开关。
 
 `bridge/ros_sensors.py` 与感知代理读取 ROS2 数据，`bridge/mapping_job.py` 记录厂商采集/保存及后续融合结果，SDK/训练代理有独立职责。PC 上的测试替身、演示目录和 ROS 消息样例均不能证明代理在某台真机上已正确部署。
 
@@ -42,7 +42,7 @@ flowchart LR
 
 ## 可选原生感知模块
 
-`native/sensing.cpp` 通过 C ABI 1 供 `native_sensing.py` 调用。它仅做完整点集的数学归约，不包含 ROS、网络、线程或执行器接口。正常数据走原生实现；数值边界、退化输入、缺库或 ABI 不符会显式回退，由 NumPy 实现保持判定行为。
+`native/sensing.cpp` 通过 C ABI 1 供 `m20/native_sensing.py` 调用。它仅做完整点集的数学归约，不包含 ROS、网络、线程或执行器接口。正常数据走原生实现；数值边界、退化输入、缺库或 ABI 不符会显式回退，由 NumPy 实现保持判定行为。
 
 构建是显式操作。可移植检查每次在临时目录编译当前源码，再验证完整输出一致性与原生调用计数，不使用工作区残留的库冒充新构建。
 

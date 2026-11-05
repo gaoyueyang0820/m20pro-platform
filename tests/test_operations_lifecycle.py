@@ -2,12 +2,12 @@ import sys,time,unittest
 from pathlib import Path
 from unittest.mock import Mock,patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from operations import Operations
+from m20.operations import Operations
 
 class OperationLifecycleTests(unittest.TestCase):
     def test_thread_start_failure_does_not_leave_running_task_or_consume_slots(self):
         ops=Operations();work=Mock()
-        with patch('operations.threading.Thread.start',side_effect=RuntimeError('no thread resource')):
+        with patch('m20.operations.threading.Thread.start',side_effect=RuntimeError('no thread resource')):
             for _ in range(5):
                 with self.assertRaisesRegex(ValueError,'未能启动'):ops.submit('test',work)
         work.assert_not_called();jobs=ops.get()

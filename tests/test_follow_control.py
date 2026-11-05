@@ -1,7 +1,7 @@
 """Offline follow gate: small real sweeps, no inferred human depth or target swap."""
 import copy,math,unittest
-from follow_control import FollowControl,_Surface
-from autonomy_core import clearance,PersonLock
+from m20.follow_control import FollowControl,_Surface
+from m20.autonomy_core import clearance,PersonLock
 
 
 def vision(sequence=1,age=.1):return dict(locked=True,fresh=True,age=age,sequence=sequence,target_id='selected-person')

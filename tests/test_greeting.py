@@ -5,7 +5,7 @@ import math
 import struct
 import unittest
 
-import greeting as g
+import m20.greeting as g
 
 
 def basic(**kwargs):

@@ -1,8 +1,5 @@
 # Local robot profiles, maps, captures and credentials
 /data/*
-!/data/network/
-/data/network/*
-!/data/network/camera-codec-fixture.mp4
 .env
 .env.*
 *.env

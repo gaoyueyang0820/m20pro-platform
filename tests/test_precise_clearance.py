@@ -4,9 +4,9 @@ import math
 import unittest
 from types import SimpleNamespace as Obj
 from unittest.mock import patch,Mock
-from autonomy_core import Explorer,clearance,disk,cell
-from autonomy_runtime import Autonomy
-from local_trajectory import LocalSurface
+from m20.autonomy_core import Explorer,clearance,disk,cell
+from m20.autonomy_runtime import Autonomy
+from m20.local_trajectory import LocalSurface
 import test_platform as platform_cases
 
 
@@ -63,20 +63,20 @@ class PreciseClearanceTests(unittest.TestCase):
                     for a,b in zip(new,expected):self.assertAlmostEqual(a,b)
                 seen.append((dx,dy))
             return actual(candidate,*args,**kwargs)
-        with patch('autonomy_core.clearance',side_effect=observe):options=e._escape_candidates()
+        with patch('m20.autonomy_core.clearance',side_effect=observe):options=e._escape_candidates()
         self.assertTrue(options);self.assertIn((-2,0),seen)
 
     def test_preflight_accepts_two_complete_frames_with_only_reverse_start(self):
         a=Autonomy.__new__(Autonomy);a.app=Obj(demo=False,mapping=False);a.scan_timing={}
         a.scan_now=Mock(side_effect=[scene(stamp=1),scene(stamp=2)])
-        with patch('autonomy_runtime.time.sleep'):a._check_observation()
+        with patch('m20.autonomy_runtime.time.sleep'):a._check_observation()
         self.assertEqual(a.scan_timing['preflight_direction'],'reverse');self.assertEqual(a.scan_now.call_count,2)
 
     def test_preflight_accepts_verified_side_start_without_requiring_a_turn(self):
         first=scene(points=[(.75,0.),(-.75,0.)]);second=copy.deepcopy(first);second['stamp']=2.
         self.assertFalse(clearance(first,.1,0)[0]);self.assertFalse(clearance(first,-.1,0)[0])
         a=Autonomy.__new__(Autonomy);a.app=Obj(demo=False,mapping=False);a.scan_timing={};a.scan_now=Mock(side_effect=[first,second])
-        with patch('autonomy_runtime.time.sleep'):a._check_observation()
+        with patch('m20.autonomy_runtime.time.sleep'):a._check_observation()
         self.assertEqual(a.scan_timing['preflight_direction'],'left')
 
 

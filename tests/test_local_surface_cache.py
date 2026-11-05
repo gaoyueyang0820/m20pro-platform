@@ -7,8 +7,8 @@ import time
 import unittest
 from unittest.mock import patch
 
-from autonomy_core import Explorer,disk
-from local_trajectory import LocalSurface,TrajectoryFollower,exploration_step
+from m20.autonomy_core import Explorer,disk
+from m20.local_trajectory import LocalSurface,TrajectoryFollower,exploration_step
 
 
 def scene(stamp=1.):
