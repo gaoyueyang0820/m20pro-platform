@@ -13,8 +13,8 @@ import uuid
 from pathlib import Path
 import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from map_formats import Files,map_name,pack_map,unpack_package,inspect_package,preview_pcd,digest
-from map_catalog import MapCatalog,catalog_lock
+from m20.map_formats import Files,map_name,pack_map,unpack_package,inspect_package,preview_pcd,digest
+from m20.map_catalog import MapCatalog,catalog_lock
 try:
     from .mapping_job import read_job,mapping_phase,request_identity,unowned_processes
 except ImportError:
@@ -52,7 +52,7 @@ class MapService:
         transform the base coordinate system, so a base pose stays unchanged.
         Similar names or root_map alone never establish this relationship.
         """
-        from map_change_policy import gate_alignment
+        from m20.map_change_policy import gate_alignment
         folder=self.path(name);active=(self.maps/'active').resolve()
         previous=active.name if active.is_dir() and active.parent==self.maps.resolve() else None
         meta=folder/'.m20-project.json';raw=meta.read_bytes() if meta.is_file() else b''
@@ -171,7 +171,7 @@ class MapService:
         if path=='/maps/localization-reference':
             import numpy as np
             import hashlib,math
-            from map_fusion import read_pcd,voxel
+            from m20.map_fusion import read_pcd,voxel
             center=req.get('center',[])
             if len(center)!=3 or not all(isinstance(v,(int,float)) and not isinstance(v,bool) and math.isfinite(v) for v in center):raise ValueError('参考位置无效')
             folder=self.path(req.get('name','active'))

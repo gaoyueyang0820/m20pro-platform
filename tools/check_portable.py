@@ -114,8 +114,8 @@ def selected_ids(group,available):
 
 def source_files():
     files=set(ROOT.glob('*.py'))|set(ROOT.glob('*.js'))
-    for name in ['bridge','tools','tests','windows']:
-        files.update((ROOT/name).glob('*.py'))
+    for name in ['m20','bridge','tools','tests','windows']:
+        files.update((ROOT/name).rglob('*.py'))
     for pattern in ['*.js','*.css','*.html']:files.update((ROOT/'platform_web').glob(pattern))
     files.update((ROOT/'tests').glob('test_*.cjs'));files.update((ROOT/'native').glob('*.cpp'))
     for name in ['package.json','package-lock.json','requirements-dev.txt','reference/errors.md','platform_web/assets/model/M20.urdf']:
@@ -216,7 +216,7 @@ def worker(group,native_library):
         ids=selected_ids(group,inventory());suite=unittest.TestLoader().loadTestsFromNames(ids)
         native_before=None
         if group=='native':
-            import native_sensing
+            import m20.native_sensing as native_sensing
             native_before=native_sensing.backend_status()
             if not native_before['available']:raise RuntimeError('Explicit native build did not load')
         result=unittest.TextTestRunner(verbosity=1,resultclass=Result).run(suite)

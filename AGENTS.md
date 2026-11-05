@@ -1,6 +1,6 @@
 # M20 Pro 平台协作约定
 
-先读 README.md、API.md、CONTRIBUTING.md 与 docs/architecture.md。原作者工作区若有父目录的 M20 知识技能，继续按该技能查原文；仓库克隆不依赖个人目录或个人记忆服务。
+先读 README.md、docs/api.md、CONTRIBUTING.md 与 docs/architecture.md。原作者工作区若有父目录的 M20 知识技能，继续按该技能查原文；仓库克隆不依赖个人目录或个人记忆服务。
 
 - 沿用 Python、静态网页、既有 UDP/平台代理与 YOLO；此项目不接入 TypeSafe。
 - 产品面向通用机器人作业，不把“当前房间”“整层楼”等本次调试场景写成固定功能或默认流程。范围以地图、区域、距离和任务参数表达。

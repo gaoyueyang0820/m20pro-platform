@@ -7,8 +7,8 @@ import sys
 import numpy as np
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0,str(Path(__file__).resolve().parent))
-from localization_runtime import AutomaticLocalizer,OperationCancelled
-from localization_recovery import saved_slam_pose
+from m20.localization_runtime import AutomaticLocalizer,OperationCancelled
+from m20.localization_recovery import saved_slam_pose
 from test_localization_recovery import structure,saved_fixture,transformed
 
 
@@ -92,7 +92,7 @@ class SavedSlamCoordinatorTests(unittest.TestCase):
     def test_candidate_fixed_pose_keeps_fast_path_and_reads_current_reference(self):
         self.active='base-r2';self.build['stop_mapping']['fusion']['includes_complete_base']=True
         self.reference['map_name']=self.active
-        with patch('localization_recovery.match_pose',side_effect=AssertionError('no search needed')):
+        with patch('m20.localization_recovery.match_pose',side_effect=AssertionError('no search needed')):
             result=self.localizer.saved_slam_hint(Mock())
         self.assertEqual(result['method'],'saved_slam_full_transform')
         self.assertEqual(result['reference_map'],'base-r2')
@@ -108,20 +108,20 @@ class SavedSlamCoordinatorTests(unittest.TestCase):
 
     def test_cancel_during_local_search_never_initializes_or_falls_back(self):
         self.moved_candidate(math.pi/2)
-        from localization_recovery import match_pose as original
+        from m20.localization_recovery import match_pose as original
         def cancel(*args,**kwargs):
             result=original(*args,**kwargs);self.localizer.cancel();return result
-        with patch('localization_recovery.match_pose',side_effect=cancel):
+        with patch('m20.localization_recovery.match_pose',side_effect=cancel):
             with self.assertRaises(OperationCancelled):self.localizer.recover(Mock())
         self.assertEqual(self.sent,[]);self.assertEqual(self.localizer.body_cloud.call_count,1)
         self.assertFalse(any(c.args[0]=='/maps/localize-auto' for c in self.hub.remote_maps.call_args_list))
 
     def test_candidate_to_base_switch_after_validation_does_not_initialize(self):
         self.moved_candidate(math.pi/2)
-        from localization_recovery import verify_pose as original
+        from m20.localization_recovery import verify_pose as original
         def switch(*args,**kwargs):
             result=original(*args,**kwargs);self.active='base';return result
-        with patch('localization_recovery.verify_pose',side_effect=switch):
+        with patch('m20.localization_recovery.verify_pose',side_effect=switch):
             with self.assertRaisesRegex(ValueError,'保存轨迹已变化'):self.localizer.saved_slam_hint(Mock())
         self.assertEqual(self.sent,[])
     def test_changed_map_before_command_is_rejected(self):

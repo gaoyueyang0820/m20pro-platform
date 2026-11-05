@@ -4,7 +4,7 @@ from pathlib import Path
 import time
 import unittest
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from camera_streams import Cameras
+from m20.camera_streams import Cameras
 
 
 class Decoder:
@@ -53,7 +53,7 @@ class CameraFrameHTTPTests(unittest.TestCase):
         from urllib.request import urlopen
         from types import SimpleNamespace
         import m20_platform as web
-        from platform_core import Store
+        from m20.platform_core import Store
         with tempfile.TemporaryDirectory() as temp:
             web.APP=web.Platform(Store(Path(temp)/'workspace.json'));web.TOKEN=None;web.ACCESS=None
             web.APP.demo=False;web.APP.link=SimpleNamespace(ip='127.0.0.1')
@@ -109,7 +109,7 @@ class LatestFrameTests(unittest.TestCase):
         finally:pool.close()
 
     def test_no_newer_frame_returns_none_and_expired_frame_is_not_repeated(self):
-        from camera_streams import CameraFeed
+        from m20.camera_streams import CameraFeed
         f=CameraFeed(Decoder(),'127.0.0.1','front')
         f.jpeg=b'frame';f.at=time.time();f.frame_mono=time.monotonic();f.sequence=12
         self.assertIsNone(f.read(after=12,timeout=.01))
@@ -117,7 +117,7 @@ class LatestFrameTests(unittest.TestCase):
         self.assertIsNone(f.read(timeout=.01));self.assertFalse(f.status()['fresh'])
 
     def test_single_decode_thread_selected_at_open(self):
-        from camera_streams import capture_params,CAPTURE_OPTIONS
+        from m20.camera_streams import capture_params,CAPTURE_OPTIONS
         cv=Decoder();cv.CAP_PROP_N_THREADS=70
         options=capture_params(cv)
         self.assertEqual(options[options.index(70)+1],1)

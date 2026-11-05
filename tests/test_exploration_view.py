@@ -6,7 +6,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from exploration_view import PausedExplorationView
+from m20.exploration_view import PausedExplorationView
 
 
 class PausedExplorationViewTests(unittest.TestCase):
@@ -26,7 +26,7 @@ class PausedExplorationViewTests(unittest.TestCase):
         self.view = dict(pose=[0., 0., 0.], floor=[[0, 0]], obstacles=[[4, 0]], path=[[0, 0], [1, 0]])
 
     def decorate(self):
-        with patch('exploration_view.threading.Thread.start'):
+        with patch('m20.exploration_view.threading.Thread.start'):
             with self.app.lock:
                 return self.observer.decorate(self.view)
 

@@ -7,7 +7,7 @@ it is not hardware speed calibration, contact dynamics or a terrain simulation.
 import math,sys,unittest
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from autonomy_core import Explorer,clearance,disk,cell,RESOLUTION
+from m20.autonomy_core import Explorer,clearance,disk,cell,RESOLUTION
 
 def scan(pose=(0.,0.,0.),obstacles=(),stamp=1.,floor=None):
     return dict(pose=list(pose),floor=[list(p) for p in disk(4)] if floor is None else floor,

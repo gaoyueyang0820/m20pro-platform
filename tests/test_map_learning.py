@@ -3,8 +3,8 @@ from pathlib import Path
 from unittest.mock import patch
 import numpy as np
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from map_refinement import collect_evidence,refine_map,base_fingerprint
-from map_fusion import write_pcd,read_grid
+from m20.map_refinement import collect_evidence,refine_map,base_fingerprint
+from m20.map_fusion import write_pcd,read_grid
 from bridge.map_service import MapService
 from bridge.map_refinement_agent import RefinementAgent
 
@@ -77,7 +77,7 @@ class MapLearningTests(unittest.TestCase):
         persisted=json.loads(restored.file.read_text());self.assertFalse(persisted['enabled']);self.assertEqual(persisted['state'],'off');self.assertEqual(persisted['frames'],2)
         a.close();restored.close()
     def test_complete_old_map_is_retained_while_confirmed_new_area_expands_grid(self):
-        from map_fusion import read_pcd
+        from m20.map_fusion import read_pcd
         far=np.array([[-3.8,-3.8,1.2,77.]],dtype=np.float32)
         old=np.column_stack([self.floor,np.full(len(self.floor),12.)]).astype(np.float32)
         write_pcd(self.base/'full_cloud.pcd',np.vstack([old,far]))

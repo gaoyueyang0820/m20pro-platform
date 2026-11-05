@@ -10,9 +10,9 @@ from unittest.mock import patch,MagicMock
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 from test_workflows import await_job
 import m20_platform as web
-from platform_core import Store
+from m20.platform_core import Store
 from sdk_agent import SDKAgent,ros_input_source
-from motion_catalog import catalog
+from m20.motion_catalog import catalog
 
 class UsabilityTests(unittest.TestCase):
     def setUp(self):

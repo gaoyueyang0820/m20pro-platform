@@ -14,7 +14,7 @@ import secrets
 import threading
 import time
 from contextlib import contextmanager
-from navigation_disconnect import ResidentMission,specification,TERMINAL
+from m20.navigation_disconnect import ResidentMission,specification,TERMINAL
 
 
 def atomic(path,value):
@@ -25,7 +25,7 @@ def atomic(path,value):
     try:
         with temp.open('x',encoding='utf-8') as handle:
             if os.name=='nt':
-                from platform_host import private_file
+                from m20.platform_host import private_file
                 private_file(temp)
             else:os.chmod(temp,0o600)
             json.dump(value,handle,ensure_ascii=False)
@@ -53,7 +53,7 @@ class NativeMissionDriver:
         self.goal=None;self.cancel_receipt=None;self.progress=None
         self.owned_values=set()
     def open(self,expected):
-        from platform_core import RobotLink,age_of
+        from m20.platform_core import RobotLink,age_of
         if self.link is None:self.link=RobotLink(self.aos)
         self.expected=expected;self.goal=None;self.cancel_receipt=None;self.progress=None
         deadline=time.monotonic()+1.25
@@ -62,8 +62,8 @@ class NativeMissionDriver:
             time.sleep(.025)
         self.close();raise ValueError('机内机器人状态尚未就绪，未提交任务')
     def _map(self):
-        from map_fusion import read_grid
-        from navigation_planner import GridPlanner
+        from m20.map_fusion import read_grid
+        from m20.navigation_planner import GridPlanner
         folder=self.maps.path('active');grid_id=self.expected['grid_id']
         stem='occ_grid'+('_'+str(grid_id) if grid_id else '')
         if grid_id==0 and not (folder/(stem+'.pgm')).is_file():stem='occ_grid_0'
@@ -78,7 +78,7 @@ class NativeMissionDriver:
             self.planner=GridPlanner(normalized,grid['resolution'],grid['origin']);self.grid_key=key
         return self.map
     def frame(self):
-        from platform_core import age_of
+        from m20.platform_core import age_of
         if not self.link:raise ValueError('驻机机器人连接未建立')
         began=self.clock();error=None
         try:scan=self.sensors().call('/sensors/autonomy',dict(mapping=False),timeout=.25)
@@ -147,7 +147,7 @@ class NativeMissionDriver:
             AngleYaw=goal['yaw'],PointInfo=1,NavMode=0 if action['returning'] else 1,Gait=0x3002,Speed=1,ObsMode=0,Manner=0)
     def send(self,action,frame,prepared=None):
         if action['kind']=='cancel':
-            from platform_core import age_of
+            from m20.platform_core import age_of
             native=self.link.record(1007,1);items=native.get('items',{})
             if age_of(native)>1:raise ValueError('尚无新鲜的本机导航状态，停止结果待核对')
             if items.get('Status') in (1,2,3,5,255) and items.get('Value') not in self.owned_values:
@@ -162,7 +162,7 @@ class NativeMissionDriver:
         self.goal=dict(value=prepared['Value'],**receipt);self.progress=None;self.cancel_receipt=None;return self.goal.copy()
     def stop_frame(self):
         """Parking proof does not depend on a working map or sensor HTTP call."""
-        from platform_core import age_of
+        from m20.platform_core import age_of
         if not self.link or not self.cancel_receipt:return dict(cancel_confirmed=False,still=False)
         ack=self.link.record(1004,1);motion=self.link.record(1002,4);v=motion.get('items',{}).get('MotionStatus',{})
         sent=self.cancel_receipt['sent_monotonic']

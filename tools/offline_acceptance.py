@@ -136,10 +136,10 @@ def digest(path):
 
 
 def source_inventory():
-    paths=set(ROOT.glob('*.py'))|set((ROOT/'bridge').glob('*.py'))
+    paths=set((ROOT/'m20').glob('*.py'))|set(ROOT.glob('*.py'))|set((ROOT/'bridge').glob('*.py'))
     paths|=set((ROOT/'platform_web').glob('*.js'))|set((ROOT/'platform_web').glob('*.css'))
     paths|=set((ROOT/'tests').glob('test_*.py'))|set((ROOT/'tests').glob('test_*.cjs'))
-    paths|=set((ROOT/'tools').glob('*.py'))
+    paths|=set((ROOT/'tools').rglob('*.py'))
     paths|=set((ROOT/'native').glob('*.cpp'))|set((ROOT/'native').glob('*.so'))
     paths|={ROOT/'platform_web/index.html',Path(__file__).resolve()}
     paths|=set(ROOT.glob('requirements*.txt'))|{ROOT/'package.json',ROOT/'package-lock.json'}
@@ -252,9 +252,9 @@ def python_guard():
 
 def recorded_replay():
     """Assertions against recorded facts and pure production functions only."""
-    from autonomy_core import clearance,Explorer
-    from map_change_policy import gate_alignment
-    from localization_runtime import AutomaticLocalizer
+    from m20.autonomy_core import clearance,Explorer
+    from m20.map_change_policy import gate_alignment
+    from m20.localization_runtime import AutomaticLocalizer
     from types import SimpleNamespace
     from bridge.ros_sensors import RosSensors
     import threading
@@ -303,7 +303,7 @@ def recorded_replay():
         assert reader.autonomy_scan is None
         return dict(original_timestamp_retained=True,expired_cache_cleared=True)
     def transport_deadline():
-        from platform_core import RobotLink
+        from m20.platform_core import RobotLink
         from unittest.mock import patch
         for kind in ['expired_observation','wall_clock_skew']:
             link=RobotLink.__new__(RobotLink);link._stop=False;link.inhibit=False
@@ -315,7 +315,7 @@ def recorded_replay():
             emitted=[]
             def fake_axis(*axes):emitted.append(list(axes));link._stop=True
             link._send_axis=fake_axis;link._log=lambda *a:None
-            with patch('platform_core.time.sleep'):link._vel_loop()
+            with patch('m20.platform_core.time.sleep'):link._vel_loop()
             assert emitted==[[0,0,0]] and not any(link._vel.values()),kind
         return dict(stale_moving_command_zeroed=True,wall_clock_skew_cannot_extend_motion=True,real_socket_created=False,hardware_stop_verified=False)
     check('recorded_native_zero_output',stall,'historical_failure_evidence')
@@ -347,7 +347,7 @@ def worker(args):
     # stop it; that is a failed startup check, not an allowed test dependency.
     for key in ['YOLO_OFFLINE','YOLO_AUTOINSTALL']:os.environ.pop(key,None)
     try:
-        import m20_console as original
+        import m20.m20_console as original
         product_import=dict(offline_default=os.environ.get('YOLO_OFFLINE','').lower() in ['1','true','yes','on'],
                             autoinstall_disabled=os.environ.get('YOLO_AUTOINSTALL','').lower() in ['0','false','no','off'],
                             optional_model_library_available=original.YOLO is not None)

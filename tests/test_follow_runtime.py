@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 import test_platform as cases
 from test_autonomy_observation_runtime import Link
-from autonomy_core import PersonLock, disk
+from m20.autonomy_core import PersonLock, disk
 
 
 class FollowRuntimeTests(unittest.TestCase):
@@ -73,7 +73,7 @@ class FollowRuntimeTests(unittest.TestCase):
 
     def test_missing_ground_waits_and_new_scan_resumes_same_selected_person(self):
         a = self.configure()
-        with patch('platform_hub.rpc', side_effect=self.transport):
+        with patch('m20.platform_hub.rpc', side_effect=self.transport):
             self.start()
             self.assertTrue(self.wait_for(lambda:a.follow_detail is not None), a.message)
             self.assertTrue(a.active)
@@ -89,7 +89,7 @@ class FollowRuntimeTests(unittest.TestCase):
 
     def test_fresh_radar_does_not_renew_an_old_vision_frame(self):
         a = self.configure(); self.obstructed = False; self.fixed_vision = True
-        with patch('platform_hub.rpc', side_effect=self.transport):
+        with patch('m20.platform_hub.rpc', side_effect=self.transport):
             self.start()
             self.assertTrue(self.wait_for(lambda:not a.active), a.message)
             moving = [r for r in self.app.link.output if any(r['axes'])]
@@ -100,7 +100,7 @@ class FollowRuntimeTests(unittest.TestCase):
 
     def test_identity_loss_still_stops_and_never_reselects(self):
         a = self.configure(); self.obstructed = False
-        with patch('platform_hub.rpc', side_effect=self.transport):
+        with patch('m20.platform_hub.rpc', side_effect=self.transport):
             self.start()
             self.assertTrue(self.wait_for(lambda:any(any(r['axes']) for r in self.app.link.output)), a.message)
             self.lost = True
@@ -117,7 +117,7 @@ class FollowRuntimeTests(unittest.TestCase):
                 row.update(at=time.time()+60, monotonic_at=time.monotonic()-2)
             return row
         self.app.link.record = stale_record
-        with patch('platform_hub.rpc', side_effect=self.transport):
+        with patch('m20.platform_hub.rpc', side_effect=self.transport):
             self.start()
             self.assertTrue(self.wait_for(lambda:a.follow_detail is not None), a.message)
             self.assertEqual(a.follow_detail['state'], 'waiting_feedback')

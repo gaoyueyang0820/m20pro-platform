@@ -12,13 +12,13 @@ import unittest
 from collections import deque
 from urllib.error import HTTPError
 from unittest.mock import patch
-from observation_errors import ObservationSyncPending,error_payload,sync_error
+from m20.observation_errors import ObservationSyncPending,error_payload,sync_error
 from bridge.ros_sensors import RosSensors
 from bridge.sensor_client import SensorClient
 import bridge.http_agent as http_agent
-import platform_core
-from latest_observation import LatestObservationPump
-from autonomy_runtime import Autonomy
+import m20.platform_core as platform_core
+from m20.latest_observation import LatestObservationPump
+from m20.autonomy_runtime import Autonomy
 from types import SimpleNamespace as Obj
 import test_autonomy_observation_runtime as runtime_cases
 
@@ -93,7 +93,7 @@ class ObservationSyncProtocolTests(unittest.TestCase):
         a=Autonomy.__new__(Autonomy)
         a.app=Obj(demo=False,hub=Obj(connections=Obj(value={'sensor_source':'nos'})),
                   proxy=lambda role,path,data,timeout:platform_core.rpc('http://offline.invalid',path,data,timeout))
-        with patch('platform_core.urlopen',side_effect=lambda *a,**k:(_ for _ in ()).throw(http_error(payload))):
+        with patch('m20.platform_core.urlopen',side_effect=lambda *a,**k:(_ for _ in ()).throw(http_error(payload))):
             with self.assertRaises(ObservationSyncPending) as caught:a.scan_now(True)
         self.assertEqual(caught.exception.reason,'slam_pose_sync')
 
@@ -149,7 +149,7 @@ class ObservationSyncRuntimeTests(unittest.TestCase):
             i=len(self.calls);self.calls.append(i);time.sleep(.035)
             if i<3:return io.BytesIO(json.dumps(self.packet(10.+i*.1)).encode())
             entered.set();raise http_error(invalid if hard.is_set() else pending)
-        with patch('platform_core.urlopen',side_effect=response):
+        with patch('m20.platform_core.urlopen',side_effect=response):
             self.run_worker();self.assertTrue(entered.wait(1.))
             self.assertTrue(self.wait_for(lambda:sum(any(r['axes']) for r in self.app.link.output)>=3),a.message)
             output=[r for r in self.app.link.output if any(r['axes'])];deadline=output[-1]['deadline'];stamp=output[-1]['stamp']

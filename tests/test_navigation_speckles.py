@@ -7,7 +7,7 @@ from unittest.mock import patch
 import numpy as np
 
 sys.path[:0]=[str(Path(__file__).resolve().parents[1]),str(Path(__file__).resolve().parent)]
-from navigation_planner import GridPlanner,_static_speckles
+from m20.navigation_planner import GridPlanner,_static_speckles
 from test_navigation_planning_v3 import validate_sampled_body
 from test_live_surface_localization import packet
 

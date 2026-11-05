@@ -10,9 +10,9 @@ import time
 from types import SimpleNamespace as Obj
 import unittest
 from unittest.mock import Mock,patch
-from navigation_disconnect import ResidentMission,MeasuredTrace,specification
+from m20.navigation_disconnect import ResidentMission,MeasuredTrace,specification
 from bridge.resident_mission import ResidentMissionService,NativeMissionDriver
-import platform_core  # Warm imports before taking synthetic receipt timestamps.
+import m20.platform_core as platform_core  # Warm imports before taking synthetic receipt timestamps.
 
 MAP=dict(name='synthetic',grid_id=0,sha256='a'*64,yaml_sha256='b'*64,resolution=.1,origin=[-3.,-3.,0.])
 def request(policy='finish'):
@@ -97,7 +97,7 @@ class DisconnectMissionTests(unittest.TestCase):
 
 class ResidentAdapterTests(unittest.TestCase):
     def setUp(self):
-        self.acl=patch('platform_host.private_file',lambda path:None);self.acl.start();self.addCleanup(self.acl.stop)
+        self.acl=patch('m20.platform_host.private_file',lambda path:None);self.acl.start();self.addCleanup(self.acl.stop)
     def test_capability_and_import_do_not_open_robot_link(self):
         with tempfile.TemporaryDirectory() as folder:
             driver=Mock();service=ResidentMissionService(None,None,folder,driver=driver,enabled=False)

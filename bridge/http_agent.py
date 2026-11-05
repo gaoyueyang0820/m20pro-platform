@@ -8,7 +8,7 @@ from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from observation_errors import error_payload
+from m20.observation_errors import error_payload
 
 
 def serve(port, dispatch, bind='127.0.0.1'):

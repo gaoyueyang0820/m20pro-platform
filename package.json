@@ -1,1 +1,1 @@
-{"name":"m20pro-console-viewer","private":true,"scripts":{"build":"esbuild viewer-src.js --bundle --format=esm --minify --outfile=platform_web/vendor/viewer.js"},"dependencies":{"three":"^0.180.0","urdf-loader":"^0.12.6"},"devDependencies":{"esbuild":"^0.25.0"}}
+{"name":"m20pro-console-viewer","private":true,"scripts":{"build":"esbuild platform_web/viewer-src.js --bundle --format=esm --minify --outfile=platform_web/vendor/viewer.js"},"dependencies":{"three":"^0.180.0","urdf-loader":"^0.12.6"},"devDependencies":{"esbuild":"^0.25.0"}}

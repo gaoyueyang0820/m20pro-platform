@@ -7,7 +7,7 @@ import copy,math,time,unittest
 from unittest.mock import patch
 import numpy as np
 from test_live_surface_localization import door_world,planner,packet,feed
-import live_traversability
+import m20.live_traversability as live_traversability
 
 
 class LiveTraversabilityTests(unittest.TestCase):

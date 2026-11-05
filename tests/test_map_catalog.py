@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from map_catalog import MapCatalog
+from m20.map_catalog import MapCatalog
 from bridge.map_service import MapService
 
 

@@ -1,6 +1,6 @@
 """Synthetic cancellation ordering contracts; no robot, socket or file I/O."""
 import unittest
-from navigation_intents import NavigationIntents
+from m20.navigation_intents import NavigationIntents
 
 
 class IntentLedgerTests(unittest.TestCase):

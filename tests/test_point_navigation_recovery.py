@@ -7,12 +7,12 @@ import math
 import unittest
 from unittest.mock import patch
 import numpy as np
-from autonomy_core import disk
-from local_trajectory import LocalSurface
-from navigation_detour import plan_local_detour
-from observation_errors import GroundObservationPending
-from navigation_planner import GridPlanner
-import point_navigation as runtime
+from m20.autonomy_core import disk
+from m20.local_trajectory import LocalSurface
+from m20.navigation_detour import plan_local_detour
+from m20.observation_errors import GroundObservationPending
+from m20.navigation_planner import GridPlanner
+import m20.point_navigation as runtime
 import test_platform as cases
 import test_point_navigation_runtime as fixtures
 DeferredWorkers=fixtures.DeferredWorkers

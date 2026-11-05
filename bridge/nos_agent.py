@@ -39,7 +39,7 @@ def dispatch(path,req):
                 RESIDENT=ResidentMissionService(MAP_SERVICE,sensors,MAP_SERVICE.data)
         return RESIDENT.dispatch(path,req)
     if path=='/diagnostics/navigation':
-        from navigation_diagnostics import read_navigation_diagnostics
+        from m20.navigation_diagnostics import read_navigation_diagnostics
         result=read_navigation_diagnostics()
         try:
             status=sensors().status()

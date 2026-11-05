@@ -10,7 +10,7 @@ import sys
 import os
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from observation_errors import ObservationSyncPending,GroundObservationPending
+from m20.observation_errors import ObservationSyncPending,GroundObservationPending
 
 TOPICS=['/SLAM_ALIGNED_POINTS','/SLAM_ACCUMULATED_POINTS_MAP','/SLAM_CLOUD_REGISTERED_BODY','/ALIGNED_POINTS','/FULL_CLOUD_MAP','/LOC_BODY_POINTS','/LIDAR/POINTS','/LIDAR/POINTS2','/NAV_POINTS']
 
@@ -125,7 +125,7 @@ class RosSensors:
             if not raw or not enabled or raw[1]==last:continue
             message,received,lag=raw;last=received
             try:
-                from autonomy_sensing import xyz,supported_floor
+                from m20.autonomy_sensing import xyz,supported_floor
                 if message.header.frame_id not in ['base_link','lidar_link']:raise ValueError('雷达坐标系未核对：'+message.header.frame_id)
                 # Reject only scans already beyond the final age budget. A
                 # 350 ms source-age gate discarded frames that could still
@@ -133,7 +133,7 @@ class RosSensors:
                 if not -.1<=lag+time.monotonic()-received<=.65:raise TimeoutError('雷达源时间戳过期或时钟不一致')
                 began=time.monotonic();scan=supported_floor(xyz(message))
                 try:
-                    from native_sensing import backend_status
+                    from m20.native_sensing import backend_status
                     backend=backend_status()
                     scan['processing_backend']='native' if backend.get('available') and backend.get('last_reason') is None else 'numpy'
                     scan['native_fallback_reason']=backend.get('last_reason')
@@ -223,7 +223,7 @@ class RosSensors:
                 self.ensure_topic('/SLAM_CLOUD_REGISTERED_BODY');self.ensure_topic('/SLAM_ALIGNED_POINTS')
                 if not body or not world or max(time.monotonic()-body[1],time.monotonic()-world[1])>.5:
                     raise ObservationSyncPending('等待新鲜的 SLAM 坐标对照点云','slam_reference_sync')
-                from slam_pose_check import verify_slam_body_pose
+                from m20.slam_pose_check import verify_slam_body_pose
                 proof=verify_slam_body_pose(body[0],world[0],pose)
                 with self.lock:self.slam_pose_proof=proof
         with self.lock:
@@ -291,8 +291,8 @@ class RosSensors:
         self.ensure_topic('/ALIGNED_POINTS')
         import base64
         import numpy as np
-        from autonomy_sensing import xyz
-        from map_fusion import voxel
+        from m20.autonomy_sensing import xyz
+        from m20.map_fusion import voxel
         with self.lock:
             raw=self.aligned_raw;pose=copy.deepcopy(self.odom);loc=self.location_quality;quality=self.match_quality
         now=time.monotonic()

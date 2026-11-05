@@ -12,8 +12,8 @@ import unittest
 from unittest.mock import MagicMock,patch
 from urllib.error import HTTPError,URLError
 
-from connection_manager import Connections,target_config
-from ssh_identity import known_keys,endpoint_name
+from m20.connection_manager import Connections,target_config
+from m20.ssh_identity import known_keys,endpoint_name
 
 
 def synthetic_key(seed):
@@ -26,13 +26,13 @@ class PairingTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name);self.events=[]
-        self.patches=[patch('platform_host.private_file',lambda path:None),
-                      patch('platform_host.ssh_executable',side_effect=lambda name:name),
-                      patch('connection_manager.platform_host.IS_WINDOWS',False),
-                      patch('connection_manager.socket.create_connection'),
-                      patch('connection_manager.subprocess.run',side_effect=self.fake_run),
-                      patch('connection_manager.subprocess.Popen',side_effect=AssertionError('No real process allowed')),
-                      patch('connection_manager.urlopen',side_effect=AssertionError('No HTTP allowed'))]
+        self.patches=[patch('m20.platform_host.private_file',lambda path:None),
+                      patch('m20.platform_host.ssh_executable',side_effect=lambda name:name),
+                      patch('m20.connection_manager.platform_host.IS_WINDOWS',False),
+                      patch('m20.connection_manager.socket.create_connection'),
+                      patch('m20.connection_manager.subprocess.run',side_effect=self.fake_run),
+                      patch('m20.connection_manager.subprocess.Popen',side_effect=AssertionError('No real process allowed')),
+                      patch('m20.connection_manager.urlopen',side_effect=AssertionError('No HTTP allowed'))]
         self.mocks=[p.start() for p in self.patches]
         for p in self.patches:self.addCleanup(p.stop)
         stream=self.mocks[3].return_value.__enter__.return_value
@@ -148,7 +148,7 @@ class PairingTests(unittest.TestCase):
             if Path(argv[0]).name=='ssh' and set(json.loads(kwargs.get('input') or '{}'))=={'key'}:
                 return subprocess.CompletedProcess(argv,255,'','connect to host synthetic port 22: Operation timed out')
             return original(argv,**kwargs)
-        with patch('connection_manager.subprocess.run',side_effect=unavailable):
+        with patch('m20.connection_manager.subprocess.run',side_effect=unavailable):
             with self.assertRaisesRegex(ValueError,'timed out') as error:self.deploy()
         self.assertNotIn('密码',str(error.exception));self.assertNotIn('install',[event[0] for event in self.events])
 
@@ -159,7 +159,7 @@ class PairingTests(unittest.TestCase):
         def inspect(argv,**kwargs):
             if Path(argv[0]).name=='ssh':passwords.append((json.loads(kwargs.get('input') or '{}'),kwargs.get('env',{}).get('M20_SSH_PASSWORD')))
             return original(argv,**kwargs)
-        with patch('connection_manager.subprocess.run',side_effect=inspect):self.deploy(password=self.secret,aos_password=aos_secret)
+        with patch('m20.connection_manager.subprocess.run',side_effect=inspect):self.deploy(password=self.secret,aos_password=aos_secret)
         self.assertEqual([password for body,password in passwords if set(body)=={'key'}],[None,aos_secret])
         self.assertEqual([password for body,password in passwords if 'bundle' in body],[self.secret])
         self.assertNotIn(aos_secret,self.c.path.read_text())
@@ -208,7 +208,7 @@ class PairingTests(unittest.TestCase):
             if Path(argv[0]).name=='ssh' and set(body)=={'key'}:
                 self.c.save(dict(aos_ip='198.51.100.7'))
             return result
-        with patch('connection_manager.subprocess.run',side_effect=changed):
+        with patch('m20.connection_manager.subprocess.run',side_effect=changed):
             with self.assertRaisesRegex(ValueError,'变化|取消|配置'):
                 self.deploy()
         self.assertNotIn('install',[event[0] for event in self.events])
@@ -221,7 +221,7 @@ class PairingTests(unittest.TestCase):
             if Path(argv[0]).name=='ssh' and 'bundle' in json.loads(kwargs.get('input') or '{}'):
                 self.c.save(dict(aos_ip='198.51.100.7'))
             return result
-        with patch('connection_manager.subprocess.run',side_effect=changed):
+        with patch('m20.connection_manager.subprocess.run',side_effect=changed):
             with self.assertRaisesRegex(ValueError,'更新|变化|状态'):self.deploy(role='sdk')
         self.assertFalse(self.c.value['targets']['sdk']['deployed'])
         self.assertNotIn('start',[event[0] for event in self.events])
@@ -233,7 +233,7 @@ class PairingTests(unittest.TestCase):
             if Path(argv[0]).name=='ssh' and set(body)=={'key'}:
                 words=shlex.split(argv[-1]);programs.append(words[words.index('-c')+1])
             return original(argv,**kwargs)
-        with patch('connection_manager.subprocess.run',side_effect=capture):self.deploy()
+        with patch('m20.connection_manager.subprocess.run',side_effect=capture):self.deploy()
         home=self.root/'synthetic-remote-home';ssh=home/'.ssh';ssh.mkdir(parents=True)
         authorized=ssh/'authorized_keys';authorized.write_text('existing-synthetic-key')
         payload=json.dumps(dict(key='new-synthetic-key'))
@@ -252,7 +252,7 @@ class PairingTests(unittest.TestCase):
         self.online_tunnel();clock=[100.]
         def immediate_thread(*args,**kwargs):
             return type('ThreadFixture',(),{'start':lambda _:kwargs['target']()})()
-        with patch('connection_manager.time.monotonic',side_effect=lambda:clock[0]),patch('connection_manager.threading.Thread',side_effect=immediate_thread),patch.object(self.c,'service',return_value=dict(ok=True)) as service,patch.object(self.c,'deploy') as deploy:
+        with patch('m20.connection_manager.time.monotonic',side_effect=lambda:clock[0]),patch('m20.connection_manager.threading.Thread',side_effect=immediate_thread),patch.object(self.c,'service',return_value=dict(ok=True)) as service,patch.object(self.c,'deploy') as deploy:
             self.c.poll_once();self.c.poll_once()
             self.assertEqual(service.call_count,1);self.assertEqual(service.call_args.args[0],dict(role='nos',action='start'))
             clock[0]=159.9;self.c.poll_once();self.assertEqual(service.call_count,1)
@@ -262,7 +262,7 @@ class PairingTests(unittest.TestCase):
 
     def test_uninstalled_service_is_never_automatically_deployed_or_started(self):
         self.online_tunnel(deployed=False)
-        with patch.object(self.c,'service') as service,patch.object(self.c,'deploy') as deploy,patch('connection_manager.threading.Thread') as thread:
+        with patch.object(self.c,'service') as service,patch.object(self.c,'deploy') as deploy,patch('m20.connection_manager.threading.Thread') as thread:
             self.c.poll_once()
         service.assert_not_called();deploy.assert_not_called();thread.assert_not_called()
 
@@ -270,7 +270,7 @@ class PairingTests(unittest.TestCase):
         self.online_tunnel();pending=[]
         def queued_thread(*args,**kwargs):
             return type('ThreadFixture',(),{'start':lambda _:pending.append(kwargs['target'])})()
-        with patch('connection_manager.threading.Thread',side_effect=queued_thread),patch.object(self.c,'service') as service:
+        with patch('m20.connection_manager.threading.Thread',side_effect=queued_thread),patch.object(self.c,'service') as service:
             self.c.poll_once();self.assertEqual(len(pending),1)
             self.c.save(dict(aos_ip='198.51.100.7'))
             pending.pop()()
@@ -281,7 +281,7 @@ class PairingTests(unittest.TestCase):
         self.online_tunnel(roles=('nos','gos'));pending=[]
         def queued_thread(*args,**kwargs):
             return type('ThreadFixture',(),{'start':lambda _:pending.append(kwargs['target'])})()
-        with patch('connection_manager.threading.Thread',side_effect=queued_thread),patch.object(self.c,'service',return_value=dict(ok=True)) as service:
+        with patch('m20.connection_manager.threading.Thread',side_effect=queued_thread),patch.object(self.c,'service',return_value=dict(ok=True)) as service:
             self.c.poll_once();self.c.poll_once()
             self.assertEqual(len(pending),2)
             self.assertTrue(all(self.c.service_attempts[role]['running'] for role in ('nos','gos')))
@@ -292,7 +292,7 @@ class PairingTests(unittest.TestCase):
         self.online_tunnel();clock=[100.]
         def immediate_thread(*args,**kwargs):
             return type('ThreadFixture',(),{'start':lambda _:kwargs['target']()})()
-        with patch('connection_manager.time.monotonic',side_effect=lambda:clock[0]),patch('connection_manager.threading.Thread',side_effect=immediate_thread),patch.object(self.c,'service',side_effect=ValueError('synthetic service error')) as service:
+        with patch('m20.connection_manager.time.monotonic',side_effect=lambda:clock[0]),patch('m20.connection_manager.threading.Thread',side_effect=immediate_thread),patch.object(self.c,'service',side_effect=ValueError('synthetic service error')) as service:
             self.c.poll_once();clock[0]=105.;self.c.poll_once()
             self.assertEqual(service.call_count,1)
         self.assertFalse(self.c.service_attempts['nos']['running'])
@@ -305,7 +305,7 @@ class PairingTests(unittest.TestCase):
             self.assertTrue(req.full_url.endswith('/health'))
             self.assertEqual(req.get_header('X-api-token'),self.c.value['targets']['nos']['token'])
             return io.BytesIO(b'{"ok":true,"health_protocol":1}')
-        with patch('connection_manager.urlopen',side_effect=response) as request,patch.object(self.c,'recover_service') as recover:
+        with patch('m20.connection_manager.urlopen',side_effect=response) as request,patch.object(self.c,'recover_service') as recover:
             self.c.poll_once()
         self.assertEqual(request.call_count,1);recover.assert_not_called()
         self.assertEqual(self.c.states['nos']['status'],'ready')
@@ -313,13 +313,13 @@ class PairingTests(unittest.TestCase):
     def test_old_agents_fall_back_only_on_explicit_unsupported_endpoint(self):
         for code,message in [(404,''),(405,''),(400,'NOS 接口或操作不存在'),(400,'GOS 只读代理不支持此操作'),(400,'SDK 接口不存在'),(400,'接口不存在')]:
             error=HTTPError('http://synthetic/health',code,'unsupported',{},io.BytesIO(json.dumps({'err':message}).encode()))
-            with patch('connection_manager.urlopen',side_effect=[error,io.BytesIO(b'{"ok":true}')]) as request:
+            with patch('m20.connection_manager.urlopen',side_effect=[error,io.BytesIO(b'{"ok":true}')]) as request:
                 self.c.probe_service('nos')
             self.assertTrue(request.call_args.args[0].full_url.endswith('/status'))
 
     def test_auth_server_and_transport_errors_never_fall_back(self):
         for error in [HTTPError('http://synthetic/health',code,'error',{},io.BytesIO(b'{"err":"failure"}')) for code in (400,401,403,500)]+[TimeoutError('timeout')]:
-            with patch('connection_manager.urlopen',side_effect=error) as request:
+            with patch('m20.connection_manager.urlopen',side_effect=error) as request:
                 with self.assertRaises(Exception):self.c.probe_service('nos')
             self.assertEqual(request.call_count,1)
 
@@ -329,7 +329,7 @@ class PairingTests(unittest.TestCase):
         error=HTTPError('http://synthetic/health',401,'Unauthorized',{},io.BytesIO())
         def immediate_thread(*args,**kwargs):
             return type('ThreadFixture',(),{'start':lambda _:kwargs['target']()})()
-        with patch('connection_manager.urlopen',side_effect=error),patch('connection_manager.threading.Thread',side_effect=immediate_thread),patch.object(self.c,'remote',return_value=dict(ok=True,token=token)) as remote,patch.object(self.c,'service') as service,patch.object(self.c,'deploy') as deploy:
+        with patch('m20.connection_manager.urlopen',side_effect=error),patch('m20.connection_manager.threading.Thread',side_effect=immediate_thread),patch.object(self.c,'remote',return_value=dict(ok=True,token=token)) as remote,patch.object(self.c,'service') as service,patch.object(self.c,'deploy') as deploy:
             self.c.poll_once()
             self.assertEqual(remote.call_args.args[0],'nos')
             self.assertEqual(remote.call_args.args[2],dict(role='nos'))
@@ -338,7 +338,7 @@ class PairingTests(unittest.TestCase):
         self.assertEqual(json.loads(self.c.path.read_text())['targets']['nos']['token'],token)
         self.assertNotIn(token,json.dumps(self.c.public()))
         self.assertNotIn(token,json.dumps(self.events))
-        with patch('connection_manager.urlopen',return_value=io.BytesIO(b'{"ok":true,"health_protocol":1}')):self.c.poll_once()
+        with patch('m20.connection_manager.urlopen',return_value=io.BytesIO(b'{"ok":true,"health_protocol":1}')):self.c.poll_once()
         self.assertEqual(self.c.states['nos']['status'],'ready')
 
     def test_credential_sync_does_not_change_other_computers_service(self):
@@ -375,7 +375,7 @@ class PairingTests(unittest.TestCase):
         def queued_thread(*args,**kwargs):
             return type('ThreadFixture',(),{'start':lambda _:pending.append(kwargs['target'])})()
         error=HTTPError('http://synthetic/health',401,'Unauthorized',{},io.BytesIO())
-        with patch('connection_manager.urlopen',side_effect=error),patch('connection_manager.threading.Thread',side_effect=queued_thread),patch.object(self.c,'sync_service_credentials') as sync:
+        with patch('m20.connection_manager.urlopen',side_effect=error),patch('m20.connection_manager.threading.Thread',side_effect=queued_thread),patch.object(self.c,'sync_service_credentials') as sync:
             self.c.poll_once();self.c.poll_once()
             self.assertEqual(len(pending),2)
             self.c.save(dict(aos_ip='198.51.100.7'))
@@ -387,7 +387,7 @@ class PairingTests(unittest.TestCase):
         def immediate_thread(*args,**kwargs):
             return type('ThreadFixture',(),{'start':lambda _:kwargs['target']()})()
         error=HTTPError('http://synthetic/health',401,'Unauthorized',{},io.BytesIO())
-        with patch('connection_manager.time.monotonic',side_effect=lambda:clock[0]),patch('connection_manager.urlopen',side_effect=error),patch('connection_manager.threading.Thread',side_effect=immediate_thread),patch.object(self.c,'sync_service_credentials',side_effect=ValueError('synthetic SSH failure')) as sync,patch.object(self.c,'service') as service:
+        with patch('m20.connection_manager.time.monotonic',side_effect=lambda:clock[0]),patch('m20.connection_manager.urlopen',side_effect=error),patch('m20.connection_manager.threading.Thread',side_effect=immediate_thread),patch.object(self.c,'sync_service_credentials',side_effect=ValueError('synthetic SSH failure')) as sync,patch.object(self.c,'service') as service:
             self.c.poll_once();clock[0]=105.;self.c.poll_once()
             self.assertEqual(sync.call_count,1);service.assert_not_called()
             self.assertEqual(self.c.states['nos']['status'],'waiting_service')
@@ -396,18 +396,18 @@ class PairingTests(unittest.TestCase):
 
     def test_invalid_heartbeat_does_not_claim_online(self):
         for body in [b'{}',b'[]',b'{"ok":true}',b'{"ok":false,"health_protocol":1}']:
-            with patch('connection_manager.urlopen',return_value=io.BytesIO(body)):
+            with patch('m20.connection_manager.urlopen',return_value=io.BytesIO(body)):
                 with self.assertRaises(ValueError):self.c.probe_service('nos')
 
     def test_one_timeout_retries_without_starting_service_or_claiming_ready(self):
         self.online_tunnel();self.c.states['nos']={'status':'ready','checked':10}
-        with patch('connection_manager.urlopen',side_effect=URLError(TimeoutError('synthetic timeout'))),patch.object(self.c,'recover_service') as recover:
+        with patch('m20.connection_manager.urlopen',side_effect=URLError(TimeoutError('synthetic timeout'))),patch.object(self.c,'recover_service') as recover:
             self.c.poll_once()
             self.assertEqual(self.c.states['nos']['status'],'connecting');recover.assert_not_called()
             self.assertNotIn('checked',self.c.states['nos'])
             self.c.poll_once()
             self.assertEqual(self.c.states['nos']['status'],'waiting_service');recover.assert_called_once_with('nos')
-        with patch('connection_manager.urlopen',return_value=io.BytesIO(b'{"ok":true,"health_protocol":1}')):self.c.poll_once()
+        with patch('m20.connection_manager.urlopen',return_value=io.BytesIO(b'{"ok":true,"health_protocol":1}')):self.c.poll_once()
         self.assertEqual(self.c.states['nos']['status'],'ready');self.assertNotIn('timeouts',self.c.states['nos'])
 
 

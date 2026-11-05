@@ -8,8 +8,8 @@ import copy
 import math
 import unittest
 import numpy as np
-from navigation_planner import GridPlanner
-from point_navigation import simulated_scan
+from m20.navigation_planner import GridPlanner
+from m20.point_navigation import simulated_scan
 
 
 def door_world(open_door=False,unknown=False):

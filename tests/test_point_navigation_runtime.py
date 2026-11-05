@@ -10,8 +10,8 @@ from unittest.mock import patch
 import numpy as np
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 import test_platform as cases
-import point_navigation as runtime
-from navigation_planner import GridPlanner
+import m20.point_navigation as runtime
+from m20.navigation_planner import GridPlanner
 
 REAL_THREAD=threading.Thread
 

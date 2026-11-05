@@ -9,9 +9,9 @@ import threading
 import time
 import unittest
 from unittest.mock import patch
-from observation_errors import GroundObservationPending
+from m20.observation_errors import GroundObservationPending
 import test_platform as cases
-from autonomy_core import Explorer,disk
+from m20.autonomy_core import Explorer,disk
 
 
 class RecordingExplorer(Explorer):
@@ -72,7 +72,7 @@ class AutonomyObservationRuntimeTests(unittest.TestCase):
         def transport(base,path,request,timeout,token):
             i=len(self.calls);self.calls.append((base,path));time.sleep(.035)
             return self.packet(stamps[min(i,len(stamps)-1)])
-        with patch('platform_hub.rpc',side_effect=transport):
+        with patch('m20.platform_hub.rpc',side_effect=transport):
             self.run_worker();self.assertTrue(self.wait_for(lambda:a.observation_pump and a.observation_pump.status()['counters']['reordered']>=1))
             self.assertTrue(self.wait_for(lambda:len(a.explorer.ingested)>=3),a.message)
             self.assertTrue(a.active,a.message);self.assertNotIn('时间戳回退',a.message)
@@ -89,7 +89,7 @@ class AutonomyObservationRuntimeTests(unittest.TestCase):
         self.occlusion_resume(typed=False)
 
     def occlusion_resume(self,typed):
-        import autonomy_runtime as runtime
+        import m20.autonomy_runtime as runtime
         a=self.configure();a.deadline=a.started+120
         phase={'blocked':False,'stamp':1.};requests=[];progress_windows=[]
         def transport(base,path,request,timeout,token):
@@ -101,7 +101,7 @@ class AutonomyObservationRuntimeTests(unittest.TestCase):
         progress_type=runtime.MotionProgress
         def progress():
             window=progress_type();progress_windows.append(window);return window
-        with patch('platform_hub.rpc',side_effect=transport),patch.object(runtime,'MotionProgress',side_effect=progress):
+        with patch('m20.platform_hub.rpc',side_effect=transport),patch.object(runtime,'MotionProgress',side_effect=progress):
             self.worker=threading.Thread(target=a._run,args=(a.run_id,None,120),daemon=True);self.worker.start()
             self.assertTrue(self.wait_for(lambda:any(any(row['axes']) for row in self.app.link.output)),a.message)
             run_id=a.run_id;phase['blocked']=True
@@ -124,7 +124,7 @@ class AutonomyObservationRuntimeTests(unittest.TestCase):
             if i>=2:entered.set();self.release.wait(.7)
             else:time.sleep(.035)
             return self.packet(10.+i*.1)
-        with patch('platform_hub.rpc',side_effect=transport):
+        with patch('m20.platform_hub.rpc',side_effect=transport):
             self.run_worker();self.assertTrue(entered.wait(1.))
             self.assertTrue(self.wait_for(lambda:sum(any(row['axes']) for row in self.app.link.output)>=3),a.message)
             moving=[r for r in self.app.link.output if any(r['axes'])];old_deadline=moving[0]['deadline']
@@ -138,7 +138,7 @@ class AutonomyObservationRuntimeTests(unittest.TestCase):
     def test_cancel_during_real_scan_rpc_ignores_late_result(self):
         a=self.configure();entered=threading.Event()
         def transport(*args,**kwargs):entered.set();self.release.wait(.7);return self.packet(20.)
-        with patch('platform_hub.rpc',side_effect=transport):
+        with patch('m20.platform_hub.rpc',side_effect=transport):
             self.run_worker();self.assertTrue(entered.wait(1.))
             with self.app.lock:a.pause('operator cancelled')
             self.worker.join(.15);self.assertFalse(self.worker.is_alive())
@@ -149,7 +149,7 @@ class AutonomyObservationRuntimeTests(unittest.TestCase):
     def test_connection_change_cannot_retarget_old_sensor_request(self):
         a=self.configure();entered=threading.Event()
         def transport(base,*args,**kwargs):self.calls.append(base);entered.set();self.release.wait(.7);return self.packet(20.)
-        with patch('platform_hub.rpc',side_effect=transport):
+        with patch('m20.platform_hub.rpc',side_effect=transport):
             self.run_worker();self.assertTrue(entered.wait(1.))
             with self.app.lock:self.app.hub.detach_context();self.app.config['nos']='offline-new-context'
             self.release.set();self.assertTrue(self.wait_for(lambda:not a.active),a.message)
@@ -159,7 +159,7 @@ class AutonomyObservationRuntimeTests(unittest.TestCase):
     def test_collection_generation_change_discards_inflight_scan(self):
         a=self.configure();entered=threading.Event()
         def transport(*args,**kwargs):entered.set();self.release.wait(.7);return self.packet(20.)
-        with patch('platform_hub.rpc',side_effect=transport):
+        with patch('m20.platform_hub.rpc',side_effect=transport):
             self.run_worker();self.assertTrue(entered.wait(1.))
             with self.app.lock:a.capture_id='another-capture'
             self.release.set();self.assertTrue(self.wait_for(lambda:not a.active),a.message)
@@ -172,7 +172,7 @@ class AutonomyObservationRuntimeTests(unittest.TestCase):
             i=len(self.calls);self.calls.append(i)
             if i==0:old_entered.set();self.release.wait(.7);return self.packet(9000.)
             time.sleep(.04);return self.packet(100.+i*.1)
-        with patch('platform_hub.rpc',side_effect=transport):
+        with patch('m20.platform_hub.rpc',side_effect=transport):
             self.run_worker();old_worker=self.worker;self.assertTrue(old_entered.wait(1.))
             old_pump=a.observation_pump
             with self.app.lock:
@@ -192,7 +192,7 @@ class AutonomyObservationRuntimeTests(unittest.TestCase):
         def transport(*args,**kwargs):
             i=len(self.calls);self.calls.append(i);time.sleep(.06)
             return self.packet(20.+i*.2,pose=(1.6,0,0) if i>=3 else (0,0,0))
-        with patch('platform_hub.rpc',side_effect=transport):
+        with patch('m20.platform_hub.rpc',side_effect=transport):
             self.run_worker();self.assertTrue(self.wait_for(lambda:not a.active,2.))
             self.assertIn('跳变',a.message)
             self.assertEqual(self.app.velocity,[0.,0.,0.])
@@ -202,7 +202,7 @@ class AutonomyObservationRuntimeTests(unittest.TestCase):
         def transport(*args,**kwargs):
             i=len(self.calls);self.calls.append(i);time.sleep(.07)
             return self.packet(20.+i*.1)
-        with patch('platform_hub.rpc',side_effect=transport):
+        with patch('m20.platform_hub.rpc',side_effect=transport):
             self.run_worker();self.assertTrue(self.wait_for(lambda:len(a.explorer.ingested)>=6,2.))
             moving=[r for r in self.app.link.output if any(r['axes'])]
             self.assertGreater(len(moving),len(a.explorer.ingested))
@@ -217,7 +217,7 @@ class AutonomyObservationRuntimeTests(unittest.TestCase):
         def recover(*args,**kwargs):
             requested.append((time.monotonic(),a.explorer.current_scan['stamp']))
             return original(*args,**kwargs)
-        with patch('platform_hub.rpc',side_effect=transport),patch.object(a.explorer,'request_recovery',side_effect=recover):
+        with patch('m20.platform_hub.rpc',side_effect=transport),patch.object(a.explorer,'request_recovery',side_effect=recover):
             self.run_worker()
             self.assertTrue(self.wait_for(lambda:any(abs(r['axes'][1])>.1 for r in self.app.link.output),6.),a.message)
             self.assertTrue(requested)
@@ -239,7 +239,7 @@ class AutonomyObservationRuntimeTests(unittest.TestCase):
             if a.explorer.recovery is not None and any([forward,side,yaw]):
                 late.set();valid_until=time.monotonic()-.001
             return original(run_id,forward,yaw,valid_until,side=side)
-        with patch('platform_hub.rpc',side_effect=transport),patch.object(a,'_drive',side_effect=drive):
+        with patch('m20.platform_hub.rpc',side_effect=transport),patch.object(a,'_drive',side_effect=drive):
             self.run_worker();self.assertTrue(late.wait(1.5),a.message)
             self.assertEqual(a.explorer.recovery_attempts,0);self.assertEqual(a.explorer.recovery_total_attempts,0)
             self.assertFalse(any(any(row['axes']) for row in self.app.link.output))

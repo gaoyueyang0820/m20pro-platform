@@ -10,7 +10,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
-import platform_host
+import m20.platform_host as platform_host
 from bridge.mapping_job import mapping_phase,empty_capture_confirmed
 
 
@@ -35,11 +35,11 @@ class PortableReviewTests(unittest.TestCase):
         sid='S-1-5-21-100-200-300-400'
         identity=subprocess.CompletedProcess([],0,'"test","'+sid+'"','')
         for failure in [subprocess.CalledProcessError(1,['icacls']),subprocess.TimeoutExpired('icacls',5),OSError('unavailable')]:
-            with patch.object(platform_host,'IS_WINDOWS',True),patch('platform_host.subprocess.run',side_effect=[identity,failure]):
+            with patch.object(platform_host,'IS_WINDOWS',True),patch('m20.platform_host.subprocess.run',side_effect=[identity,failure]):
                 with self.assertRaisesRegex(ValueError,'私有权限'):platform_host.private_file(Path('synthetic.key'))
 
     def test_missing_sid_is_not_silently_accepted(self):
-        with patch.object(platform_host,'IS_WINDOWS',True),patch('platform_host.subprocess.run',return_value=subprocess.CompletedProcess([],0,'"missing"','')):
+        with patch.object(platform_host,'IS_WINDOWS',True),patch('m20.platform_host.subprocess.run',return_value=subprocess.CompletedProcess([],0,'"missing"','')):
             with self.assertRaises(ValueError):platform_host.private_file(Path('synthetic.key'))
 
     def test_proxy_keeps_the_selected_executable_and_quoted_paths(self):

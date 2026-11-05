@@ -7,7 +7,7 @@ import time
 import unittest
 from unittest.mock import patch
 import test_platform as cases
-from localization_runtime import OperationCancelled
+from m20.localization_runtime import OperationCancelled
 
 
 class MapManagementReviewTests(unittest.TestCase):

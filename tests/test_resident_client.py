@@ -9,13 +9,13 @@ import time
 from types import SimpleNamespace as Obj
 import unittest
 from unittest.mock import Mock,patch
-from platform_core import RobotLink
-from resident_navigation_client import ResidentNavigationClient
+from m20.platform_core import RobotLink
+from m20.resident_navigation_client import ResidentNavigationClient
 
 
 class ResidentClientTests(unittest.TestCase):
     def setUp(self):
-        self.acl=patch('platform_host.private_file',lambda path:None);self.acl.start();self.addCleanup(self.acl.stop)
+        self.acl=patch('m20.platform_host.private_file',lambda path:None);self.acl.start();self.addCleanup(self.acl.stop)
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup);self.root=Path(self.temp.name)
         self.raw=b'P5\n3 3\n255\n'+bytes([254])*9
         (self.root/'maps').mkdir();(self.root/'maps/map.pgm').write_bytes(self.raw)

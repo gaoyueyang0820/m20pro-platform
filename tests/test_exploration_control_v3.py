@@ -1,6 +1,6 @@
 """Continuous exploration integration; ideal kinematics, no hardware I/O."""
 import unittest
-from tools.benchmark_exploration_control_v3 import run
+from tools.benchmarks.benchmark_exploration_control_v3 import run
 
 
 class ExplorationControlTests(unittest.TestCase):

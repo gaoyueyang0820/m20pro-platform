@@ -3,9 +3,9 @@ import math
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
-from autonomy_core import Explorer,disk
-from autonomy_runtime import ExplorationCompletion
-from exploration_frontiers import FrontierSelector
+from m20.autonomy_core import Explorer,disk
+from m20.autonomy_runtime import ExplorationCompletion
+from m20.exploration_frontiers import FrontierSelector
 
 
 class ExplorationCompletionTests(unittest.TestCase):
@@ -36,7 +36,7 @@ class ExplorationCompletionTests(unittest.TestCase):
     def test_heading_constraint_starts_available_retreat_instead_of_completing(self):
         e=Explorer(8);e.ingest(dict(pose=[0,0,0],floor=list(disk(3)),obstacles=[],stamp=1,_velocity_body=[0.,0.]))
         e.visited.update(p for p in e.free if p[0]<=0)
-        with patch('autonomy_core.clearance',side_effect=lambda scan,f,yaw,side=0.:(f<0,'')):
+        with patch('m20.autonomy_core.clearance',side_effect=lambda scan,f,yaw,side=0.:(f<0,'')):
             self.assertEqual(e.plan(),'recovering',e.frontier_metrics)
             self.assertEqual(e.frontier_metrics['search_status'],'maneuver')
             self.assertLess(e.command_axes()[0],0)

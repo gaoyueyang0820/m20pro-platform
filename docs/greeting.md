@@ -6,7 +6,7 @@
 | --- | --- |
 | `greeting.py` | 纯协议组包、20 Hz 请求序列、反馈检查与显式所有权恢复辅助函数 |
 | `greeting_runtime.py` | 平台会话、控制权、取消与连接变更处理 |
-| `m20_greet.py` | 独立标准库 CLI，默认仅灯语 |
+| `m20/m20_greet.py` | 独立标准库 CLI，默认仅灯语 |
 | `tests/test_greeting.py` | `unittest` 协议、数值边界与反馈回归 |
 | `tests/test_greeting_cli.py` | 模拟时钟/连接的 CLI 生命周期与报文接收回归 |
 | `tests/test_greeting_runtime.py` | 平台真实入口配合模拟链路的控制权回归 |
@@ -16,12 +16,12 @@
 以下是真机命令示例，不属于离线验证流程。运行独立 CLI 前，应停止平台自主任务和其他运动客户端；独立 UDP 客户端没有跨客户端控制权仲裁能力。`--ip` 要填当前可达的机器人地址。
 
 ```bash
-python m20_greet.py --ip 10.21.31.103 --status
-python m20_greet.py --ip 10.21.31.103
-python m20_greet.py --ip 10.21.31.103 --style flow --seconds 4
-python m20_greet.py --ip 10.21.31.103 --nod
-python m20_greet.py --ip 10.21.31.103 --bob
-python m20_greet.py --ip 10.21.31.103 --nod --stand
+python -m m20.m20_greet --ip 10.21.31.103 --status
+python -m m20.m20_greet --ip 10.21.31.103
+python -m m20.m20_greet --ip 10.21.31.103 --style flow --seconds 4
+python -m m20.m20_greet --ip 10.21.31.103 --nod
+python -m m20.m20_greet --ip 10.21.31.103 --bob
+python -m m20.m20_greet --ip 10.21.31.103 --nod --stand
 ```
 
 `--status` 只请求状态和维持反馈心跳；不会设置灯光或发送运动轴。灯语不要求起立，也不发送任何轴、使用模式或步态命令。`--stand` 只在同时请求实验动作、反馈为趴下状态时允许请求起立；不主动切换使用模式或步态，必须读回新的 `MotionState=17` 才继续。

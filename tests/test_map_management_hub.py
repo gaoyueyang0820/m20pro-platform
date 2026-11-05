@@ -5,7 +5,7 @@ from unittest.mock import patch
 import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from m20_platform import Platform
-from platform_core import Store
+from m20.platform_core import Store
 
 
 class MapManagementHubTests(unittest.TestCase):

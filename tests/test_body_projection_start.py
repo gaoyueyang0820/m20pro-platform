@@ -10,9 +10,9 @@ import numpy as np
 sys.path[:0]=[str(Path(__file__).resolve().parents[1]),str(Path(__file__).resolve().parent)]
 from test_live_surface_localization import planner,packet
 from test_start_pose_recovery import room,body_oracle
-from start_pose_recovery import recover_start
-from start_recovery_runtime import plan_with_recovery
-from robot_geometry import BODY_HALF_LENGTH,BODY_HALF_WIDTH
+from m20.start_pose_recovery import recover_start
+from m20.start_recovery_runtime import plan_with_recovery
+from m20.robot_geometry import BODY_HALF_LENGTH,BODY_HALF_WIDTH
 
 
 class BodyProjectionStartTests(unittest.TestCase):
@@ -81,7 +81,7 @@ class BodyProjectionStartTests(unittest.TestCase):
 
     def test_continuous_departure_does_not_reintroduce_residue_under_rear_body(self):
         p,truth,start,cells=self.scene();clock=[500.];carried=False
-        with patch('live_traversability.time.monotonic',side_effect=lambda:clock[0]):
+        with patch('m20.live_traversability.time.monotonic',side_effect=lambda:clock[0]):
             for i in range(20):
                 pose=[3.+i*.06,3.,0.];clock[0]=500.+i*.15
                 scan,loc=self.scan(truth,pose,stamp=100.+i*.15)
@@ -97,7 +97,7 @@ class BodyProjectionStartTests(unittest.TestCase):
 
     def test_slow_departure_keeps_only_previous_seed_until_tail_has_left(self):
         p,truth,start,cells=self.scene();clock=[500.]
-        with patch('live_traversability.time.monotonic',side_effect=lambda:clock[0]):
+        with patch('m20.live_traversability.time.monotonic',side_effect=lambda:clock[0]):
             for i in range(81):
                 pose=[3.+i*.01,3.,0.];clock[0]=500.+i*.2
                 scan,loc=self.scan(truth,pose,stamp=100.+i*.2)
@@ -141,7 +141,7 @@ class BodyProjectionStartTests(unittest.TestCase):
         for mode in ('expired','jump'):
             with self.subTest(mode=mode):
                 p,truth,start,_=self.scene();clock=[500.]
-                with patch('live_traversability.time.monotonic',side_effect=lambda:clock[0]):
+                with patch('m20.live_traversability.time.monotonic',side_effect=lambda:clock[0]):
                     scan,loc=self.scan(truth,start);p.update_live_surface(scan,loc)
                     self.assertTrue(p.pose_fits(*start))
                     if mode=='expired':clock[0]+=.6;p.live_surface_status()

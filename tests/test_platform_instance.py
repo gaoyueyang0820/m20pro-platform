@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
-from platform_host import lock_workspace
+from m20.platform_host import lock_workspace
 
 
 class WorkspaceInstanceTests(unittest.TestCase):

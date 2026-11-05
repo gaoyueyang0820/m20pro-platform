@@ -5,10 +5,10 @@ import time
 import unittest
 from unittest.mock import patch
 import numpy as np
-from autonomy_core import Explorer,disk
-from autonomy_runtime import MotionProgress
-from local_trajectory import TrajectoryFollower,exploration_step
-from tools.benchmark_exploration_flow import stuck_loop,multi_vantage
+from m20.autonomy_core import Explorer,disk
+from m20.autonomy_runtime import MotionProgress
+from m20.local_trajectory import TrajectoryFollower,exploration_step
+from tools.benchmarks.benchmark_exploration_flow import stuck_loop,multi_vantage
 
 
 def open_scan(x=0.,stamp=1.,velocity=.35):

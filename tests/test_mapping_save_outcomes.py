@@ -9,8 +9,8 @@ from unittest.mock import patch
 import numpy as np
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from bridge import mapping_job
-from map_change_policy import gate_alignment
-from map_fusion import FusionDecisionError,capture_continuation,fuse_maps,write_pcd
+from m20.map_change_policy import gate_alignment
+from m20.map_fusion import FusionDecisionError,capture_continuation,fuse_maps,write_pcd
 
 PRIVATE_FIXTURE=Path(__file__).parent/'fixtures/runtime_replay/fusion_deferred_20261102.json'
 
@@ -47,7 +47,7 @@ class SavedObservationTests(unittest.TestCase):
             report.update(capture_continuation(self.base,self.scan,poses,0,self.fixture['evidence']))
         return FusionDecisionError(report)
     def finish(self,rejection):
-        with patch.object(mapping_job,'slam_processes',return_value={}),patch.object(mapping_job.subprocess,'run',return_value=SimpleNamespace(returncode=0,stdout='',stderr='')) as run,patch('map_fusion.fuse_maps',side_effect=rejection):
+        with patch.object(mapping_job,'slam_processes',return_value={}),patch.object(mapping_job.subprocess,'run',return_value=SimpleNamespace(returncode=0,stdout='',stderr='')) as run,patch('m20.map_fusion.fuse_maps',side_effect=rejection):
             mapping_job.worker('stop_mapping',self.logs,request_id='b'*32,expected_start_request_id='a'*32)
         self.assertEqual(run.call_count,1)
         return mapping_job.read_job('stop_mapping',self.logs)
@@ -65,7 +65,7 @@ class SavedObservationTests(unittest.TestCase):
 
     def test_fusion_attaches_saved_session_identity_to_structured_rejection(self):
         error=self.rejection(context=False)
-        with patch('map_fusion.structural_alignment',side_effect=error):
+        with patch('m20.map_fusion.structural_alignment',side_effect=error):
             with self.assertRaises(FusionDecisionError) as caught:
                 fuse_maps(self.base,self.scan,self.maps/'candidate',dict(x=0,y=0,z=0,yaw=0),registration=lambda source,target:np.eye(4))
         self.assertEqual(caught.exception.report['observation_session']['path'],str(self.scan))
@@ -110,7 +110,7 @@ class SavedObservationTests(unittest.TestCase):
         self.assertEqual(phase['phase'],'error');self.assertTrue(phase['observations_saved']);self.assertFalse(phase['in_progress'])
 
     def test_vendor_stop_failure_is_not_relabelled_as_saved_observations(self):
-        with patch.object(mapping_job,'slam_processes',return_value={}),patch.object(mapping_job.subprocess,'run',return_value=SimpleNamespace(returncode=2,stdout='',stderr='save failed')),patch('map_fusion.fuse_maps') as fuse:
+        with patch.object(mapping_job,'slam_processes',return_value={}),patch.object(mapping_job.subprocess,'run',return_value=SimpleNamespace(returncode=2,stdout='',stderr='save failed')),patch('m20.map_fusion.fuse_maps') as fuse:
             mapping_job.worker('stop_mapping',self.logs)
         row=mapping_job.read_job('stop_mapping',self.logs);fuse.assert_not_called()
         self.assertEqual(row['state'],'failed');self.assertFalse(row.get('observations_saved',False))

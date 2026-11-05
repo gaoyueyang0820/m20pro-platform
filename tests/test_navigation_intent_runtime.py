@@ -8,7 +8,7 @@ sys.path[:0]=[str(Path(__file__).resolve().parents[1]),str(Path(__file__).resolv
 import test_platform as cases
 import test_navigation_lifecycle as native_cases
 import test_point_navigation_runtime as point_cases
-import point_navigation as runtime
+import m20.point_navigation as runtime
 
 
 class ScopedNativeStartTests(unittest.TestCase):

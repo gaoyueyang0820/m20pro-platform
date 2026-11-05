@@ -5,9 +5,9 @@ import unittest
 from unittest.mock import patch
 from urllib.error import URLError,HTTPError
 import io
-from observation_errors import BridgeTransportError
-from platform_core import rpc
-from latest_observation import LatestObservationPump,TransientObservationError
+from m20.observation_errors import BridgeTransportError
+from m20.platform_core import rpc
+from m20.latest_observation import LatestObservationPump,TransientObservationError
 
 
 class PumpTests(unittest.TestCase):
@@ -71,7 +71,7 @@ class PumpTests(unittest.TestCase):
 
     def test_real_rpc_network_failure_keeps_valid_cache_until_original_expiry(self):
         p,g,c=self.pump();p._publish(self.packet(),g)
-        with patch('platform_core.urlopen',side_effect=URLError('synthetic timeout')):
+        with patch('m20.platform_core.urlopen',side_effect=URLError('synthetic timeout')):
             for now in [100.1,100.2,100.29]:
                 c[0]=now
                 with self.assertRaises(BridgeTransportError) as error:rpc('http://offline.invalid','/sensors/autonomy',{'mapping':True})
@@ -82,7 +82,7 @@ class PumpTests(unittest.TestCase):
     def test_real_rpc_geometry_failure_still_drops_cached_scene_immediately(self):
         p,g,c=self.pump();p._publish(self.packet(),g)
         response=HTTPError('http://offline.invalid',400,'synthetic',{},io.BytesIO(b'{"ok":false,"err":"pose invalid"}'))
-        with patch('platform_core.urlopen',side_effect=response):
+        with patch('m20.platform_core.urlopen',side_effect=response):
             with self.assertRaises(ValueError) as error:rpc('http://offline.invalid','/sensors/autonomy',{'mapping':True})
         self.assertNotIsInstance(error.exception,BridgeTransportError);p._error(error.exception,g)
         self.assertEqual(p.read(g)['state'],'invalidated')

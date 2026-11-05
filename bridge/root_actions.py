@@ -7,8 +7,8 @@ import sys
 import zipfile
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from map_formats import Files,map_name,inspect_package,digest
-from map_catalog import MapCatalog,catalog_lock,read_json
+from m20.map_formats import Files,map_name,inspect_package,digest
+from m20.map_catalog import MapCatalog,catalog_lock,read_json
 try:
     from .mapping_job import launch,request_identity
 except ImportError:
@@ -52,7 +52,7 @@ def _execute(req,maps,data):
         if folder.parent!=(data/'refinement/sessions').resolve():raise ValueError('采集路径无效')
         info=json.loads((folder/'session.json').read_text());base=(maps/map_name(info['base'])).resolve()
         if base.parent!=maps.resolve():raise ValueError('原地图路径无效')
-        from map_refinement import refine_map
+        from m20.map_refinement import refine_map
         return refine_map(base,folder,maps/map_name(req.get('name')),int(info['grid_id']),info['fingerprint'])
     if action=='mapping_capabilities':
         import shutil
@@ -107,7 +107,7 @@ def _execute(req,maps,data):
         if (maps/'active').resolve()!=folder:raise ValueError('先将要续建的地图设为活动地图并完成定位')
         grid=req.get('grid_id',0)
         if not isinstance(grid,int) or isinstance(grid,bool) or not 0<=grid<=999:raise ValueError('栅格编号无效')
-        from map_fusion import read_grid
+        from m20.map_fusion import read_grid
         read_grid(folder,grid)
         identity=req.get('request_id')
         request_identity(identity)
