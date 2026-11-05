@@ -323,6 +323,77 @@ class PairingTests(unittest.TestCase):
                 with self.assertRaises(Exception):self.c.probe_service('nos')
             self.assertEqual(request.call_count,1)
 
+    def test_auth_mismatch_recovers_credentials_without_start_or_redeploy(self):
+        self.online_tunnel()
+        token='synthetic-running-agent-token-12345'
+        error=HTTPError('http://synthetic/health',401,'Unauthorized',{},io.BytesIO())
+        def immediate_thread(*args,**kwargs):
+            return type('ThreadFixture',(),{'start':lambda _:kwargs['target']()})()
+        with patch('connection_manager.urlopen',side_effect=error),patch('connection_manager.threading.Thread',side_effect=immediate_thread),patch.object(self.c,'remote',return_value=dict(ok=True,token=token)) as remote,patch.object(self.c,'service') as service,patch.object(self.c,'deploy') as deploy:
+            self.c.poll_once()
+            self.assertEqual(remote.call_args.args[0],'nos')
+            self.assertEqual(remote.call_args.args[2],dict(role='nos'))
+            service.assert_not_called();deploy.assert_not_called()
+        self.assertEqual(self.c.value['targets']['nos']['token'],token)
+        self.assertEqual(json.loads(self.c.path.read_text())['targets']['nos']['token'],token)
+        self.assertNotIn(token,json.dumps(self.c.public()))
+        self.assertNotIn(token,json.dumps(self.events))
+        with patch('connection_manager.urlopen',return_value=io.BytesIO(b'{"ok":true,"health_protocol":1}')):self.c.poll_once()
+        self.assertEqual(self.c.states['nos']['status'],'ready')
+
+    def test_credential_sync_does_not_change_other_computers_service(self):
+        token='synthetic-running-agent-token-12345'
+        with patch.object(self.c,'remote',return_value=dict(ok=True,token=token)) as remote:
+            result=self.c.sync_service_credentials('nos')
+        self.assertEqual(result,dict(ok=True,message='设备连接已恢复'))
+        program=remote.call_args.args[1]
+        self.assertIn("'--property=MainPID'",program)
+        self.assertIn("'/environ'",program)
+        self.assertNotIn('restart',program)
+        self.assertNotIn('write_text',program)
+        self.assertNotIn(token,program)
+
+    def test_late_credential_sync_cannot_write_to_changed_connection(self):
+        token='synthetic-running-agent-token-12345'
+        def changed(*args,**kwargs):
+            self.c.save(dict(aos_ip='198.51.100.7'))
+            return dict(ok=True,token=token)
+        old=self.c.value['targets']['nos']['token']
+        with patch.object(self.c,'remote',side_effect=changed):
+            with self.assertRaisesRegex(ValueError,'旧设备连接同步已取消'):self.c.sync_service_credentials('nos')
+        self.assertEqual(self.c.value['targets']['nos']['token'],old)
+
+    def test_invalid_service_credential_is_not_saved(self):
+        old=self.c.path.read_text()
+        for token in [None,'short','bad token'*5,'x'*101]:
+            with patch.object(self.c,'remote',return_value=dict(ok=True,token=token)):
+                with self.assertRaises(ValueError):self.c.sync_service_credentials('nos')
+        self.assertEqual(self.c.path.read_text(),old)
+
+    def test_auth_recovery_is_independent_and_does_not_queue_repeated_workers(self):
+        self.online_tunnel(roles=('nos','gos'));pending=[]
+        def queued_thread(*args,**kwargs):
+            return type('ThreadFixture',(),{'start':lambda _:pending.append(kwargs['target'])})()
+        error=HTTPError('http://synthetic/health',401,'Unauthorized',{},io.BytesIO())
+        with patch('connection_manager.urlopen',side_effect=error),patch('connection_manager.threading.Thread',side_effect=queued_thread),patch.object(self.c,'sync_service_credentials') as sync:
+            self.c.poll_once();self.c.poll_once()
+            self.assertEqual(len(pending),2)
+            self.c.save(dict(aos_ip='198.51.100.7'))
+            for run in pending:run()
+        sync.assert_not_called()
+
+    def test_auth_sync_failure_does_not_claim_ready_or_restart_service(self):
+        self.online_tunnel();clock=[100.]
+        def immediate_thread(*args,**kwargs):
+            return type('ThreadFixture',(),{'start':lambda _:kwargs['target']()})()
+        error=HTTPError('http://synthetic/health',401,'Unauthorized',{},io.BytesIO())
+        with patch('connection_manager.time.monotonic',side_effect=lambda:clock[0]),patch('connection_manager.urlopen',side_effect=error),patch('connection_manager.threading.Thread',side_effect=immediate_thread),patch.object(self.c,'sync_service_credentials',side_effect=ValueError('synthetic SSH failure')) as sync,patch.object(self.c,'service') as service:
+            self.c.poll_once();clock[0]=105.;self.c.poll_once()
+            self.assertEqual(sync.call_count,1);service.assert_not_called()
+            self.assertEqual(self.c.states['nos']['status'],'waiting_service')
+            self.assertEqual(self.c.states['nos']['detail'],'synthetic SSH failure')
+            clock[0]=161.;self.c.poll_once();self.assertEqual(sync.call_count,2)
+
     def test_invalid_heartbeat_does_not_claim_online(self):
         for body in [b'{}',b'[]',b'{"ok":true}',b'{"ok":false,"health_protocol":1}']:
             with patch('connection_manager.urlopen',return_value=io.BytesIO(body)):

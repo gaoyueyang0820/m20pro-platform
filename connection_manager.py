@@ -406,18 +406,54 @@ class Connections:
         program="import json,subprocess,sys\nr=json.load(sys.stdin)\nname='m20-platform-'+r['role']+'.service'\na=r['action']\nargs=['systemctl',a,name] if a in ['start','stop','restart'] else ['systemctl','show',name,'--property=ActiveState,SubState,ExecMainStatus'] if a=='status' else ['journalctl','--no-pager','-n','100','-u',name]\nif a in ['start','stop','restart']:args=['sudo','-n','/usr/bin/python3','/opt/m20-platform/bridge/root_actions.py'];body=json.dumps(dict(action='service',role=r['role'],operation=a))\nelse:body=None\np=subprocess.run(args,input=body,capture_output=True,text=True,timeout=30)\nprint(json.dumps(dict(ok=p.returncode==0,output=p.stdout[-12000:],err=p.stderr[-2000:])))"
         return self.remote(role,program,dict(role=role,action=action),timeout=40,**(dict(expected=expected) if expected else {}))
 
-    def recover_service(self,role):
-        """Start an installed platform service once, without blocking other hosts."""
+    def sync_service_credentials(self,role,expected=None):
+        """Reuse a running agent's credentials over its already paired SSH channel.
+
+        Each computer keeps its own SSH key. Adopting the agent's token instead
+        of replacing it lets several paired computers use the same service.
+        """
+        if role not in ROLES:raise ValueError('连接目标无效')
         with self.lock:
-            previous=self.service_attempts.get(role,{})
+            target=copy.deepcopy(self.value['targets'][role])
+            context=expected or dict(target=target,aos=self.value['aos_ip'])
+        program="""import json,re,subprocess,sys
+from pathlib import Path
+r=json.load(sys.stdin);role=r['role']
+if role not in ['nos','gos','sdk','train']:raise ValueError('Invalid role')
+p=subprocess.run(['systemctl','show','m20-platform-'+role+'.service','--property=MainPID','--value'],capture_output=True,text=True,check=True,timeout=6)
+pid=p.stdout.strip()
+if not pid.isdigit() or int(pid)<=0:raise ValueError('设备服务尚未启动')
+values=Path('/proc/'+pid+'/environ').read_bytes().split(b'\\0')
+token=next((v.split(b'=',1)[1].decode() for v in values if v.startswith(b'M20_BRIDGE_TOKEN=')),'')
+if not re.fullmatch(r'[A-Za-z0-9_-]{20,100}',token):raise ValueError('设备服务连接凭据无效')
+print(json.dumps(dict(ok=True,token=token)))
+"""
+        result=self.remote(role,program,dict(role=role),timeout=20,expected=context)
+        token=result.get('token')
+        if not isinstance(token,str) or not re.fullmatch(r'[A-Za-z0-9_-]{20,100}',token):
+            raise ValueError('设备服务连接凭据无效')
+        with self.lock:
+            if self.done or self.value['targets'][role]!=context['target'] or self.value['aos_ip']!=context['aos']:
+                raise ValueError('连接已更新，旧设备连接同步已取消')
+            self.value['targets'][role]['token']=token
+            self.persist()
+        return dict(ok=True,message='设备连接已恢复')
+
+    def recover_service(self,role,credentials=False):
+        """Recover an installed service without blocking other hosts."""
+        key=role+':credentials' if credentials else role
+        with self.lock:
+            previous=self.service_attempts.get(key,{})
             if previous.get('running') or time.monotonic()-previous.get('at',-60)<60:return
             target=copy.deepcopy(self.value['targets'][role]);aos=self.value['aos_ip']
-            token=dict(at=time.monotonic(),running=True);self.service_attempts[role]=token
+            token=dict(at=time.monotonic(),running=True);self.service_attempts[key]=token
         def recover():
             try:
                 with self.lock:
                     if self.done or self.value['targets'][role]!=target or self.value['aos_ip']!=aos:return
-                self.service(dict(role=role,action='start'),expected=dict(target=target,aos=aos))
+                context=dict(target=target,aos=aos)
+                if credentials:self.sync_service_credentials(role,expected=context)
+                else:self.service(dict(role=role,action='start'),expected=context)
             except Exception as exc:token['detail']=str(exc)[:250]
             finally:token['running']=False
         threading.Thread(target=recover,daemon=True).start()
@@ -474,6 +510,14 @@ class Connections:
                 self.probe_service(role)
                 self.states[role]=dict(status='ready',message='服务已连接'+(' · 经 AOS' if target.get('via_aos') else ''),attempted=state.get('attempted',0),checked=time.time())
             except Exception as exc:
+                if isinstance(exc,HTTPError) and exc.code==401:
+                    attempt=self.service_attempts.get(role+':credentials',{})
+                    failed=attempt.get('detail') and not attempt.get('running')
+                    self.states[role]=dict(status='waiting_service' if failed else 'connecting',
+                        message='设备连接恢复失败，稍后自动重试' if failed else '正在恢复设备连接',
+                        detail=attempt.get('detail','设备连接凭据正在同步'),attempted=state.get('attempted',0))
+                    if target.get('deployed'):self.recover_service(role,credentials=True)
+                    continue
                 reason=exc.reason if isinstance(exc,URLError) else exc
                 timeouts=state.get('timeouts',0)+1 if isinstance(reason,(TimeoutError,socket.timeout)) else 0
                 if timeouts==1:
