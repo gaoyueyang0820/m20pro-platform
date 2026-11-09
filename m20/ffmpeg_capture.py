@@ -31,7 +31,12 @@ def find_ffmpeg():
 
 
 def capture_command(binary,source):
-    inputs=['-rtsp_transport','tcp','-timeout','3500000'] if source.startswith('rtsp://') else ['-re','-stream_loop','-1']
+    if source.startswith('rtsp://'):
+        inputs = ['-rtsp_transport', 'tcp', '-timeout', '3500000']
+    elif source.startswith(('http://', 'https://')):
+        inputs = ['-rw_timeout', '3500000']
+    else:
+        inputs = ['-re', '-stream_loop', '-1']
     return [binary,'-hide_banner','-loglevel','error','-nostdin','-filter_threads','1',
             *inputs,'-err_detect','explode','-threads','1','-i',source,
             '-an','-sn','-dn','-vf',"scale=w='min(800,iw)':h=-2",'-pix_fmt','rgb24',

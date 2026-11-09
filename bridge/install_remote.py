@@ -15,7 +15,7 @@ import sys
 import zipfile
 
 ROOT_SETUP = r'''
-import base64,io,json,os,pwd,re,shlex,subprocess,sys,zipfile
+import base64,io,ipaddress,json,os,pwd,re,shlex,subprocess,sys,zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path,PurePosixPath
 r=json.load(sys.stdin)
@@ -47,6 +47,11 @@ for role,target in r['targets'].items():
  token=target['token']
  if not re.fullmatch(r'[A-Za-z0-9_-]{20,100}',token):raise ValueError('Invalid token')
  envfile=envdir/(role+'.env');envfile.write_text('M20_BRIDGE_TOKEN='+token+'\nM20_DATA_DIR=/var/lib/m20-platform\n');envfile.chmod(0o600)
+ if role=='gos' and target.get('gos_aos_ip'):
+  address=ipaddress.IPv4Address(target['gos_aos_ip'])
+  if not address.is_private or address.is_loopback or address.is_unspecified:raise ValueError('Invalid onboard AOS address')
+  with envfile.open('a') as handle:
+   handle.write('M20_GOS_NAVIGATION=1\nM20_GOS_AOS_IP='+str(address)+'\n')
  py=target['python'];setups=list(target.get('ros_setup',[]))
  if role=='sdk' and target.get('sdk_workspace'):
   overlay=target['sdk_workspace'].rstrip('/')+'/install/setup.bash'

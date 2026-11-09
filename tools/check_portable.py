@@ -37,7 +37,7 @@ GROUPS={
             'test_map_learning.MapLearningTests.test_recorder_quality_and_duplicate_stamp_checks',
             'test_mapping_save_outcomes.SyntheticSavedObservationTests'],
     'lifecycle':['test_mapping_request_identity','test_operations_lifecycle','test_delivery_boundary','test_navigation_preview_identity','test_greeting_runtime','test_shared_listener.SharedStartupTests','test_map_management_hub','test_map_management_review','test_connection_recovery','test_sdk_setup_review',
-                 'test_autonomy','test_point_navigation_runtime','test_point_navigation_recovery','test_platform_route_dispatch','test_map_activation_localization',
+                 'test_autonomy','test_point_navigation_runtime','test_point_navigation_recovery','test_platform_route_dispatch','test_map_activation_localization','test_gos_patrol',
                  'test_autonomy_observation_runtime.AutonomyObservationRuntimeTests.test_ground_occlusion_survives_long_wait_and_resumes_same_task',
                  'test_autonomy_observation_runtime.AutonomyObservationRuntimeTests.test_sparse_valid_surface_recovers_without_a_passive_wait_becoming_actuator_failure'],
     'native':['test_native_sensing'],

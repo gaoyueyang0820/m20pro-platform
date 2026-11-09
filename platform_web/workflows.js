@@ -174,6 +174,7 @@ function routeEditorPage(){
     <div class="route-action-bar">${btn('撤销一点','undo-waypoint','small ghost')}${btn('保存路线','save-route','','file')}${btn('开始执行路线','start-nav','primary','play')}${btn('暂停','pause-nav')}${btn('继续','resume-nav')}${btn('结束任务','cancel-nav','danger')}</div>
     ${card('点击地图，按顺序添加目标',mapStage(),'maps','<span class="pill blue" id="nav-status">待命</span>')}
     <div id="nav-feedback" class="card nav-feedback-empty"></div>
+    <div id="patrol-station-results"></div>
     <details class="navigation-drive"><summary>临时手动驾驶与前视画面</summary><div class="navigation-drive-body"><div><p class="help">暂停任务后切换手动。返回路线时点击继续。</p>${btn('切换手动驾驶','nav-takeover')}${compactDrive()}<input id="motion-speed" aria-label="手动驾驶幅度" type="range" min="0.05" max="0.25" step="0.05" value="0.1"><small id="motion-readiness"></small></div><div class="camera-feed"><img id="camera-front" alt="前置相机" hidden><div id="placeholder-front" class="camera-placeholder">${icon('vision')}<strong>${S.mode==='demo'?'演示模式没有实机画面':'正在连接前置相机'}</strong></div><div class="camera-hud"><span>前视</span><span id="cam-front-tag">等待画面</span></div></div></div></details>
    </div>
    <aside class="route-editor card card-pad">
@@ -182,7 +183,7 @@ function routeEditorPage(){
     <div class="field route-behavior"><label for="route-arrival">到点后</label><select id="route-arrival"><option value="continue">自动前往下一点，终点结束</option><option value="pause">每个任务点暂停，点击继续</option></select></div>
     <div class="range-label"><strong>行进顺序</strong><b id="point-count">${points.length} 个点</b></div>
     <div id="waypoints" class="waypoints"></div>
-    <p class="help">点击地图添加；展开航点可调整坐标、朝向与任务类型。</p>
+    <p class="help">点击地图添加，展开航点可设置位置、朝向和到点任务。</p>
     <details class="route-advanced"><summary>速度、步态与方向</summary><div class="form-grid">${select('导航方式','nav-mode',[[1,'自主导航'],[0,'分段直线']])}${select('导航速度','nav-speed',[[1,'低速'],[0,'正常'],[2,'高速']])}${select('路径步态','nav-gait',[['flat','敏捷平地'],['stair','敏捷楼梯']])}${select('运动朝向','nav-manner',[[0,'前进'],[1,'倒退']])}</div></details>
     <div class="divider"></div>
     <h3>已保存路线</h3>
@@ -219,22 +220,75 @@ runRoute=async function(id){
  await api('/api/nav/start',{id,...options});await fetchState();toast(S.mode==='demo'?'演示路线已开始':'路线已提交，等待导航反馈');
 };
 const classicRenderPoints=renderPoints;
+function stationFields(index, point) {
+ const action = point.station_action || {};
+ const camera = action.camera || 'none';
+ const options = [['none','通过航点'],['front','前视人数统计'],['rear','后视人数统计'],['ball','外接球机人数统计']];
+ const row = document.createElement('div');
+ row.className = 'stack';
+ row.innerHTML = `<label class="field">到点任务<select data-station-point="${index}" data-station-key="camera">
+   ${options.map(([value,label])=>`<option value="${value}" ${value===camera?'selected':''}>${label}</option>`).join('')}
+ </select></label>
+ <div class="station-options" ${camera==='none'?'hidden':''}>
+   <label class="field station-pan" ${camera==='ball'?'':'hidden'}>云台动作
+     <select data-station-point="${index}" data-station-key="pan">
+       <option value="none">当前位置</option><option value="left" ${action.pan==='left'?'selected':''}>短转向左</option>
+       <option value="right" ${action.pan==='right'?'selected':''}>短转向右</option>
+     </select>
+   </label>
+   <label class="field">物联网设备 ID（可选）
+     <input inputmode="numeric" maxlength="20" data-station-point="${index}" data-station-key="iot_device_id" value="${esc(action.iot_device_id||'')}">
+   </label>
+ </div>`;
+ row.addEventListener('change', event=>{
+  const key = event.target.dataset.stationKey;
+  if (!key) return;
+  const configured = {...(point.station_action || {camera:'front',pan:'none',iot_device_id:''}), [key]:event.target.value};
+  if (configured.camera === 'none') {
+   delete point.station_action;
+  } else {
+   if (configured.camera !== 'ball') configured.pan = 'none';
+   point.station_action = configured;
+   const engine = $('#route-navigation-engine');
+   if (engine) engine.value = 'gos';
+  }
+  row.querySelector('.station-options').hidden = !point.station_action;
+  row.querySelector('.station-pan').hidden = configured.camera !== 'ball';
+  row.querySelector('[data-station-key="pan"]').value = configured.pan;
+ });
+ return row;
+}
+
 renderPoints=function(){
  classicRenderPoints();text('goal-position',points.length?'目标：X '+fmt(points[0].x,2)+' m · Y '+fmt(points[0].y,2)+' m':'尚未选择目标');
  for(const row of $$('#waypoints .waypoint')){
   const index=+row.querySelector('[data-point]')?.dataset.point;if(!Number.isFinite(index))continue;
-  const details=document.createElement('details');details.className='point-parameters';details.innerHTML='<summary>位置、朝向与类型</summary>';
+  const details=document.createElement('details');details.className='point-parameters';details.innerHTML='<summary>位置、朝向与任务</summary>';
   for(const child of [...row.children])if(child.matches('input,select'))details.append(child);
   const summary=document.createElement('span');summary.className='point-position';summary.textContent='航点 '+(index+1)+' · X '+fmt(points[index].x,2)+' / Y '+fmt(points[index].y,2);
+  details.append(stationFields(index,points[index]));
   row.querySelector('button')?.before(summary);row.append(details);row.classList.add('waypoint-simple');
  }
 };
 
 const dayRender=render,dayUpdate=update;
 const detailedTaskSummary=taskSummary;
+function patrolResults(nav) {
+ const rows = nav?.station_results || [];
+ if (!rows.length) return '';
+ const content = rows.map(row=>{
+  const camera = {front:'前视',rear:'后视',ball:'外接球机'}[row.camera] || '相机';
+  const readings = Object.entries(row.measurements || {}).map(([name,value])=>esc(name)+' '+esc(value)).join(' · ');
+  return `<div class="route-row"><div><strong>航点 ${esc(row.index+1)} · ${esc(row.people)} 人</strong>
+    <small>${camera} · 最高同帧人数${readings?' · '+readings:''}</small>
+    ${row.iot_error?`<small>${esc(row.iot_error)}</small>`:''}</div></div>`;
+ }).join('');
+ return card('到点统计',`<div class="card-pad">${content}</div>`,'vision');
+}
+
 taskSummary=function(){
  const nav=S?.nav,display=typeof navigationPresentation==='function'?navigationPresentation(nav):null;
- if(display)return `<div class="task-summary"><strong>${esc(display.title)}</strong><p>${esc(display.detail)}</p>${btn('查看执行诊断','native-nav-diagnostics','small','code')}</div>`;
+ if(display)return `<div class="task-summary"><strong>${esc(display.title)}</strong><p>${esc(display.detail)}</p>${nav.executor==='gos'?'':btn('查看执行诊断','native-nav-diagnostics','small','code')}</div>`+patrolResults(nav);
  if(!nav?.route)return detailedTaskSummary();
  const total=nav.route.points.length;
  if(nav.stop_reason==='route_complete'&&nav.status==='cancelling')return `<div class="task-summary"><strong>所有航点已完成，正在结束导航</strong><p>${nav.completed} / ${total} 个航点 · 等待停止请求确认</p></div>`;
@@ -263,6 +317,10 @@ update=function(){
  if(S?.nav.stop_reason==='route_complete'&&S.nav.status==='cancelling')text('nav-status','终点已到达 · 正在停止');
  if(S?.nav.stop_reason==='waypoint_pause'&&S.nav.status==='paused')text('nav-status','任务点已到达 · 等待继续');
  const navDisplay=typeof navigationFeedback==='function'?navigationFeedback(S?.nav):null;if(navDisplay){text('nav-status',navDisplay.label);html('nav-feedback',navDisplay.html);}
+ if(page==='navigation'){
+  const latest=S.nav?.station_results?.length?S.nav:[...(S.task_history||[])].reverse().find(task=>task.station_results?.length);
+  html('patrol-station-results',patrolResults(latest));
+ }
  const pause=$('[data-ui="pause-nav"]'),resume=$('[data-ui="resume-nav"]');if(pause)pause.disabled=S?.nav.status!=='running';if(resume)resume.disabled=S?.nav.status!=='paused';
 };
 document.addEventListener('click',async event=>{

@@ -81,7 +81,7 @@ function paintGoalPlan(){
  if(page!=='navigation'||navIntent!=='goal')return;const key=goalKey();
  const status=$('#goal-plan-status');
  if(status&&!$('#point-navigation-engine')){
-  const controls=document.createElement('div');controls.innerHTML=`<label class="field">寻路方式<select id="point-navigation-engine" aria-label="寻路方式"><option value="platform">平台自主寻路 · 实时绕行</option><option value="native">原厂导航</option></select></label><p class="help">平台寻路会根据新障碍调整路线；原厂导航由机器人规划路径。</p>`;
+  const controls=document.createElement('div');controls.innerHTML=`<label class="field">寻路方式<select id="point-navigation-engine" aria-label="寻路方式"><option value="platform">电脑端寻路</option><option value="gos">GOS 自主寻路</option><option value="native">原厂导航</option></select></label><p class="help">GOS 寻路在机内处理雷达和控制，适合 Wi-Fi 容易波动的现场。</p>`;
   status.parentNode.insertBefore(controls,status);$('#point-navigation-engine').value=pointNavigationEngine;
   $('#point-navigation-engine').addEventListener('change',e=>{pointNavigationEngine=e.target.value;invalidateGoalPlan();paintGoalPlan();drawMap();});
  }
@@ -89,7 +89,8 @@ function paintGoalPlan(){
  const reason=!ready?'请先同步当前活动地图':goalSubmitting?'正在提交导航，请稍候':goalReplanning?'正在重新规划，请稍候':active?'当前导航尚未结束':!key?'请先点选目标':goalPlanBusy?'正在规划，请稍候':!valid?goalPlanError||'请等待有效路线或重新规划':'';
  const b=$('[data-ui="go-goal"]');if(b){const disabled=!!reason;if(b.disabled!==disabled)b.disabled=disabled;b.title=reason||'沿预览路线前往目标';}
  const replan=$('[data-ui="goal-replan"]');if(replan){replan.disabled=!key||goalReplanning||goalSubmitting;replan.title=!key?'请先选择目标':goalReplanning?'正在重新规划':'重新计算当前目标的路线';}
- const message=!key?'点选已知空地，自动预览路线':goalPlanBusy?'正在检查通路与转弯空间…':goalPlanError||(valid?goalPlan.length_m+' 米 · '+Math.max(0,goalPlan.points.length-1)+' 个参考折点 · 到达朝向 '+(goalPlan.goal.yaw*180/Math.PI).toFixed(0)+'°':'等待规划');
+ const description=goalPlan?.needs_local_plan?'GOS 将先用机内雷达核对起点，再规划通路':valid?goalPlan.length_m+' 米 · '+Math.max(0,goalPlan.points.length-1)+' 个参考折点 · 到达朝向 '+(goalPlan.goal.yaw*180/Math.PI).toFixed(0)+'°':'等待规划';
+ const message=!key?'点选已知空地，自动预览路线':goalPlanBusy?'正在检查通路与转弯空间…':goalPlanError||description;
  const recovery=valid&&goalPlan.recovery?.required?` · 起点先平移退让 ${Math.round(goalPlan.recovery.recovery_distance_m*100)} 厘米再前往目标`:'';
  text('goal-plan-status',message+recovery+(valid&&S.mode==='live'?' · '+goalPlan.obstacle_note:''));
  paintGoalDiagnostics();
@@ -116,7 +117,7 @@ ui['go-goal']=async()=>{
  try{const r=await api('/api/nav/goal',{map_id:mapId,plan_id:goalPlan.plan_id,engine:pointNavigationEngine});await fetchState();toast(r.message);}finally{goalSubmitting=false;paintGoalPlan();}
 };
 const plannedDraw=drawMap;drawMap=function(){plannedDraw();$('#goal-plan-preview')?.remove();$('#goal-recovery-preview')?.remove();if(page!=='navigation'||navIntent!=='goal')return;const m=selectedMap(),svg=$('#nav-map');if(!m||!svg)return;
- const p=S?.nav?.engine==='platform'&&S.nav.status==='running'?S.nav.plan:goalKey()&&goalKey()===goalPlanKey?goalPlan:null;if(!p?.path?.length)return;
+ const p=(S?.nav?.engine==='platform'||S?.nav?.executor==='gos')&&S.nav.status==='running'?S.nav.plan:goalKey()&&goalKey()===goalPlanKey?goalPlan:null;if(!p?.path?.length)return;
  const line=document.createElementNS('http://www.w3.org/2000/svg','polyline');line.id='goal-plan-preview';line.setAttribute('points',p.path.map(v=>[(v.x-m.origin[0])/m.resolution,m.height-(v.y-m.origin[1])/m.resolution].join(',')).join(' '));line.setAttribute('fill','none');line.setAttribute('stroke','#2d9675');line.setAttribute('stroke-width','3');line.setAttribute('stroke-linejoin','round');line.setAttribute('pointer-events','none');svg.append(line);
  if(p.recovery?.required&&p.recovery.prefix?.length){const prefix=document.createElementNS('http://www.w3.org/2000/svg','polyline');prefix.id='goal-recovery-preview';prefix.setAttribute('points',p.recovery.prefix.map(v=>[(v.x-m.origin[0])/m.resolution,m.height-(v.y-m.origin[1])/m.resolution].join(',')).join(' '));prefix.setAttribute('fill','none');prefix.setAttribute('stroke','#c78b26');prefix.setAttribute('stroke-width','4');prefix.setAttribute('stroke-dasharray','5 3');prefix.setAttribute('pointer-events','none');svg.append(prefix);}
 };

@@ -31,7 +31,15 @@
   const available=capabilityKey===connection()&&capabilities?.protocol===1&&capabilities?.available===true;
   for(const option of select.options)option.disabled=option.value!=='stop'&&!available;
   select.disabled=['running','cancelling'].includes(S?.nav?.status);
-  text('disconnect-policy-help',available?(policy()==='stop'?'电脑断联时请求停车。':'连续5秒未收到电脑心跳时执行所选策略。机器人本地感知、定位或控制异常仍停车；返程沿已走轨迹，不穿越未知区域。'):(capabilities?.message||'正在核对机器人端任务服务；独立执行选项暂不可用'));
+  const gos=capabilities?.gos;
+  const engineChoice=navIntent==='goal'?$('#point-navigation-engine'):$('#route-navigation-engine');
+  const gosOption=engineChoice?.querySelector('option[value="gos"]');
+  if(gosOption)gosOption.disabled=!gos?.available;
+  if(engineChoice?.value==='gos'){
+   text('disconnect-policy-help',gos?.available?'GOS 在机内规划并绕障。电脑持续断联时停车。':gos?.message||'GOS 导航服务尚未就绪');
+  }else{
+   text('disconnect-policy-help',available?(policy()==='stop'?'电脑断联时请求停车。':'连续5秒未收到电脑心跳时执行所选策略。机器人本地感知、定位或控制异常仍停车；返程沿已走轨迹，不穿越未知区域。'):(capabilities?.message||'正在核对机器人端任务服务；独立执行选项暂不可用'));
+  }
   const engine=$('#point-navigation-engine');if(engine)engine.disabled=policy()!=='stop';
  }
  async function refresh(){
@@ -58,6 +66,12 @@
  const presentation=navigationPresentation;
  navigationPresentation=function(nav){
   if(nav?.engine!=='resident')return presentation(nav);
+  if(nav.executor==='gos'){
+   const label=({station_parking:'航点停车',station_action:'到点作业',preparing:'GOS 正在规划',local_bypass:'GOS 正在绕行'})[nav.phase]
+    || ({completed:'已完成',failed:'任务未完成',cancelled:'已取消',paused:'已暂停',cancelling:'等待停车确认'})[nav.status]
+    || 'GOS 自主寻路';
+   return {label,title:label,detail:nav.message||'正在同步 GOS 任务状态',severity:nav.status==='failed'?'error':'normal'};
+  }
   const row=nav.resident_mission||{},phase=row.phase;
   const label=phase==='returning'?'沿原路返回':nav.status==='completed'?'已完成':nav.status==='failed'?'任务未完成':nav.status==='cancelled'?'已取消':nav.status==='cancelling'?'等待停车确认':nav.phase==='resident_unknown'?'链路中断 · 状态待同步':'机器人端执行';
   return {label,title:label,detail:nav.message||'正在同步驻机任务状态',severity:nav.status==='failed'?'error':'normal'};

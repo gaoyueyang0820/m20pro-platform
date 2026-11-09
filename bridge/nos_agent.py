@@ -32,6 +32,9 @@ def sensors():
 
 def dispatch(path,req):
     global REFINEMENT,RESIDENT
+    if path=='/maps/navigation-lease':
+        from bridge.resident_mission import manage_map_lease
+        return manage_map_lease(MAP_SERVICE,req or {})
     if path.startswith('/missions/'):
         with SENSOR_LOCK:
             if RESIDENT is None:
