@@ -300,7 +300,7 @@
  document.addEventListener('input',changed,true);document.addEventListener('change',changed,true);
  document.addEventListener('click',e=>{if(e.target.closest('[data-action],[data-route-load],[data-route-delete],[data-connection-role],[data-service-role]'))cancel();},true);
  document.addEventListener('pointerdown',e=>{if(e.target.closest('#nav-map,[data-velocity]'))cancel('已手动操作，已取消后续自动开始');},true);
- document.addEventListener('keydown',e=>{if(['Space','KeyW','KeyA','KeyS','KeyD','KeyQ','KeyE'].includes(e.code)&&!e.target.matches('input,textarea,select'))cancel();},true);
+ document.addEventListener('keydown',e=>{if(['Space','KeyW','KeyA','KeyS','KeyD','KeyQ','KeyE'].includes(e.code)&&!(e.target.closest?.('textarea,[contenteditable="true"]')||(e.target.tagName==='INPUT'&&['text','search','password','email','url','tel','number'].includes(e.target.type))))cancel();},true);
  document.addEventListener('visibilitychange',()=>{if(document.hidden){if(pending?.startDispatched)pending.background=true;else cancel('页面已进入后台，已取消尚未提交的导航准备');}});
  window.addEventListener('hashchange',()=>{if(pending&&!current(pending))cancel('已离开页面，已取消后续自动开始');});
  window.addEventListener('pagehide',()=>{if(pending?.startDispatched)pending.background=true;else cancel('已离开页面，撤销尚未提交的导航准备');});
