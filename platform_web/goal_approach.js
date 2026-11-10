@@ -21,8 +21,8 @@
   if(el&&page==='navigation'&&navIntent==='goal'&&typeof goalPlanDiagnostics!=='undefined'&&goalPlanDiagnostics&&!validGoalPlan()){
    const d=goalPlanDiagnostics;
    el.textContent=d.recommended_action==='sync_active_map'?(d.selected_map===d.active_map?'地图可在开始时自动同步':'目标不在当前地图上，请显示当前地图后重新选点'):
-    d.recommended_action==='relocalize_and_replan'?'点击前往目标，将自动恢复当前位置并寻路':
-    d.recommended_action==='revalidate_observation'?'等待通路恢复，可直接点击前往目标':
+    d.recommended_action==='relocalize_and_replan'?'点击“执行导航”，系统将恢复当前位置并重新规划':
+    d.recommended_action==='revalidate_observation'?'等待通路恢复后可执行导航':
     d.classification==='live_body_collision'?'通路被障碍挡住，可选择其他目标':
     d.classification==='unsupported_floor'?'前方路况暂不清楚，请停稳等待':'暂时没有可通行路线，请选择其他目标';
   }

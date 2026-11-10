@@ -43,7 +43,7 @@ const started=f=>f.calls.some(r=>['/api/nav/goal','/api/nav/start'].includes(r.p
 test('painting, polling and selection do not initialize localization or start navigation',()=>{
  const f=fixture();f.ctx.paintGoalPlan();f.ctx.update();f.ctx.render();
  assert.deepEqual(f.calls,[]);assert.equal(f.nodes.get('[data-ui="go-goal"]').disabled,false);
- assert.equal(f.nodes.get('[data-ui="go-goal"]').textContent,'前往目标');
+ assert.equal(f.nodes.get('[data-ui="go-goal"]').textContent,'执行导航');
  f.ctx.navigationMapReady=()=>false;f.ctx.paintGoalPlan();assert.equal(f.nodes.get('[data-ui="go-goal"]').disabled,true);
 });
 test('explicit goal start recovers then uses a newly planned id, never the old preview',async()=>{

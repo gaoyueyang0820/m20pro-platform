@@ -27,6 +27,28 @@ function fixture(){
  return {c,nodes,dialogs,jobs,calls,toasts,events,get closes(){return closes;},get invalidated(){return invalidated;},get remote(){return remote;},set remote(v){remote=v;},set trash(v){trash=v;},get:name=>vm.runInContext(name,c),setAPI:fn=>{const old=apiResponse;apiResponse=(...args)=>fn(...args,old);},setJob:fn=>{const old=jobResponse;jobResponse=(...args)=>fn(...args,old);}};
 }
 
+test('batch delete click sends selected inactive maps and retains a failed item',async()=>{
+ const f=fixture();f.remote.maps.push({name:'second',grids:[0]});await f.c.loadMapLibrary();
+ f.c.ui['map-library-edit']();
+ f.events.change.at(-1)({target:{dataset:{mapPickAll:''},checked:true}});
+ await f.events.click[0]({target:{closest:()=>({dataset:{mapBatchDelete:''}})}});
+ assert.equal(f.dialogs.at(-1).title,'批量删除地图');
+ f.setJob((path,data,previous)=>{if(data.name==='second')throw Error('第二张地图无法删除');return previous(path,data);});
+ await f.c.ui['map-batch-delete-confirm']();
+ assert.deepEqual(f.jobs.map(job=>job.data.name),['candidate','second']);
+ assert.deepEqual(f.c.mapLibrary.maps.map(map=>map.name),['base','second']);
+ assert.ok(f.toasts.some(([message])=>/成功 1 张，失败 1 张/.test(message)));
+});
+
+test('batch delete confirmation cannot be replayed after changing connections',async()=>{
+ const f=fixture();f.c.ui['map-library-edit']();
+ f.events.change.at(-1)({target:{dataset:{mapPick:'candidate'},checked:true}});
+ await f.events.click[0]({target:{closest:()=>({dataset:{mapBatchDelete:''}})}});
+ f.c.S.connection_generation++;
+ await assert.rejects(f.c.ui['map-batch-delete-confirm'](),/连接已变化/);
+ assert.equal(f.jobs.length,0);
+});
+
 test('same-IP reconnect and server restart invalidate pending map confirmation',async()=>{
  for(const field of ['connection_generation','server_instance']){
   const f=fixture();f.c.editMapDialog('candidate','delete');f.c.S[field]=field==='connection_generation'?2:'another-server';

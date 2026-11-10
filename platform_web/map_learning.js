@@ -79,12 +79,12 @@ function paintGoalDiagnostics(){
 function paintGoalPlan(){
  if(page!=='navigation'||navIntent!=='goal')return;const key=goalKey();
  const valid=validGoalPlan(),ready=navigationMapReady(),active=['running','cancelling'].includes(S.nav.status);
- const reason=!ready?'请先同步当前活动地图':goalSubmitting?'正在提交导航，请稍候':goalReplanning?'正在重新规划，请稍候':active?'当前导航尚未结束':!key?'请先点选目标':goalPlanBusy?'正在规划，请稍候':!valid?goalPlanError||'请等待有效路线或重新规划':'';
- const b=$('[data-ui="go-goal"]');if(b){const disabled=!!reason;if(b.disabled!==disabled)b.disabled=disabled;b.title=reason||'沿预览路线前往目标';}
+ const reason=!ready?'请先同步当前活动地图':goalSubmitting?'正在提交导航，请稍候':goalReplanning?'正在重新规划，请稍候':active?'当前导航尚未结束':!key?'请先选定目标':goalPlanBusy?'正在规划，请稍候':!valid?goalPlanError||'请等待有效路线或重新规划':'';
+ const b=$('[data-ui="go-goal"]');if(b){const disabled=!!reason;if(b.disabled!==disabled)b.disabled=disabled;b.title=reason||'沿预览路径执行导航';}
  const replan=$('[data-ui="goal-replan"]');if(replan){replan.disabled=!key||goalReplanning||goalSubmitting;replan.title=!key?'请先选择目标':goalReplanning?'正在重新规划':'重新计算当前目标的路线';}
  const description=goalPlan?.needs_local_plan?'GOS 将先用机内雷达核对起点，再规划通路':valid?goalPlan.length_m+' 米 · '+Math.max(0,goalPlan.points.length-1)+' 个参考折点 · 到达朝向 '+(goalPlan.goal.yaw*180/Math.PI).toFixed(0)+'°':'等待规划';
- const message=!key?'点选已知空地，自动预览路线':goalPlanBusy?'正在检查通路与转弯空间…':goalPlanError||description;
- const recovery=valid&&goalPlan.recovery?.required?` · 起点先平移退让 ${Math.round(goalPlan.recovery.recovery_distance_m*100)} 厘米再前往目标`:'';
+ const message=!key?'在地图上选定目标，自动规划预览路径':goalPlanBusy?'正在检查通路与转弯空间…':goalPlanError||description;
+ const recovery=valid&&goalPlan.recovery?.required?` · 起点先平移退让 ${Math.round(goalPlan.recovery.recovery_distance_m*100)} 厘米再执行导航`:'';
  text('goal-plan-status',message+recovery+(valid&&S.mode==='live'?' · '+goalPlan.obstacle_note:''));
  paintGoalDiagnostics();
  const feedback=$('#nav-feedback');if(feedback&&S.nav.warning&&!feedback.querySelector('.nav-progress-warning')){const note=document.createElement('p');note.className='help nav-progress-warning';note.textContent=S.nav.warning;feedback.append(note);}
