@@ -1,5 +1,6 @@
 """People counts and optional FastBee device readings at a stopped waypoint."""
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -10,6 +11,18 @@ from urllib.parse import urlencode, urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 
+def device_id(value):
+    if not re.fullmatch(r'[0-9]{1,20}', str(value).strip()):
+        raise ValueError('请选择有效的物联网设备')
+    return str(value).strip()
+
+
+def device_ids(value):
+    if not isinstance(value, list) or len(value) > 8:
+        raise ValueError('每项任务最多选择 8 台物联网设备')
+    return list(dict.fromkeys(device_id(item) for item in value))
+
+
 def station_spec(value):
     if value is None:
         return None
@@ -18,18 +31,30 @@ def station_spec(value):
     camera = value.get('camera', 'front')
     pan = value.get('pan', 'none')
     device = str(value.get('iot_device_id') or '').strip()
-    if camera not in ('front', 'rear', 'ball') or pan not in ('none', 'left', 'right'):
+    devices = device_ids(value.get('iot_device_ids', []))
+    if camera not in ('none', 'front', 'rear', 'ball') or pan not in ('none', 'left', 'right'):
         raise ValueError('航点相机或云台方向无效')
     if pan != 'none' and camera != 'ball':
         raise ValueError('转动云台需选择外接球机')
-    if device and not re.fullmatch(r'[0-9]{1,20}', device):
-        raise ValueError('请输入物联网平台的设备 ID')
-    return dict(camera=camera, pan=pan, iot_device_id=device)
+    if device:
+        device = device_id(device)
+    if camera == 'none' and not (devices or device):
+        return None
+    result = dict(camera=camera, pan=pan, iot_device_id='' if devices else device)
+    if devices:
+        result['iot_device_ids'] = devices
+    return result
 
 
 class NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
+
+
+class IoTLoginChallenge(ValueError):
+    def __init__(self, uuid, image):
+        super().__init__('物联网登录需要验证码，请在连接中心验证')
+        self.challenge = dict(uuid=uuid, image=image)
 
 
 class FastBee:
@@ -71,18 +96,26 @@ class FastBee:
             raise ValueError('物联网平台返回格式无效')
         return status, payload
 
-    def _login(self):
+    def _login(self, code=None, uuid=None):
         if not self.configured or not (self.user and self.password):
             raise ValueError('请配置有效的物联网平台凭据')
-        status, challenge = self._json('/captchaImage?showCode=true')
-        if status != 200:
-            raise ValueError('物联网登录服务不可用')
         body = dict(username=self.user, password=self.password)
-        if challenge.get('captchaEnabled') is not False:
-            answer = challenge.get('resultCode')
-            if answer is None or not challenge.get('uuid'):
-                raise ValueError('物联网平台需要图形验证码，请配置有效的登录令牌')
-            body.update(code=str(answer), uuid=challenge['uuid'])
+        if code and uuid:
+            body.update(code=code, uuid=uuid)
+        else:
+            status, challenge = self._json('/captchaImage?showCode=true')
+            if status != 200:
+                raise ValueError('物联网登录服务不可用')
+            if challenge.get('captchaEnabled') is not False:
+                answer, key, image = (challenge.get(name) for name in ('resultCode', 'uuid', 'img'))
+                if answer is not None and key:
+                    body.update(code=str(answer), uuid=key)
+                elif (isinstance(key, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,96}', key)
+                      and isinstance(image, str) and len(image) <= 256_000
+                      and re.fullmatch(r'[A-Za-z0-9+/=]+', image)):
+                    raise IoTLoginChallenge(key, image)
+                else:
+                    raise ValueError('无法读取物联网验证码，请使用已授权的登录令牌')
         status, payload = self._json('/login', 'POST', body)
         inner = payload.get('data')
         token = payload.get('token') or (inner.get('token') if isinstance(inner, dict) else None)
@@ -90,7 +123,7 @@ class FastBee:
             raise ValueError('物联网平台认证失败')
         self.token = token
 
-    def _call(self, path, method='GET', timeout=3):
+    def _payload(self, path, method='GET', timeout=3):
         if not self.configured:
             raise ValueError('物联网平台尚未配置')
         if not self.token:
@@ -104,7 +137,36 @@ class FastBee:
             if not isinstance(code, int):
                 code = status
             raise ValueError('物联网平台未接受请求（%s）' % code)
-        return payload.get('data')
+        return payload
+
+    def _call(self, path, method='GET', timeout=3):
+        return self._payload(path, method, timeout).get('data')
+
+    def devices(self, page=1, name=''):
+        size = 20
+        params = dict(pageNum=page, pageSize=size)
+        if name:
+            params['deviceName'] = name
+        payload = self._payload('/iot/device/list?' + urlencode(params))
+        data = payload.get('data')
+        listing = data if isinstance(data, dict) and 'rows' in data else payload
+        rows = listing.get('rows')
+        if not isinstance(rows, list):
+            raise ValueError('物联网平台未返回设备列表')
+        devices = []
+        for row in rows[:size]:
+            if not isinstance(row, dict):
+                continue
+            try:
+                key = device_id(row.get('deviceId', row.get('id')))
+            except ValueError:
+                continue
+            status = str(row.get('status', '')).casefold()
+            state = {'3': 'online', '4': 'offline', 'online': 'online', 'offline': 'offline'}.get(status, 'unknown')
+            devices.append(dict(id=key, name=str(row.get('deviceName') or row.get('name') or key)[:120], status=state))
+        total = listing.get('total')
+        more = page*size < int(total) if str(total).isdigit() else len(rows) >= size
+        return dict(devices=devices, page=page, has_more=more)
 
     @property
     def sip_ready(self):
@@ -142,24 +204,62 @@ class FastBee:
             raise ValueError('国标云台通道未接受控制')
 
     def telemetry(self, device):
-        data = self._call('/iot/device/runningStatus?' + urlencode(dict(deviceId=device)))
-        if not isinstance(data, dict):
-            return {}
-        values = data.get('thingsModelValue', data)
+        data = self._call('/iot/device/runningStatus?' + urlencode(dict(deviceId=device_id(device))))
+        values = data.get('thingsModelValue', data) if isinstance(data, dict) else data
+        readings = self._measurements(values, model=isinstance(data, list) or isinstance(data, dict) and 'thingsModelValue' in data)
+        serial = data.get('serialNumber') if isinstance(data, dict) else None
+        if not readings and serial and len(str(serial)) <= 128:
+            runtime = self._call('/iot/runtime/running?' + urlencode(dict(serialNumber=serial)))
+            readings = self._measurements(runtime, model=True)
+        return readings
+
+    @staticmethod
+    def _measurements(values, model):
         if isinstance(values, str):
             try:
                 values = json.loads(values)
             except ValueError:
                 return {}
         if isinstance(values, list):
-            values = {str(row.get('name') or row.get('id', '')): row.get('value') if row.get('value') is not None else row.get('shadow')
-                      for row in values if isinstance(row, dict)}
+            fields = {}
+            for row in values:
+                if not isinstance(row, dict):
+                    continue
+                name = row.get('name_zh_CN') or row.get('name') or row.get('id')
+                datatype = row.get('datatype')
+                unit = datatype.get('unit') if isinstance(datatype, dict) else None
+                if name:
+                    label = '%s (%s)' % (name, unit) if unit else str(name)
+                    fields[label] = row.get('value') if row.get('value') is not None else row.get('shadow')
+            values = fields
+            model = True
         if not isinstance(values, dict):
             return {}
-        # Return measurements only, never the underlying device object.
-        return {str(key)[:64]: value for key, value in list(values.items())[:40]
-                if type(value) in (int, float) or isinstance(value, str)
-                and re.fullmatch(r'[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?', value.strip())}
+        result = {}
+        for key, value in values.items():
+            if key in ('deviceId', 'productId', 'serialNumber', 'status') and not model:
+                continue
+            if type(value) in (int, bool) or type(value) is float and math.isfinite(value):
+                result[str(key)[:64]] = value
+            elif isinstance(value, str) and (model or re.fullmatch(r'[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?', value.strip())):
+                result[str(key)[:64]] = value[:64]
+            if len(result) >= 40:
+                break
+        return result
+
+    def read_devices(self, devices, guard=lambda: None):
+        rows = []
+        for device in devices:
+            guard()
+            row = dict(device_id=device)
+            try:
+                row['measurements'] = self.telemetry(device)
+                if not row['measurements']:
+                    row['error'] = '设备暂未上报读数'
+            except ValueError as error:
+                row['error'] = str(error)
+            rows.append(row)
+        return rows
 
 
 class StationActions:
@@ -192,12 +292,14 @@ class StationActions:
         if not actions:
             return
         caps = self.capabilities()
-        if not caps['people_count']:
+        if any(a['camera'] != 'none' for a in actions) and not caps['people_count']:
             raise ValueError('GOS 人数识别环境或本地模型尚未配置')
         if any(a['camera'] == 'ball' for a in actions) and not caps['ball_camera']:
             raise ValueError('外接球机尚未配置')
         if any(a['pan'] != 'none' for a in actions) and not caps['ptz']:
             raise ValueError('外接云台控制尚未配置')
+        if any(a.get('iot_device_ids') for a in actions) and not caps['iot']:
+            raise ValueError('请先在连接中心接入物联网平台')
 
     @staticmethod
     def _wait(seconds, guard):
@@ -309,9 +411,11 @@ class StationActions:
     def run(self, action, guard):
         if action['pan'] != 'none':
             self._pan(action['pan'], guard)
-        counts = self._counts(action['camera'], guard)
-        result = dict(camera=action['camera'], pan=action['pan'], samples=counts, people=max(counts),
-                      counted_at=time.time())
+        result = dict(sampled_at=time.time())
+        if action['camera'] != 'none':
+            counts = self._counts(action['camera'], guard)
+            result.update(camera=action['camera'], pan=action['pan'], samples=counts, people=max(counts),
+                          counted_at=time.time())
         if action['iot_device_id']:
             guard()
             device = action['iot_device_id']
@@ -322,5 +426,7 @@ class StationActions:
                     result['iot_error'] = '设备暂未上报当前读数'
             except ValueError as error:
                 result['iot_error'] = str(error)
+        if action.get('iot_device_ids'):
+            result['devices'] = self.fastbee.read_devices(action['iot_device_ids'], guard)
         guard()
         return result

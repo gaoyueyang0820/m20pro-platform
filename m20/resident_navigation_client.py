@@ -140,6 +140,10 @@ class ResidentNavigationClient:
             body.update(grid=pack_grid(raw,grid), start_index=ref['start_index'],
                         pause_at_point=bool(nav.get('pause_at_point')))
             collectors=nav['route'].get('options', {}).get('collectors')
+            uses_iot_picker = (any((p.get('station_action') or {}).get('iot_device_ids') for p in body['points'])
+                               or any(item.get('device_ids') for item in collectors or []))
+            if uses_iot_picker and caps.get('iot_task_protocol')!=1:
+                raise ValueError('请在连接中心更新 GOS 物联网任务服务')
             if collectors:
                 if caps.get('collection_protocol')!=1:
                     raise ValueError('请更新 GOS 沿途采集服务')

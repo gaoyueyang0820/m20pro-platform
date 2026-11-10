@@ -591,6 +591,10 @@ dialog#modal::backdrop{background:rgba(9,28,35,.46);backdrop-filter:blur(3px)}
 .collector-toggle{align-items:center;min-height:34px;margin:0;font-size:12px}
 .collector-options.form-grid{margin:0 0 9px}
 .route-editor .collector-options .field{margin:0}
+.iot-picker .btn{align-self:flex-start}
+.iot-picker small,.iot-device-list small{color:var(--muted);overflow-wrap:anywhere}
+.iot-device-list{display:grid;gap:5px;max-height:36vh;overflow:auto}
+.iot-device-choice{min-height:32px;align-items:center;margin:0;padding:4px 8px;border-radius:6px;background:var(--surface-2)}
 .route-map-tools{border-top:1px solid var(--line);margin-top:12px;padding-top:10px}
 .route-map-tools summary{font-size:10.5px;color:var(--muted);cursor:pointer}
 .route-map-tools .button-row{margin-top:8px}

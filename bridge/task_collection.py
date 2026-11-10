@@ -18,7 +18,7 @@ from m20.task_collectors import COLLECTORS, collector_specs
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MAX_PACKET = 32_768
+MAX_PACKET = 128_000
 
 
 class CollectionCancelled(Exception):
@@ -141,6 +141,8 @@ class RouteCollection:
             state = self.status[spec['kind']]
             if row.get('error'):
                 state.update(failures=state['failures']+1, error=row['error'])
+                if row.get('devices'):
+                    state['latest'] = row
             else:
                 state.update(samples=state['samples']+1, latest=row, error=None)
                 if spec['kind'] == 'people_count':

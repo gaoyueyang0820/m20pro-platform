@@ -482,6 +482,15 @@ class Hub:
         if path=='/api/tasks/collection':
             return self.app.resident_navigation.collection_page(query.get('run_id',[None])[0],
                                                                  int(query.get('offset',['0'])[0]))
+        if path=='/api/iot/settings':
+            if self.app.demo:return dict(ok=True,configured=False,url='',user='')
+            return self.proxy('gos','/iot/settings')
+        if path in ('/api/iot/devices','/api/iot/read'):
+            if self.app.demo:raise ValueError('连接机器人后可读取物联网设备')
+            if path.endswith('/devices'):
+                request=dict(page=int(query.get('page',['1'])[0]),name=query.get('name',[''])[0])
+            else:request=dict(device_id=query.get('device_id',[''])[0])
+            return self.proxy('gos',path[4:],request,timeout=16)
         if path=='/api/connections':return dict(ok=True,connections=self.connections.public())
         if path=='/api/operations':return dict(ok=True,jobs=self.operations.get(query.get('id',[None])[0]))
         if path=='/api/files':return dict(ok=True,files=self.files.list())
@@ -528,6 +537,10 @@ class Hub:
         return None
 
     def post(self,path,req):
+        if path=='/api/iot/settings':
+            if self.app.demo:raise ValueError('请先连接 GOS 再配置物联网平台')
+            self.idle()
+            return self.proxy('gos','/iot/settings',req,timeout=18)
         if path=='/api/sdk/setup':
             self.idle()
             if self.app.demo:return dict(ok=True,delivery='simulated',message='演示 SDK 环境已就绪')
