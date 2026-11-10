@@ -38,6 +38,11 @@ test('explicit service update keeps the one-form install action',async()=>{
  const f=fixture(true);await f.c.setupWizard('nos',{reinstall:true});assert.equal(f.dialogs.length,1);assert.match(f.dialogs[0].title,/更新/);
  await f.c.ui['setup-deploy']();assert.ok(f.calls.some(r=>r[1]==='/api/connections/deploy'));
 });
+test('automatic relay recovery on the same device keeps its update form valid',async()=>{
+ const f=fixture(true);f.c.connections.targets.gos.via_aos=false;
+ await f.c.setupWizard('gos',{reinstall:true});f.c.connections.targets.gos.via_aos=true;
+ await f.c.ui['setup-deploy']();assert.ok(f.calls.some(r=>r[1]==='/api/connections/deploy'&&r[2].role==='gos'));
+});
 test('discovery only runs on click, ignores duplicate clicks and never connects or installs',async()=>{
  const f=fixture();assert.equal(f.calls.length,0);let done;
  f.c.job=async(...args)=>{f.calls.push(['job',...args]);return new Promise(resolve=>done=resolve);};

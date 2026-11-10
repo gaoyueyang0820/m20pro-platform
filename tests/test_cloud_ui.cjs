@@ -45,6 +45,20 @@ test('current background job still returns its result and reports progress',asyn
  vm.runInContext(source.slice(source.indexOf('async function waitJob('),source.indexOf('async function job(')),c);
  const result=await c.waitJob({job_id:'new'},'fixture');assert.equal(result.cloud_id,'new');assert.equal(progress.length,1);
 });
+test('a failed background operation replaces the last percentage with its final state',async()=>{
+ const labels={},bar={parentElement:{hidden:false},style:{}};
+ const c=vm.createContext({$:selector=>selector==='#hub-op-bar'?bar:undefined,
+  text:(id,value)=>labels[id]=value,setTimeout,
+  api:async()=>({jobs:{status:'failed',progress:.1,error:'设备暂不可达'}})});
+ vm.runInContext(source.slice(source.indexOf('function setOperation('),source.indexOf('async function job(')),c);
+ await assert.rejects(c.waitJob({job_id:'failed'},'更新连接服务'),/设备暂不可达/);
+ assert.equal(labels['hub-op-percent'],'失败');
+ assert.equal(labels['hub-op-message'],'设备暂不可达');
+ assert.equal(bar.parentElement.hidden,true);
+ c.setOperation('更新连接服务',.1,'正在连接','running');
+ assert.equal(labels['hub-op-percent'],'10%');
+ assert.equal(bar.parentElement.hidden,false);
+});
 test('API forwards abort signal and keeps cancelled read errors quiet',async()=>{
  const app=fs.readFileSync('platform_web/app.js','utf8');const begin=app.indexOf('async function api(');const code=app.slice(begin,app.indexOf('\n',begin));let signal,toastCount=0;
  const c=vm.createContext({fetch:async(path,options)=>{signal=options.signal;return {ok:true,json:async()=>({ok:true})};},toast:()=>toastCount++});vm.runInContext(code,c);

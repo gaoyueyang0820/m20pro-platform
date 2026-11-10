@@ -42,12 +42,12 @@ overview=function(){
 ui['work-sensors']=()=>navigate('sensors');ui['work-diagnostics']=()=>navigate('diagnostics');
 let operationHideTimer=null;
 const detailedOperation=setOperation;
-setOperation=function(label,progress,message){
- detailedOperation(label,progress,message);clearTimeout(operationHideTimer);
+setOperation=function(label,progress,message,status){
+ detailedOperation(label,progress,message,status);clearTimeout(operationHideTimer);
  const panel=$('#hub-operation');if(panel&&!panel.querySelector('[data-ui="hide-operation"]')){
   const close=document.createElement('button');close.type='button';close.className='operation-close';close.dataset.ui='hide-operation';close.textContent='×';close.title='关闭操作提示';panel.append(close);
  }
- if(progress>=1)operationHideTimer=setTimeout(()=>panel?.setAttribute('hidden',''),1800);
+ if(status==='completed'||!status&&progress>=1)operationHideTimer=setTimeout(()=>panel?.setAttribute('hidden',''),1800);
 };
 ui['hide-operation']=()=>$('#hub-operation')?.setAttribute('hidden','');
 

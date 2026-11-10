@@ -39,10 +39,13 @@ connectionCenter=function(){
 readConnections=function(){
  const targets={};
  for(const role of ['nos','gos','sdk','train']){
-  targets[role]={via_aos:!!$('#'+role+'-via-aos')?.checked,host:$('#'+role+'-host').value.trim(),user:$('#'+role+'-user').value.trim(),enabled:$('#target-'+role+'-enabled').checked,
+  targets[role]={host:$('#'+role+'-host').value.trim(),user:$('#'+role+'-user').value.trim(),enabled:$('#target-'+role+'-enabled').checked,
    ssh_port:+$('#'+role+'-ssh-port').value,python:$('#'+role+'-python').value.trim(),local_port:+$('#'+role+'-local-port').value,remote_port:+$('#'+role+'-remote-port').value,
    ros_setup:$('#'+role+'-setup').value.split('\n').map(v=>v.trim()).filter(Boolean),train_root:$('#'+role+'-train-root')?.value||'',sdk_workspace:$('#'+role+'-workspace')?.value||'',
    sdk_admin:role==='sdk'&&$('#sdk-admin').checked,domain_id:+$('#'+role+'-domain').value};
+  // The backend can switch internal hosts to the relay while this form is open.
+  const relay=$('#'+role+'-via-aos');
+  if(relay&&relay.checked!==relay.defaultChecked)targets[role].via_aos=relay.checked;
   if(role==='gos'&&$('#gos-onboard-aos'))targets[role].gos_aos_ip=$('#gos-onboard-aos').value.trim();
  }
  targets.sdk.follows_aos=!!$('#sdk-follows-aos')?.checked;
@@ -61,7 +64,17 @@ document.addEventListener('input',e=>{if(['quick-aos-ip','hub-aos-ip','hub-aos-s
 
 function paintAOSChannel(){text('aos-channel-state',S?.mode==='demo'?'演示环境 / 未连接实机':S?.online?'收到有效 UDP 状态':'等待有效 UDP 状态');text('machine-aos-state',S?.mode==='demo'?'演示':S?.online?'协议在线':'等待回包');for(const role of ['nos','gos'])text('machine-'+role+'-state',connectionNames[connections?.targets[role]?.state.status]||'未连接');}
 const previousConnectionsLoad=loadConnections;
-loadConnections=async function(paint=false){await previousConnectionsLoad(paint);paintAOSChannel();};
+loadConnections=async function(paint=false){
+ await previousConnectionsLoad(paint);
+ for(const role of ['nos','gos']){
+  const relay=$('#'+role+'-via-aos'),saved=connections?.targets[role]?.via_aos;
+  if(relay&&typeof saved==='boolean'&&(relay.checked===relay.defaultChecked||relay.checked===saved)){
+   relay.defaultChecked=saved;
+   relay.checked=saved;
+  }
+ }
+ paintAOSChannel();
+};
 ui['gos-status']=async()=>{const r=await api('/api/gos/status');modal('GOS 主机状态',`<pre class="pre">${esc(JSON.stringify(r,null,2))}</pre>`);};
 let connectionDiscoveryBusy=false,connectionDiscoveryGeneration=0;
 ui['discover-robot']=async()=>{
