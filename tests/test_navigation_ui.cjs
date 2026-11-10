@@ -52,7 +52,7 @@ test('map readiness and task state are included in the same button decision',asy
 test('repeated status drawing keeps one preview; clearing removes it immediately',async()=>{
  const f=fixture();await f.c.refreshGoalPlan();for(let i=0;i<30;i++)f.c.drawMap();assert.equal(f.lines.length,1);
  f.c.ui['clear-points']();assert.equal(f.lines.length,0);assert.equal(f.button.disabled,true);assert.equal(f.value('goalPlan'),null);
- assert.match(f.nodes.get('#goal-plan-status').textContent,/点选/);
+ assert.match(f.nodes.get('#goal-plan-status').textContent,/选定目标|自动规划/);
 });
 test('clear then reselect the same point rejects a late plan from before the clear',async()=>{
  const f=fixture();let finish;f.c.api=()=>new Promise(r=>finish=r);const request=f.c.refreshGoalPlan();

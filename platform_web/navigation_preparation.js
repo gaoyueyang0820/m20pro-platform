@@ -79,9 +79,9 @@
    else if(syncing){button.disabled=true;button.textContent='正在同步地图…';}
    else if(mapMismatch){button.disabled=true;button.textContent='请先同步活动地图';button.title='当前目标属于另一张地图，请同步机器人当前活动地图后重新选点';}
    else{
-    button.textContent='前往目标';
+    button.textContent='执行导航';
     button.disabled=!goalKey()||!canPrepareMap()||goalReplanning||goalSubmitting||S.mapping||S.autonomy?.active||['running','cancelling'].includes(S.nav?.status);
-    button.title=button.disabled?'请选择当前地图上的目标':'自动准备定位和路线并前往目标';
+    button.title=button.disabled?'请选择当前地图上的目标':'自动准备定位与路线并执行导航';
    }
   }
   for(const b of document.querySelectorAll('[data-route-run], [data-ui="start-nav"], [data-ui="goal-replan"], [data-ui="goal-localize-preview"], [data-ui="goal-observation-recheck"], [data-ui="goal-sync-active-map"]')){

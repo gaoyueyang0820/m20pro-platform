@@ -5,29 +5,28 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>具身智能机器狗 · 机器人操作平台</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230d1f27'/%3E%3Ctext x='16' y='21' font-family='Arial' font-size='13' font-weight='700' fill='%236be2bd' text-anchor='middle'%3EM20%3C/text%3E%3C/svg%3E"><link rel="stylesheet" href="/style.css?v=2.8ui4">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230d1f27'/%3E%3Ctext x='16' y='21' font-family='Arial' font-size='13' font-weight='700' fill='%236be2bd' text-anchor='middle'%3EM20%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/style.css?v=3.6ia1">
   <link rel="stylesheet" href="/map_library.css?v=1">
 </head>
 <body>
-  <aside class="sidebar" id="sidebar">
-    <a class="brand" href="#overview" aria-label="具身智能机器狗 工作台">
-      <span class="brand-mark brand-mark-logo"><img src="/brand-logo.svg?v=1" alt="中铁" width="30" height="25"></span>
-      <span class="brand-text"><strong class="brand-name">具身智能机器狗</strong><small>EMBODIED ROBOT DOG</small></span>
+  <aside class="rail" id="rail" aria-label="模块导航">
+    <a class="rail-brand" href="#overview" aria-label="具身智能机器狗 工作台">
+      <img src="/brand-logo.svg?v=1" alt="中铁" width="30" height="25">
     </a>
-    <div class="sidebar-device" aria-live="polite">
+    <div class="rail-device" title="设备连接状态">
       <span class="device-dot" id="sidebar-dot"></span>
-      <div class="sidebar-device-copy"><strong>M20 Pro</strong><small id="sidebar-mode">本地演示设备</small></div>
-      <button class="icon-button sidebar-settings" data-page="settings" aria-label="连接设置">⚙</button>
+      <small id="sidebar-mode">演示</small>
     </div>
-    <nav id="navigation" class="navigation" aria-label="主要功能"></nav>
-    <div class="sidebar-foot">
-      <span class="sidebar-version"><span class="dot"></span> 机器人操作平台</span>
-      <a href="/docs" target="_blank" rel="noopener">API 文档</a>
+    <nav id="rail-nav" class="rail-nav"></nav>
+    <div class="rail-foot">
+      <a href="/docs" target="_blank" rel="noopener" title="API 文档">API</a>
+      <span class="rail-version" title="机器人操作平台">v3</span>
     </div>
   </aside>
   <div class="shell">
     <header class="topbar">
-      <div class="breadcrumbs"><span>机器人工作空间</span><span class="crumb-sep">/</span><strong id="breadcrumb">工作台</strong></div>
+      <div class="breadcrumbs"><span id="crumb-module">作业台</span><span class="crumb-sep">/</span><strong id="breadcrumb">工作台</strong></div>
       <div class="topbar-right">
         <span id="connection-pill" class="pill">演示模式</span>
         <span id="live-clock" class="mono clock"></span>
@@ -39,6 +38,9 @@
         <button class="avatar" data-page="settings" aria-label="打开连接中心">OP</button>
       </div>
     </header>
+    <div class="module-bar">
+      <nav id="module-tabs" class="module-tabs" role="tablist" aria-label="当前模块页面"></nav>
+    </div>
     <main id="main"></main>
     <footer class="statusbar">
       <span id="footer-connection"><span class="dot"></span> 本地演示环境</span>
@@ -49,15 +51,15 @@
   <div id="toasts" aria-live="polite"></div>
   <dialog id="modal"><div id="modal-content"></div></dialog>
   <script type="module" src="/vendor/viewer.js?v=2.8ui1"></script>
-  <script src="/app.js?v=3.5-voice-review" defer></script>
-  <script src="/hub.js?v=3.5-empty-review" defer></script>
+  <script src="/app.js?v=3.6-ia" defer></script>
+  <script src="/hub.js?v=3.6-ia" defer></script>
   <script src="/connections.js?v=3.4-network" defer></script>
   <script src="/sharing.js?v=2.8ui1" defer></script>
   <script src="/workspace.js?v=2.8video-sync1" defer></script>
   <script src="/pose_display.js?v=1" defer></script>
   <script src="/navigation_status.js?v=3.0-planning1" defer></script>
-  <script src="/workflows.js?v=3.5-empty-review" defer></script>
-  <script src="/autonomy.js?v=3.0-planning1" defer></script>
+  <script src="/workflows.js?v=3.6-ia" defer></script>
+  <script src="/autonomy.js?v=3.6-ia" defer></script>
   <script src="/vision_models.js?v=2.8ui2" defer></script>
   <script src="/map_learning.js?v=3.3-map-library" defer></script>
   <script src="/map_library.js?v=2" defer></script>

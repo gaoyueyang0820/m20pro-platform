@@ -1020,3 +1020,60 @@ dialog#modal::backdrop{background:rgba(9,28,35,.46);backdrop-filter:blur(3px)}
 .btn.voice-on{animation:voicePulse 1.6s infinite}
 
 @media(prefers-reduced-motion:reduce){.btn.voice-on{animation:none}}
+
+/* ============ 3.6 信息架构：模块图标栏 + 顶部工作流标签 ============ */
+:root{--rail-w:78px}
+.rail{position:fixed;inset:0 auto 0 0;z-index:40;width:var(--rail-w);display:flex;flex-direction:column;align-items:center;gap:4px;padding:14px 8px 10px;color:#a9bcc4;
+  background:radial-gradient(120% 60% at 0 0,rgba(24,125,103,.22),transparent 58%),linear-gradient(180deg,#102730 0%,var(--navy) 46%,#0b1a21 100%);
+  border-right:1px solid #1a333c}
+.rail-brand{display:grid;place-items:center;width:44px;height:44px;margin-bottom:4px;border:1px solid rgba(119,229,194,.3);border-radius:11px;background:rgba(255,255,255,.07)}
+.rail-brand img{display:block;width:30px;height:auto}
+.rail-device{display:flex;flex-direction:column;align-items:center;gap:5px;padding:2px 0 12px;font-size:9px;color:#7f9aa3}
+.rail-device small{max-width:62px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rail-nav{flex:1;width:100%;display:flex;flex-direction:column;gap:4px;overflow-y:auto;scrollbar-width:none}
+.rail-nav::-webkit-scrollbar{display:none}
+.rail-item{width:100%;display:flex;flex-direction:column;align-items:center;gap:5px;padding:9px 2px;border-radius:10px;background:transparent;color:#8ea6ae;font-size:10px;letter-spacing:.2px;transition:background .14s,color .14s}
+.rail-item .icon{width:20px;height:20px;color:#7d99a1}
+.rail-item span{white-space:nowrap}
+.rail-item:hover{background:rgba(255,255,255,.06);color:#e0eeee}
+.rail-item:hover .icon{color:#9dc7bd}
+.rail-item.active{background:linear-gradient(180deg,rgba(32,151,124,.34),rgba(32,151,124,.12));color:#eafffa;box-shadow:inset 3px 0 #4bd0ad}
+.rail-item.active .icon{color:#63e0bd}
+.rail-foot{display:flex;flex-direction:column;align-items:center;gap:6px;width:100%;padding-top:10px;border-top:1px solid rgba(255,255,255,.08);font-size:10px;color:#6d8790}
+.rail-foot a{color:#8ba8b0}
+.rail-foot a:hover{color:#cce4df}
+.shell{margin-left:var(--rail-w)}
+.statusbar{left:var(--rail-w)}
+
+.module-bar{position:sticky;top:var(--topbar-h);z-index:29;display:flex;align-items:center;gap:10px;padding:10px 30px;background:rgba(244,247,248,.95);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.module-tabs{display:flex;align-items:center;gap:4px;overflow-x:auto;scrollbar-width:none;min-width:0}
+.module-tabs::-webkit-scrollbar{display:none}
+.module-tab{display:flex;align-items:center;gap:7px;height:34px;padding:0 14px;border:1px solid transparent;border-radius:8px;background:transparent;color:var(--ink-2);font-size:12.5px;white-space:nowrap;transition:background .14s,border-color .14s,color .14s}
+.module-tab .icon{width:16px;height:16px;color:#7d99a1}
+.module-tab:hover{background:#fff;border-color:var(--line);color:var(--ink)}
+.module-tab.active{background:#fff;border-color:var(--line-strong);color:var(--brand-dark);font-weight:600;box-shadow:var(--shadow-sm)}
+.module-tab.active .icon{color:var(--brand)}
+
+/* 说明文字是信息，不是细则：统一提升二级文字可读性 */
+.help{font-size:12px;line-height:1.65;color:#5c7075}
+.field .help{margin-top:4px}
+.mapping-scan .help,.selected-map-work .help,.route-editor .help,#modal-content .help{font-size:12px}
+.page-heading p{font-size:13px;color:#5f7479}
+.eyebrow{font-size:10px;letter-spacing:1.6px}
+.compatibility-tools summary,.route-advanced summary,.navigation-drive summary{font-size:12.5px;color:var(--ink-2)}
+
+@media (max-width:940px){
+  :root{--rail-w:64px}
+  .rail{padding:10px 5px 8px}
+  .rail-brand{width:38px;height:38px}
+  .rail-item{padding:7px 1px;font-size:9px;gap:4px}
+  .rail-item .icon{width:19px;height:19px}
+  .module-bar{padding:8px 14px}
+  .module-tab{height:32px;padding:0 11px;font-size:12px}
+}
+
+/* 面板小标题与表单分组标题：可见的信息层级，不靠小字折叠 */
+.panel-kicker{display:block;margin:2px 0 6px;font-size:10px;font-weight:600;letter-spacing:1.4px;color:#8aa1a5;text-transform:uppercase}
+.route-editor h3{font-size:15px;margin:2px 0 8px;color:var(--ink)}
+.field-heading{margin:16px 0 8px;font-size:12.5px;font-weight:600;color:var(--ink-2);letter-spacing:.2px}
+.route-advanced,.route-map-tools{padding-top:2px}

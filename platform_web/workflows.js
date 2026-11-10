@@ -1,21 +1,12 @@
 'use strict';
 
-// Daily work first; the full development and maintenance tools remain available.
+// Page copy for the primary work pages; module/tab navigation is rendered by app.js.
 Object.assign(pages,{
- overview:['工作台','WORKSPACE','连接机器人后，从这里开始今天的操作。'],
- motion:['手动驾驶','DRIVE','相机、遥控与步态控制，集中在一个画面。'],
- maps:['建图与地图','MAPPING','建图采集、地图库与点云，都在同一工作区。'],
- navigation:['导航与巡检','NAVIGATION','选择一个目的地自动寻路，或编辑多点巡检路线。']
+ overview:['概览','OVERVIEW','设备连接、运行状态与当前任务的统一视图。'],
+ motion:['手动驾驶','DRIVE','相机画面、底盘遥控与步态模式。'],
+ maps:['建图与地图','MAPPING','建图采集、地图库与点云。'],
+ navigation:['导航与巡检','NAVIGATION','单点导航任务与多航点巡检路线的规划与执行。']
 });
-renderNav=function(){
- const groups=[
-  ['日常操作',['overview','motion','maps','navigation','autonomy','vision']],
-  ['监控与任务',['tasks','sensors','diagnostics']],
-  ['系统',['settings']],
-  ['高级控制与训练',['sdk','joints','training']]
- ];
- html('navigation',groups.map(([label,keys])=>`<div class="nav-section">${label}</div>`+keys.map(key=>`<button class="nav-item ${page===key?'active':''}" data-page="${key}" title="${pages[key][0]}">${icon(key)}<span>${pages[key][0]}</span></button>`).join('')).join(''));
-};
 overview=function(){
  const demo=S.mode==='demo';
  const entry=(key,title,tip)=>`<button type="button" data-page="${key}"><span class="q-icon">${icon(key)}</span><span><strong>${title}</strong><small>${tip}</small></span><span class="arrow">›</span></button>`;
@@ -30,7 +21,7 @@ overview=function(){
    ${card('机器人数字视图',stage()+`<div class="source-note" id="overview-source">演示数据 · 三维姿态随模拟关节变化。</div>`,'joints','<span class="pill" id="model-pill">模拟反馈</span>')}
    <aside class="overview-side">
     ${card('运行状态',`<div class="card-pad"><div class="health-list">${kv('运动状态','—','health-motion')}${kv('使用模式','—','health-mode')}${kv('当前步态','—','health-gait')}${kv('地图定位','—','health-loc')}${kv('硬急停','—','health-hes')}${kv('充电状态','—','health-charge')}</div><div class="quick-actions">${cmd('站立','stand')}${cmd('趴下','lie')}${btn('前往驾驶','goto-motion','','motion')}${cmd('停止运动','stop','danger')}</div></div>`,'sensors','<span class="dot"></span>')}
-    ${card('开始工作',`<div class="quick-entry">${entry('motion','手动驾驶','相机、遥控与步态控制')}${entry('maps','建图与地图','采集、地图库与点云')}${entry('navigation','导航与巡检','单点寻路与多点路线')}${entry('autonomy','自主作业','探索建图与人员跟随')}</div>`,'navigation')}
+    ${card('作业入口',`<div class="quick-entry">${entry('motion','手动驾驶','相机、遥控与步态模式')}${entry('navigation','导航与巡检','单点导航与多航点巡检')}${entry('maps','建图与地图','建图采集、地图库与点云')}${entry('autonomy','自主作业','自主探索与人员跟随')}${entry('vision','视觉识别','相机预览、人员与 PPE 检测')}${entry('diagnostics','故障与日志','错误码与原始回包排查')}</div>`,'navigation')}
    </aside>
   </div>
   <div class="overview-bottom">
@@ -172,7 +163,7 @@ function routeEditorPage(){
  `<div class="route-workspace">
    <div class="route-map-column">
     <div class="route-action-bar">${btn('撤销一点','undo-waypoint','small ghost')}${btn('保存路线','save-route','','file')}${btn('开始执行路线','start-nav','primary','play')}${btn('暂停','pause-nav')}${btn('继续','resume-nav')}${btn('结束任务','cancel-nav','danger')}</div>
-    ${card('点击地图，按顺序添加目标',mapStage(),'maps','<span class="pill blue" id="nav-status">待命</span>')}
+    ${card('地图选点，按顺序添加航点',mapStage(),'maps','<span class="pill blue" id="nav-status">待命</span>')}
     <div id="nav-feedback" class="card nav-feedback-empty"></div>
     <details class="navigation-drive"><summary>临时手动驾驶与前视画面</summary><div class="navigation-drive-body"><div><p class="help">暂停任务后切换手动。返回路线时点击继续。</p>${btn('切换手动驾驶','nav-takeover')}${compactDrive()}<input id="motion-speed" aria-label="手动驾驶幅度" type="range" min="0.05" max="0.25" step="0.05" value="0.1"><small id="motion-readiness"></small></div><div class="camera-feed"><img id="camera-front" alt="前置相机" hidden><div id="placeholder-front" class="camera-placeholder">${icon('vision')}<strong>${S.mode==='demo'?'演示模式没有实机画面':'正在连接前置相机'}</strong></div><div class="camera-hud"><span>前视</span><span id="cam-front-tag">等待画面</span></div></div></div></details>
    </div>
@@ -182,27 +173,27 @@ function routeEditorPage(){
     <div class="field route-behavior"><label for="route-arrival">到点后</label><select id="route-arrival"><option value="continue">自动前往下一点，终点结束</option><option value="pause">每个任务点暂停，点击继续</option></select></div>
     <div class="range-label"><strong>行进顺序</strong><b id="point-count">${points.length} 个点</b></div>
     <div id="waypoints" class="waypoints"></div>
-    <p class="help">点击地图添加；展开航点可调整坐标、朝向与任务类型。</p>
-    <details class="route-advanced"><summary>速度、步态与方向</summary><div class="form-grid">${select('导航方式','nav-mode',[[1,'自主导航'],[0,'分段直线']])}${select('导航速度','nav-speed',[[1,'低速'],[0,'正常'],[2,'高速']])}${select('路径步态','nav-gait',[['flat','敏捷平地'],['stair','敏捷楼梯']])}${select('运动朝向','nav-manner',[[0,'前进'],[1,'倒退']])}</div></details>
+    <p class="help">在地图上点击添加航点；航点可展开调整坐标、朝向与任务类型。</p>
+    <div class="route-advanced"><h4 class="field-heading">速度、步态与方向</h4><div class="form-grid">${select('导航方式','nav-mode',[[1,'自主导航'],[0,'分段直线']])}${select('导航速度','nav-speed',[[1,'低速'],[0,'正常'],[2,'高速']])}${select('路径步态','nav-gait',[['flat','敏捷平地'],['stair','敏捷楼梯']])}${select('运动朝向','nav-manner',[[0,'前进'],[1,'倒退']])}</div></div>
     <div class="divider"></div>
     <h3>已保存路线</h3>
     <div id="route-list"></div>
-    <details class="route-map-tools"><summary>地图与建图工具</summary><div class="button-row">${btn('停稳并建图','start-map-here','small','maps')}${btn('原图续建 / 优化','extend-map','small','maps')}</div></details>
+    <div class="route-map-tools"><h4 class="field-heading">地图与建图工具</h4><div class="button-row">${btn('停稳并建图','start-map-here','small','maps')}${btn('原图续建 / 优化','extend-map','small','maps')}</div></div>
    </aside>
   </div>`;
 }
 
 navPage=function(){
  mapTool='waypoint';
- const modebar=`<div class="nav-intent segmented"><button data-ui="nav-goal-mode" class="${navIntent==='goal'?'active':''}">去一个目标</button><button data-ui="nav-route-mode" class="${navIntent==='route'?'active':''}">多点巡检</button></div>`;
+ const modebar=`<div class="nav-intent segmented" role="tablist" aria-label="导航任务类型"><button data-ui="nav-goal-mode" role="tab" aria-selected="${navIntent==='goal'}" class="${navIntent==='goal'?'active':''}">单点导航</button><button data-ui="nav-route-mode" role="tab" aria-selected="${navIntent==='route'}" class="${navIntent==='route'?'active':''}">多航点巡检</button></div>`;
  const holder=document.createElement('div');holder.innerHTML=routeEditorPage();
  holder.querySelector('.page-heading').insertAdjacentHTML('afterend',modebar);
  if(navIntent==='goal'){
-  holder.querySelector('.route-action-bar').innerHTML=btn('前往目标','go-goal','primary','play')+btn('重新规划','goal-replan')+btn('清除目标','clear-points')+btn('暂停','pause-nav')+btn('继续','resume-nav')+btn('结束任务','cancel-nav','danger');
-  holder.querySelector('.route-editor').innerHTML=mapSelect().replace('当前编辑地图','导航地图')+`<span class="eyebrow">SINGLE GOAL</span><h3>点一下你想去的位置</h3><p class="help">机器人根据地图自动规划绕行路径，无需绘制整条路线。选点后点击“前往目标”。</p><div id="goal-position" class="goal-position">尚未选择目标</div><label class="field">到达朝向<select id="goal-yaw-mode"><option value="auto">顺着最后一段路径</option><option value="manual">指定朝向</option></select></label><div id="goal-yaw-field" hidden>${field('到达朝向 / 度','goal-yaw',0,'number')}</div><div id="goal-plan-status" class="goal-plan-status">选择目标后预览可通行路线</div><p class="help">默认低速行走并避障；到达后停车。</p><details class="route-map-tools"><summary>地图与建图工具</summary><div class="button-row">${btn('停稳并建图','start-map-here','small','maps')}${btn('原图续建 / 优化','extend-map','small','maps')}</div></details><div class="divider"></div><h3>已保存巡检路线</h3><div id="route-list"></div>`;
-  holder.querySelector('.card-title').innerHTML=icon('navigation')+'点选目的地，自动寻路';
+  holder.querySelector('.route-action-bar').innerHTML=btn('执行导航','go-goal','primary','play')+btn('重新规划','goal-replan')+btn('清除目标','clear-points')+btn('暂停','pause-nav')+btn('继续','resume-nav')+btn('结束任务','cancel-nav','danger');
+  holder.querySelector('.route-editor').innerHTML=mapSelect().replace('当前编辑地图','导航地图')+`<p class="panel-kicker">单点导航</p><h3>在地图上选择目标点</h3><p class="help">系统按当前导航地图规划绕行路径，不需要手工绘制路线；选定目标后点击“执行导航”。</p><div id="goal-position" class="goal-position">尚未选择目标</div><label class="field">到达朝向<select id="goal-yaw-mode"><option value="auto">沿路径末段方向</option><option value="manual">指定朝向</option></select></label><div id="goal-yaw-field" hidden>${field('到达朝向 / 度','goal-yaw',0,'number')}</div><div id="goal-plan-status" class="goal-plan-status">选定目标后自动规划可通行路径</div><p class="help">按默认低速行走并避障；到达目标后停车。</p><div class="button-row section-gap">${btn('停稳并建图','start-map-here','small','maps')}${btn('原图续建 / 优化','extend-map','small','maps')}</div><div class="divider"></div><h3>已保存巡检路线</h3><div id="route-list"></div>`;
+  holder.querySelector('.card-title').innerHTML=icon('navigation')+'地图选点，自动规划路径';
   holder.querySelector('.map-tools').innerHTML=btn('设定初始位置','map-pose','small')+btn('清除目标','clear-points','small');
-  holder.querySelector('.map-caption').textContent='绿色线为平台规划通路；机器人行走时仍会实时避障';
+  holder.querySelector('.map-caption').textContent='绿色线为平台规划路径；机器人行走时仍会实时避障';
  }
  return holder.innerHTML;
 };
