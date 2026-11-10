@@ -183,7 +183,7 @@ function taskCollectionSettings() {
  const saved=S.routes?.find(route=>route.id===routeId)?.options?.collectors||[];
  const types=S.task_collectors||[];
  if(!types.length)return '';
- return `<details id="task-collection-settings" class="route-advanced" ${saved.length?'open':''}><summary>沿途采集</summary>
+ return `<section id="task-collection-settings" class="route-advanced" aria-labelledby="task-collection-title"><h4 id="task-collection-title" class="field-heading">沿途采集</h4>
  <div class="collector-list">${types.map(type=>{
   const current=saved.find(item=>item.kind===type.kind);
   const fields=type.fields.map(field=>{
@@ -200,7 +200,7 @@ function taskCollectionSettings() {
     <label class="field">采集间隔（秒）<input data-collector-interval type="number"
      min="${type.min_interval_s}" max="${type.max_interval_s}" step="1" value="${current?.interval_s??type.interval_s}"></label>
    </div></div>`;
- }).join('')}</div></details>`;
+ }).join('')}</div></section>`;
 }
 
 function taskCollectorOptions() {
@@ -213,7 +213,7 @@ function taskCollectorOptions() {
 
 function navigationIntent(){
  return points.length>1||points.some(point=>point.type===3||point.station_action)||
-        points.length===1&&taskCollectorOptions().length?'route':'goal';
+        points.length===1&&(taskCollectorOptions().length||($('#route-navigation-engine')?.value||'gos')!=='gos'||($('#disconnect-policy')?.value||'stop')!=='stop')?'route':'goal';
 }
 function navigationActions(single){
  const run=single?btn('执行导航','go-goal','primary','play'):btn('执行巡检','start-nav','primary','play');
@@ -243,12 +243,17 @@ function routeEditorPage(){
     <div id="goal-plan-status" class="goal-plan-status">${single?'在地图上选定目标，自动规划可通行路径':'多个航点将按顺序执行；点击“执行巡检”开始。'}</div>
     <div class="divider"></div>
     ${field('路线名称','route-name',routeId?(S.routes.find(r=>r.id===routeId)?.name||'新路线'):'新路线')}
+    <div class="form-grid">
+     ${select('寻路方式','route-navigation-engine',[['gos','GOS 机载寻路'],['native','原厂导航'],['platform','电脑端寻路']])}
+     ${select('电脑断联后','disconnect-policy',[['stop','停车'],['finish','完成任务后停车'],['return','立即沿原路返回'],['finish_return','完成任务后沿原路返回']])}
+    </div>
+    <p id="disconnect-policy-help" class="help" role="status"></p>
     <label class="field">到点后<select id="route-arrival"><option value="continue">自动前往下一点，终点结束</option><option value="pause">每个任务点暂停，点击继续</option></select></label>
     <div class="range-label"><strong>行进顺序</strong><b id="point-count">${points.length} 个点</b></div>
     <div id="waypoints" class="waypoints"></div>
-    <p class="help">点击地图添加，展开航点可设置位置、朝向和到点任务。</p>
+    <p class="help">在地图上添加航点后，可直接选择每个航点的到点任务。</p>
     ${taskCollectionSettings()}
-    <details id="dock-route-settings" class="route-advanced" ${points.some(p=>p.type===3)?'':'hidden'}><summary>回桩参数</summary><div class="form-grid">${select('行进方式','nav-mode',[[1,'自主导航'],[0,'分段直线']])}${select('导航速度','nav-speed',[[1,'低速'],[0,'正常'],[2,'高速']])}${select('路径步态','nav-gait',[['flat','敏捷平地'],['stair','敏捷楼梯']])}${select('运动朝向','nav-manner',[[0,'前进'],[1,'倒退']])}</div></details>
+    <details id="dock-route-settings" class="route-advanced" open ${points.some(p=>p.type===3)?'':'hidden'}><summary>原厂导航参数</summary><div class="form-grid">${select('行进方式','nav-mode',[[1,'自主导航'],[0,'分段直线']])}${select('导航速度','nav-speed',[[1,'低速'],[0,'正常'],[2,'高速']])}${select('路径步态','nav-gait',[['flat','敏捷平地'],['stair','敏捷楼梯']])}${select('运动朝向','nav-manner',[[0,'前进'],[1,'倒退']])}</div></details>
     <div class="divider"></div>
     <h3>已保存路线</h3>
     <div id="route-list"></div>
@@ -271,7 +276,12 @@ navPage=function(){
 };
 ui['nav-takeover']=async()=>{await job('/api/nav/manual',{},'暂停路线并切换手动');await fetchState();toast('已切换手动，按住方向键移动');};
 ui['undo-waypoint']=()=>{points.pop();renderPoints();};
-function routeOptions(){return {nav_mode:+($('#nav-mode')?.value??1),speed:+($('#nav-speed')?.value??1),gait:$('#nav-gait')?.value||'flat',manner:+($('#nav-manner')?.value??0),pause_at_point:$('#route-arrival')?.value==='pause',collectors:taskCollectorOptions()};}
+function routeOptions(){
+ return {nav_mode:+($('#nav-mode')?.value??1),speed:+($('#nav-speed')?.value??1),gait:$('#nav-gait')?.value||'flat',manner:+($('#nav-manner')?.value??0),
+  pause_at_point:$('#route-arrival')?.value==='pause',collectors:taskCollectorOptions(),
+  engine:points.some(point=>point.type===3)?'native':$('#route-navigation-engine')?.value||'gos',
+  disconnect_policy:$('#disconnect-policy')?.value||'stop',explicit_execution:true};
+}
 saveRoute=async function(){
  const r=await api('/api/route/save',{id:routeId,name:$('#route-name')?.value||'新巡检路线',map_id:mapId,points,options:routeOptions()});routeId=r.route.id;await fetchState();return r.route;
 };
@@ -285,7 +295,7 @@ function stationFields(index, point) {
  const camera = action.camera || 'none';
  const options = [['none','通过航点'],['front','前视人数统计'],['rear','后视人数统计'],['ball','外接球机人数统计']];
  const row = document.createElement('div');
- row.className = 'stack';
+ row.className = 'stack waypoint-station';
  row.innerHTML = `<label class="field">到点任务<select data-station-point="${index}" data-station-key="camera">
    ${options.map(([value,label])=>`<option value="${value}" ${value===camera?'selected':''}>${label}</option>`).join('')}
  </select></label>
@@ -322,15 +332,14 @@ renderPoints=function(){
  classicRenderPoints();text('goal-position',points.length?'目标：X '+fmt(points[0].x,2)+' m · Y '+fmt(points[0].y,2)+' m':'尚未选择目标');
  for(const row of $$('#waypoints .waypoint')){
   const index=+row.querySelector('[data-point]')?.dataset.point;if(!Number.isFinite(index))continue;
-  const details=document.createElement('details');details.className='point-parameters';details.innerHTML='<summary>位置、朝向与任务</summary>';
+  const details=document.createElement('details');details.className='point-parameters';details.innerHTML='<summary>位置与朝向</summary>';
   for(const child of [...row.children])if(child.matches('input,select'))details.append(child);
   const summary=document.createElement('span');summary.className='point-position';summary.textContent='航点 '+(index+1)+' · X '+fmt(points[index].x,2)+' / Y '+fmt(points[index].y,2);
-  details.append(stationFields(index,points[index]));
-  row.querySelector('button')?.before(summary);row.append(details);row.classList.add('waypoint-simple');
+  row.querySelector('button')?.before(summary);row.append(stationFields(index,points[index]),details);row.classList.add('waypoint-simple');
  }
 };
 document.addEventListener('change',event=>{
- if(page==='navigation'&&event.target.matches('[data-point][data-key="type"],[data-station-key="camera"],[data-collector-enable]')){
+ if(page==='navigation'&&event.target.matches('[data-point][data-key="type"],[data-station-key="camera"],[data-collector-enable],#route-navigation-engine,#disconnect-policy')){
   refreshNavActions();paintGoalPlan();
  }
 });
@@ -388,6 +397,9 @@ render=function(){
   const options=S.routes.find(r=>r.id===routeId)?.options||{nav_mode:1,speed:1,gait:'flat',manner:0,pause_at_point:false};
   for(const [id,key] of [['nav-mode','nav_mode'],['nav-speed','speed'],['nav-gait','gait'],['nav-manner','manner']])if($('#'+id))$('#'+id).value=String(options[key]);
   if($('#route-arrival'))$('#route-arrival').value=options.pause_at_point?'pause':'continue';
+  if($('#route-navigation-engine'))$('#route-navigation-engine').value=options.explicit_execution?options.engine||'gos':'gos';
+  if($('#disconnect-policy'))$('#disconnect-policy').value=options.explicit_execution?options.disconnect_policy||'stop':'stop';
+  refreshNavActions();paintGoalPlan();
  }
  if(page==='maps'){scanSequence=null;drawScan();}
 };

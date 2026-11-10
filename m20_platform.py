@@ -563,7 +563,7 @@ class Platform:
         value = dict(id=req.get('id') or uuid.uuid4().hex[:10], name=name, points=clean,
                      map_id=map_['id'], updated=time.time())
         previous=next((r.get('options',{}) for r in self.store.value['routes'] if r['id']==value['id']), {})
-        if 'options' in req or previous.get('collectors'):
+        if 'options' in req or previous.get('collectors') or previous.get('explicit_execution'):
             options=req.get('options',previous)
             if not isinstance(options,dict) or not isinstance(options.get('pause_at_point',False),bool):raise ValueError('路线参数无效')
             gait=options.get('gait','flat')
@@ -582,6 +582,9 @@ class Platform:
                 if options.get('engine','gos')!='gos' or value['options']['disconnect_policy']!='stop':
                     raise ValueError('沿途采集请使用 GOS 自主寻路与断联停车')
                 value['options'].update(engine='gos',collectors=collectors)
+            if options.get('explicit_execution') is True:
+                engine, policy = self._patrol_execution(value, value['options'])
+                value['options'].update(engine=engine, disconnect_policy=policy, explicit_execution=True)
         if persist:
             self.store.value['routes'] = [r for r in self.store.value['routes'] if r['id'] != value['id']] + [value]
             self.store.save()
@@ -870,21 +873,59 @@ class Platform:
             return dict(ok=True, engine='resident', executor='gos', phase=nav['phase'],
                         message=nav['message'])
 
+    @staticmethod
+    def _patrol_execution(route, options):
+        from m20.navigation_disconnect import POLICIES
+        engine = options.get('engine', 'gos')
+        policy = options.get('disconnect_policy', 'stop')
+        if engine not in ('gos', 'native', 'platform') or policy not in POLICIES:
+            raise ValueError('巡检寻路方式或断联策略无效')
+        docking = any(point.get('type') == 3 for point in route['points'])
+        actions = route.get('options', {}).get('collectors') or any(point.get('station_action') for point in route['points'])
+        if docking:
+            if actions:
+                raise ValueError('巡检采集与进桩请分别配置任务')
+            if policy != 'stop':
+                raise ValueError('含充电航点的路线使用断联停车')
+            engine = 'native'
+        if actions and engine != 'gos':
+            raise ValueError('到点任务和沿途采集需要 GOS 机载寻路')
+        if policy != 'stop':
+            if engine != 'native':
+                raise ValueError('断联后继续或返程需要原厂导航')
+            if (options.get('pause_at_point') or options.get('nav_mode', 0) != 1
+                    or options.get('gait', 'flat') != 'flat' or options.get('speed', 1) != 1
+                    or options.get('manner', 0) != 0):
+                raise ValueError('断联后继续或返程需要自动接续、原厂自主导航、低速敏捷平地及正向行走')
+        return engine, policy
+
     def navigation_request(self, operation, req):
-        """Route operator requests to GOS; the charging workflow owns docking."""
+        """Keep GOS as the default and honor explicitly configured patrol settings."""
         with self.lock:
             request=dict(req,engine='native' if self.demo else 'gos',disconnect_policy='stop',
                          _start_generation=self._nav_start_generation)
+            demo = self.demo
+            if operation=='plan' and req.get('explicit_execution') is True:
+                engine = req.get('engine', 'gos')
+                request['engine'] = 'native' if demo and engine == 'gos' else engine
             if operation=='start':
                 route=copy.deepcopy(next((r for r in self.store.value['routes'] if r['id']==req.get('id')),None))
                 if not route:raise ValueError('路线不存在，请先保存路线')
-                if any(p.get('type')==3 for p in route['points']):
-                    if route.get('options',{}).get('collectors') or any(p.get('station_action') for p in route['points']):
-                        raise ValueError('巡检采集与进桩请分别配置任务')
-                    request['engine']='native'
+                saved = route.get('options', {})
+                selected = req if req.get('explicit_execution') is True else saved
+                execution = dict(saved, **req)
+                for key, default in (('engine', 'gos'), ('disconnect_policy', 'stop')):
+                    execution[key] = selected.get(key, default) if selected.get('explicit_execution') is True else default
+                engine, policy = self._patrol_execution(route, execution)
+                request.update(engine='native' if demo and engine == 'gos' else engine, disconnect_policy=policy)
         if operation=='plan':return self.plan_goal(request)
         if operation=='goal':return self.start_goal(request)
+        if policy != 'stop':
+            capabilities = self.resident_navigation.capabilities()
+            if capabilities.get('available') is not True or policy not in capabilities.get('policies', []):
+                raise ValueError('NOS 驻机导航服务尚未就绪，请选择断联停车')
         if request['engine']=='gos':return self._start_gos_route(request,route=route)
+        if request['engine']=='platform':return self._start_platform_route(request,route=route)
         return self.start_route(request,goal=route)
 
     def start_route(self, req, goal=None,client_intent=None):
