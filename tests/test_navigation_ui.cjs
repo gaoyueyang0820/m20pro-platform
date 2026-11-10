@@ -26,6 +26,19 @@ function fixture(){
 }
 function plan(data={}){return {plan_id:'test-plan',map_id:data.map_id||'m1',path:[{x:1,y:1},{x:data.x||2,y:data.y||3}],length_m:3,points:[{x:2,y:3}],goal:{x:2,y:3,yaw:0}};}
 
+test('browser shortcuts and composition do not start global motion',()=>{
+ const source=fs.readFileSync('platform_web/app.js','utf8'),listeners={},moves=[];
+ const c=vm.createContext({document:{addEventListener:(name,handler)=>listeners[name]=handler},
+  $:()=>({open:false}),keys:new Set(),page:'tasks',session:null,
+  startMotion:axes=>moves.push(Array.from(axes)),stopMotion:()=>moves.push([0,0,0])});
+ vm.runInContext(source.slice(source.indexOf('function typingTarget('),source.indexOf('function blurStop(')),c);
+ const event={key:'a',code:'KeyA',target:{closest:()=>null},preventDefault(){}};
+ for(const modifier of ['metaKey','ctrlKey','altKey','shiftKey','isComposing'])listeners.keydown({...event,[modifier]:true});
+ assert.deepEqual(moves,[]);
+ listeners.keydown(event);listeners.keyup(event);
+ assert.deepEqual(moves,[[0,1,0],[0,0,0]]);
+});
+
 test('single-goal execution explicitly selects platform or native without changing it in flight',async()=>{
  const f=fixture();await f.c.refreshGoalPlan();await f.c.ui['go-goal']();
  assert.equal(f.requests.at(-1).path,'/api/nav/goal');assert.equal(f.requests.at(-1).data.engine,'platform');

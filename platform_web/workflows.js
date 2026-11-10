@@ -179,8 +179,9 @@ renderRoutes=function(){
  const markup=routes.map(r=>`<div class="route-row"><div><strong>${esc(r.name)}</strong><small>${r.points.length} 个航点 · ${r.options?.pause_at_point?'每点暂停':'自动接续'}${page==='tasks'?' · '+esc(S.maps.find(m=>m.id===r.map_id)?.name):''}</small></div><div><button class="btn small" data-route-load="${esc(r.id)}">编辑</button><button class="btn small primary" data-route-run="${esc(r.id)}">执行</button><button class="btn small ghost" data-route-delete="${esc(r.id)}" aria-label="删除路线">×</button></div></div>`).join('')||empty('常用巡检路线',page==='navigation'&&navIntent==='goal'?'单个目标无需保存；固定巡检任务可切换到多点巡检。':'点击地图添加航点，然后保存路线。','navigation');const list=$('#route-list');if(list&&list._routeMarkup!==markup){list.innerHTML=markup;list._routeMarkup=markup;}
 };
 function compactDrive(){return `<div class="mapping-dpad compact-dpad"><button data-velocity="0,0,1" aria-label="左转">↶</button><button data-velocity="1,0,0" aria-label="前进">↑</button><button data-velocity="0,0,-1" aria-label="右转">↷</button><button data-velocity="0,1,0" aria-label="左移">←</button><button class="center" data-action="stop">停止</button><button data-velocity="0,-1,0" aria-label="右移">→</button><span></span><button data-velocity="-1,0,0" aria-label="后退">↓</button><span></span></div>`;}
+function navigationIntent(){return points.length>1||points.some(point=>point.type===3)?'route':'goal';}
 function routeEditorPage(){
- const single=points.length<=1;
+ const single=navigationIntent()==='goal';
  const runButton=single?btn('执行导航','go-goal','primary','play'):btn('执行巡检','start-nav','primary','play');
  return heading(btn('任务中心','goto-tasks','','tasks'))+operationPanel()+
  `<div class="route-workspace">
@@ -201,6 +202,7 @@ function routeEditorPage(){
     <div id="goal-plan-status" class="goal-plan-status">${single?'在地图上选定目标，自动规划可通行路径':'多个航点将按顺序执行；点击“执行巡检”开始。'}</div>
     <div class="divider"></div>
     ${field('路线名称','route-name',routeId?(S.routes.find(r=>r.id===routeId)?.name||'新路线'):'新路线')}
+    <label class="field">到点后<select id="route-arrival"><option value="continue">自动前往下一点，终点结束</option><option value="pause">每个任务点暂停，点击继续</option></select></label>
     <div class="range-label"><strong>行进顺序</strong><b id="point-count">${points.length} 个点</b></div>
     <div id="waypoints" class="waypoints"></div>
     <p class="help">航点可展开调整坐标、朝向与任务类型。</p>
@@ -214,11 +216,12 @@ function routeEditorPage(){
 }
 function refreshNavActions(){
  const bar=$('#nav-action-bar');if(!bar)return;
- const single=points.length<=1;
+ navIntent=navigationIntent();
+ const single=navIntent==='goal';
  const run=single?btn('执行导航','go-goal','primary','play'):btn('执行巡检','start-nav','primary','play');
  bar.innerHTML=btn('撤销一点','undo-waypoint','small ghost')+btn('保存路线','save-route','','file')+run+btn('暂停','pause-nav')+btn('继续','resume-nav')+btn('结束任务','cancel-nav','danger');
  const title=$('#nav-target-title');if(title)title.textContent=single?'导航目标':'巡检航点';
- const status=$('#goal-plan-status');if(status&&!single)status.textContent='多个航点将按顺序执行；点击“执行巡检”开始。';
+ const status=$('#goal-plan-status');if(status&&!single)status.textContent='按顺序前往航点，点击“执行巡检”开始。';
 }
 navPage=function(){
  mapTool='waypoint';
@@ -226,7 +229,7 @@ navPage=function(){
  return holder.innerHTML;
 };
 ui['nav-takeover']=async()=>{await job('/api/nav/manual',{},'暂停路线并切换手动');await fetchState();toast('已切换手动，按住方向键移动');};
-ui['undo-waypoint']=()=>{points.pop();navIntent=points.length>1?'route':'goal';renderPoints();};
+ui['undo-waypoint']=()=>{points.pop();renderPoints();};
 function routeOptions(){return {nav_mode:+($('#nav-mode')?.value??1),speed:+($('#nav-speed')?.value??1),gait:$('#nav-gait')?.value||'flat',manner:+($('#nav-manner')?.value??0),pause_at_point:$('#route-arrival')?.value==='pause'};}
 saveRoute=async function(){
  const r=await api('/api/route/save',{id:routeId,name:$('#route-name')?.value||'新巡检路线',map_id:mapId,points,options:routeOptions()});routeId=r.route.id;await fetchState();return r.route;
@@ -237,6 +240,7 @@ runRoute=async function(id){
 };
 const classicRenderPoints=renderPoints;
 renderPoints=function(){
+ if(page==='navigation')refreshNavActions();
  classicRenderPoints();text('goal-position',points.length?'目标：X '+fmt(points[0].x,2)+' m · Y '+fmt(points[0].y,2)+' m':'尚未选择目标');
  for(const row of $$('#waypoints .waypoint')){
   const index=+row.querySelector('[data-point]')?.dataset.point;if(!Number.isFinite(index))continue;
@@ -246,6 +250,11 @@ renderPoints=function(){
   row.querySelector('button')?.before(summary);row.append(details);row.classList.add('waypoint-simple');
  }
 };
+document.addEventListener('change',event=>{
+ if(page==='navigation'&&event.target.matches('[data-point][data-key="type"]')){
+  refreshNavActions();paintGoalPlan();
+ }
+});
 
 const dayRender=render,dayUpdate=update;
 const detailedTaskSummary=taskSummary;
