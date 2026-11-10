@@ -13,8 +13,20 @@ import threading
 import time
 
 
-@lru_cache(maxsize=1)
-def find_ffmpeg():
+@lru_cache(maxsize=8)
+def ffmpeg_major(binary):
+    try:
+        result=subprocess.run([binary,'-version'],capture_output=True,text=True,timeout=2)
+        match=re.search(r'ffmpeg version [nN]?(\d+)\.',result.stdout)
+        if result.returncode==0 and match:
+            return int(match.group(1))
+    except (OSError,subprocess.TimeoutExpired):
+        pass
+    return 0
+
+
+@lru_cache(maxsize=2)
+def find_ffmpeg(minimum=6):
     candidates=[shutil.which('ffmpeg'),'/opt/homebrew/bin/ffmpeg','/usr/local/bin/ffmpeg']
     try:
         import imageio_ffmpeg
@@ -22,25 +34,24 @@ def find_ffmpeg():
     except (ImportError,RuntimeError):pass
     for candidate in dict.fromkeys(p for p in candidates if p):
         if not os.path.isfile(candidate) or not os.access(candidate,os.X_OK):continue
-        try:
-            result=subprocess.run([candidate,'-version'],capture_output=True,text=True,timeout=2)
-            match=re.search(r'ffmpeg version (\d+)\.',result.stdout)
-            if result.returncode==0 and match and int(match.group(1))>=6:return candidate
-        except (OSError,subprocess.TimeoutExpired):pass
+        if ffmpeg_major(candidate)>=minimum:
+            return candidate
     return None
 
 
-def capture_command(binary,source):
+def capture_command(binary,source,legacy_version=None):
     if source.startswith('rtsp://'):
-        inputs = ['-rtsp_transport', 'tcp', '-timeout', '3500000']
+        timeout = '-stimeout' if legacy_version==4 else '-timeout'
+        inputs = ['-rtsp_transport', 'tcp', timeout, '3500000']
     elif source.startswith(('http://', 'https://')):
         inputs = ['-rw_timeout', '3500000']
     else:
         inputs = ['-re', '-stream_loop', '-1']
+    timing = ['-vsync','0'] if legacy_version else ['-fps_mode','passthrough']
     return [binary,'-hide_banner','-loglevel','error','-nostdin','-filter_threads','1',
             *inputs,'-err_detect','explode','-threads','1','-i',source,
             '-an','-sn','-dn','-vf',"scale=w='min(800,iw)':h=-2",'-pix_fmt','rgb24',
-            '-c:v','ppm','-threads','1','-fps_mode','passthrough',
+            '-c:v','ppm','-threads','1',*timing,
             '-f','image2pipe','-flush_packets','1','pipe:1']
 
 
@@ -54,11 +65,12 @@ def read_exact(stream,size):
 
 
 class FFmpegCapture:
-    def __init__(self,cv,source,binary,open_timeout=5.,read_timeout=1.2):
+    def __init__(self,cv,source,binary,open_timeout=5.,read_timeout=1.2,legacy_version=None):
         self.cv=cv;self.closed=False;self.frames=queue.Queue(maxsize=1)
         self.done=threading.Event();self.error='';self.read_timeout=read_timeout
         self.first=None;self.last_frame_mono=0.
-        self.process=subprocess.Popen(capture_command(binary,source),stdin=subprocess.DEVNULL,
+        command=capture_command(binary,source,legacy_version) if legacy_version else capture_command(binary,source)
+        self.process=subprocess.Popen(command,stdin=subprocess.DEVNULL,
                                       stdout=subprocess.PIPE,stderr=subprocess.PIPE,bufsize=0,
                                       creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0) if os.name=='nt' else 0)
         self.reader=threading.Thread(target=self._read_frames,daemon=True)

@@ -13,12 +13,14 @@ import time
 import zlib
 
 from bridge.resident_mission import atomic
+from bridge.task_collection import RouteCollection, collection_page
 from m20.map_catalog import read_json
 from m20.navigation_disconnect import finite, identity, specification
 from m20.navigation_planner import GridPlanner
 from m20.patrol_actions import StationActions, station_spec
 from m20.platform_core import RobotLink, age_of, number
 from m20.point_navigation import PointNavigator, navigation_observation, stationary_feedback
+from m20.task_collectors import check_collectors, collector_specs
 
 
 GOS_LEASE_SECONDS = 5.
@@ -131,6 +133,7 @@ class GOSNavigation:
         self.done = False
         self.watchdog = None
         self.navigator = None
+        self.collection = None
         self.lease_until = 0.
         self.axis_quiet_until = 0.
         self.velocity = [0., 0., 0.]
@@ -147,13 +150,15 @@ class GOSNavigation:
     def capabilities(self):
         available = bool(self.enabled and importlib.util.find_spec('numpy') is not None)
         return dict(ok=True, protocol=1, available=available, executor='gos',
-                    policies=['stop'], station_actions=self.actions.capabilities(),
+                    policies=['stop'], station_actions=self.actions.capabilities(), collection_protocol=1,
                     message='GOS 自主寻路已配置' if available else '请在连接中心更新并配置 GOS 导航服务')
 
     def _persist(self):
         saved = {key: copy.deepcopy(self.nav[key]) for key in
-                 ('status', 'phase', 'index', 'completed', 'message', 'station_results', 'cancel_confirmed')
+                 ('status', 'phase', 'index', 'completed', 'message', 'station_results', 'cancel_confirmed', 'collection')
                  if key in self.nav}
+        if self.collection is not None:
+            saved['collection'] = self.collection.snapshot()
         atomic(self.path, dict(job=self.job, nav=saved, revoked=sorted(self.revoked)))
 
     def status(self):
@@ -167,11 +172,25 @@ class GOSNavigation:
             visible = path[::stride]
             if path and visible[-1] != path[-1]:
                 visible = [*visible, path[-1]]
-            return dict(protocol=1, id=self.job['id'], executor='gos', phase=nav['status'],
+            result = dict(protocol=1, id=self.job['id'], executor='gos', phase=nav['status'],
                         stage=nav['phase'], completed=nav['completed'], active=nav['status'] not in STOPPED,
                         stop_confirmed=bool(nav.get('cancel_confirmed')), message=nav.get('message', ''),
                         station_results=copy.deepcopy(nav.get('station_results', [])),
                         plan=dict(path=visible, goal=copy.deepcopy(plan.get('goal'))) if visible else None)
+            collected = self.collection.snapshot() if self.collection is not None else copy.deepcopy(nav.get('collection', []))
+            if collected:
+                if nav['status'] in STOPPED or nav['status'] == 'interrupted':
+                    for row in collected:
+                        row['state'] = 'ended'
+                result['collection'] = collected
+            return result
+
+    def _collection_context(self, nav):
+        with self.lock:
+            if (self.nav is nav and nav['status'] == 'running' and time.monotonic() < self.lease_until
+                    and nav['phase'] in ('tracking', 'local_bypass', 'recovering_start', 'waiting_space', 'finding_bypass')):
+                return dict(index=nav['index'])
+            return None
 
     def navigation_surface(self, map_id, scan):
         return navigation_observation(self.link, scan, self.job['id'])
@@ -250,7 +269,12 @@ class GOSNavigation:
             action = station_spec(source.get('station_action'))
             if action is not None:
                 point['station_action'] = action
+        collectors = collector_specs(request.get('collectors'))
+        if collectors:
+            check_collectors(collectors, self.actions.capabilities())
         spec.update(start_index=start_index, pause_at_point=pause)
+        if collectors:
+            spec['collectors'] = collectors
         digest = hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()
         raw, grid = unpack_grid(request.get('grid'))
         if (hashlib.sha256(raw).hexdigest() != spec['map']['sha256']
@@ -268,7 +292,7 @@ class GOSNavigation:
                 raise ValueError('GOS 仍在执行任务或确认停车')
             if self.navigator and self.navigator.worker and self.navigator.worker.is_alive():
                 raise ValueError('上一航点动作正在收尾')
-            previous = self.job, self.nav, self.navigator
+            previous = self.job, self.nav, self.navigator, self.collection
             self.job = dict(id=spec['id'], owner=spec['owner'], digest=digest)
             self.lease_until = time.monotonic() + GOS_LEASE_SECONDS
             self.navigator = GOSPointNavigator(self)
@@ -276,12 +300,24 @@ class GOSNavigation:
             plan = dict(raw=raw, fingerprint=spec['map']['sha256'])
             token = self.navigator._new_run(route, plan, start_index)
             self.navigator.deadline = time.monotonic() + spec['max_duration_s']
+            nav = self.nav
+            self.collection = (RouteCollection(self.data, spec['id'], self.aos, collectors,
+                                               lambda: self._collection_context(nav)) if collectors else None)
             try:
                 self._persist()
             except (OSError, ValueError):
-                self.job, self.nav, self.navigator = previous
+                self.job, self.nav, self.navigator, self.collection = previous
                 self.lease_until = 0.
                 raise ValueError('GOS 任务记录写入失败') from None
+            if self.collection is not None:
+                try:
+                    self.collection.start()
+                except RuntimeError:
+                    self.collection.stop()
+                    self.nav.update(status='failed', phase='failed', cancel_confirmed=True,
+                                    message='沿途采集无法启动')
+                    self._persist()
+                    raise ValueError('沿途采集无法启动') from None
             self.watchdog = threading.Thread(target=self._watch, daemon=True, name='gos-navigation-lease')
             self.watchdog.start()
             self.navigator._launch(token, dict(grid, id=spec['map']['name']), plan)
@@ -312,6 +348,8 @@ class GOSNavigation:
             return self.capabilities()
         if path == '/missions/status':
             return dict(ok=True, mission=self.status())
+        if path == '/missions/collection':
+            return collection_page(self.data, request.get('id'), request.get('offset', 0))
         if path == '/missions/preview':
             return self.preview(request)
         if path == '/missions/start':
@@ -337,6 +375,8 @@ class GOSNavigation:
                     self.nav.update(status=self.navigator.after_stop, phase=self.navigator.after_stop,
                                     cancel_confirmed=True)
                 if self.nav['status'] in STOPPED:
+                    if self.collection is not None:
+                        self.collection.stop()
                     if self.link is not None:
                         self.axis_quiet_until = getattr(self.link,'last_axis_send',0.) + 2.05
                         self.link.close(stop=False)
@@ -364,6 +404,8 @@ class GOSNavigation:
 
     def close(self):
         with self.lock:
+            if self.collection is not None:
+                self.collection.stop()
             if self.nav['status'] == 'running':
                 self.navigator.stop('cancelled', 'GOS 服务关闭，已请求停车')
         if self.watchdog:

@@ -39,6 +39,7 @@ from m20.map_learning_runtime import MapLearning
 from m20.people_counting import PeopleCounter
 from m20.patrol_actions import station_spec
 from m20.point_navigation import PointNavigator, navigation_observation, stationary_feedback
+from m20.task_collectors import collector_catalog, collector_specs
 
 if not os.environ.get('M20_PPE_MODEL'):
     original.PPE_MODEL_PATH=str(default_path('ppe'))
@@ -561,8 +562,9 @@ class Platform:
                 raise ValueError('航点必须位于当前地图范围内')
         value = dict(id=req.get('id') or uuid.uuid4().hex[:10], name=name, points=clean,
                      map_id=map_['id'], updated=time.time())
-        if 'options' in req:
-            options=req['options']
+        previous=next((r.get('options',{}) for r in self.store.value['routes'] if r['id']==value['id']), {})
+        if 'options' in req or previous.get('collectors'):
+            options=req.get('options',previous)
             if not isinstance(options,dict) or not isinstance(options.get('pause_at_point',False),bool):raise ValueError('路线参数无效')
             gait=options.get('gait','flat')
             if gait not in ['flat','stair']:raise ValueError('路线步态无效')
@@ -573,6 +575,13 @@ class Platform:
             if 'engine' in options:
                 if options['engine'] not in ['platform','native','gos']:raise ValueError('未知寻路方式')
                 value['options']['engine']=options['engine']
+            collectors=collector_specs(options.get('collectors',previous.get('collectors')))
+            if collectors:
+                if any(p['type']==3 for p in clean):
+                    raise ValueError('沿途采集与进桩请分别配置任务')
+                if options.get('engine','gos')!='gos' or value['options']['disconnect_policy']!='stop':
+                    raise ValueError('沿途采集请使用 GOS 自主寻路与断联停车')
+                value['options'].update(engine='gos',collectors=collectors)
         if persist:
             self.store.value['routes'] = [r for r in self.store.value['routes'] if r['id'] != value['id']] + [value]
             self.store.save()
@@ -865,8 +874,8 @@ class Platform:
                 req=dict(req,engine=stored['options']['engine'])
             if req.get('engine')=='gos':
                 return self._start_gos_route(req,client_intent)
-            if stored and any(p.get('station_action') for p in stored['points']):
-                raise ValueError('含人数统计的巡检路线请选择 GOS 自主寻路')
+            if stored and (stored.get('options',{}).get('collectors') or any(p.get('station_action') for p in stored['points'])):
+                raise ValueError('带采集作业的巡检路线请选择 GOS 自主寻路')
         if goal is None and req.get('engine')=='platform':
             with self.lock:stored=next((r for r in self.store.value['routes'] if r['id']==req.get('id')),None)
             policy=req.get('disconnect_policy',(stored or {}).get('options',{}).get('disconnect_policy','stop'))
@@ -1484,6 +1493,7 @@ class Platform:
                         estopped=self.estopped,joints=joints,sdk=sdk,nav=self.nav,faults=self.faults,
                         events=self.events,audit=self.audit[:100],maps=self.maps(),routes=self.store.value['routes'],
                         poses=self.store.value['poses'],task_history=self.store.value['history'],history=self.history,
+                        task_collectors=collector_catalog(),
                         config={role:self.hub.connections.endpoint(role)[0] if self.hub.connections.value['targets'][role]['enabled'] else self.config.get(role,'') for role in ['sdk','nos','gos','train']}, mapping=self.mapping,server_time=now,
                         raw=self.raw,
                         greeting=self.greeting.snapshot(),cameras=self.cameras.status(),autonomy=self.autonomy.snapshot(),map_learning=self.map_learning.snapshot(),vision_models=vision_catalog(),people_counts=self.people.status(),

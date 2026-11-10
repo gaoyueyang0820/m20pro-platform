@@ -13,7 +13,7 @@ import threading
 import time
 import uuid
 from bridge.resident_mission import atomic
-from m20.navigation_disconnect import POLICIES,TERMINAL,specification
+from m20.navigation_disconnect import POLICIES,TERMINAL,identity as mission_identity,specification
 from m20.platform_core import age_of,rpc
 
 
@@ -80,6 +80,8 @@ class ResidentNavigationClient:
                       submitted=False,cancel=False,terminal=False,last={},executor=executor,
                       axis_quiet_until=axis_quiet_until,start_index=nav.get('index',0),
                       prior_station_results=copy.deepcopy(nav.get('station_results',[])))
+        if executor=='gos' and route.get('options', {}).get('collectors'):
+            nav['collection_run']=dict(id=self.ref['id'], robot=hashlib.sha256(identity.encode()).hexdigest())
         try:self._save()
         except Exception:
             self.ref=None;nav.update(status='failed',phase='failed',error='任务引用无法保存，未提交驻机任务');raise
@@ -137,6 +139,11 @@ class ResidentNavigationClient:
                 raise ValueError('GOS 未就绪或航点地图已变化')
             body.update(grid=pack_grid(raw,grid), start_index=ref['start_index'],
                         pause_at_point=bool(nav.get('pause_at_point')))
+            collectors=nav['route'].get('options', {}).get('collectors')
+            if collectors:
+                if caps.get('collection_protocol')!=1:
+                    raise ValueError('请更新 GOS 沿途采集服务')
+                body['collectors']=collectors
             wait=max(0.,ref['axis_quiet_until']-time.monotonic())
             if wait:self.wake.wait(wait)
             if ref['cancel'] or self.done.is_set():return
@@ -180,15 +187,31 @@ class ResidentNavigationClient:
                                 cancel_confirmed=terminal)
                 prior=self.ref.get('prior_station_results',[])
                 self.nav['station_results']=prior+row.get('station_results',[])
+                if self.nav.get('collection_run'):
+                    self.nav['collection']=copy.deepcopy(row.get('collection', []))
             if phase=='interrupted':
                 self.nav.update(status='cancelling',error='驻机服务曾中断，停车状态待核对')
                 if gos:self.ref['cancel']=True
             if terminal:
-                if gos and (phase=='completed' or self.nav.get('station_results')):
+                if gos and (phase=='completed' or self.nav.get('station_results') or self.nav.get('collection')):
                     self.app._record_route_completion(self.nav)
                 elif phase=='completed':
                     self.app._record_route_completion()
             self.ref['terminal']=terminal;self._save()
+
+    def collection_page(self, run_id, offset):
+        run_id=mission_identity(run_id)
+        with self.app.lock:
+            rows=[self.app.nav, *self.app.store.value['history']]
+            run=next((r['collection_run'] for r in rows
+                      if r.get('collection_run', {}).get('id')==run_id), None)
+            identity=self.robot_identity()
+            if run is None:
+                raise ValueError('采集任务记录不存在')
+            if self.app.demo or not identity or run['robot']!=hashlib.sha256(identity.encode()).hexdigest():
+                raise ValueError('请连接执行该任务的机器人以读取采集记录')
+            base,token=self._endpoint('gos')
+        return rpc(base,'/missions/collection',dict(id=run_id,offset=offset),6,token)
     def _run(self):
         reference=self.ref
         while not self.done.is_set() and self.ref is reference and self.busy():

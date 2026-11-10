@@ -167,6 +167,38 @@ renderRoutes=function(){
  const markup=routes.map(r=>`<div class="route-row"><div><strong>${esc(r.name)}</strong><small>${r.points.length} 个航点 · ${r.options?.pause_at_point?'每点暂停':'自动接续'}${page==='tasks'?' · '+esc(S.maps.find(m=>m.id===r.map_id)?.name):''}</small></div><div><button class="btn small" data-route-load="${esc(r.id)}">编辑</button><button class="btn small primary" data-route-run="${esc(r.id)}">执行</button><button class="btn small ghost" data-route-delete="${esc(r.id)}" aria-label="删除路线">×</button></div></div>`).join('')||empty('常用巡检路线',page==='navigation'&&navIntent==='goal'?'单个目标无需保存；固定巡检任务可切换到多点巡检。':'点击地图添加航点，然后保存路线。','navigation');const list=$('#route-list');if(list&&list._routeMarkup!==markup){list.innerHTML=markup;list._routeMarkup=markup;}
 };
 function compactDrive(){return `<div class="mapping-dpad compact-dpad"><button data-velocity="0,0,1" aria-label="左转">↶</button><button data-velocity="1,0,0" aria-label="前进">↑</button><button data-velocity="0,0,-1" aria-label="右转">↷</button><button data-velocity="0,1,0" aria-label="左移">←</button><button class="center" data-action="stop">停止</button><button data-velocity="0,-1,0" aria-label="右移">→</button><span></span><button data-velocity="-1,0,0" aria-label="后退">↓</button><span></span></div>`;}
+function taskCollectionSettings() {
+ const saved=S.routes?.find(route=>route.id===routeId)?.options?.collectors||[];
+ const types=S.task_collectors||[];
+ if(!types.length)return '';
+ return `<details id="task-collection-settings" ${saved.length?'open':''}><summary>沿途采集</summary>
+ <div class="stack section-gap">${types.map(type=>{
+  const current=saved.find(item=>item.kind===type.kind);
+  const fields=type.fields.map(field=>{
+   const value=current?.[field.key]??'';
+   const input=field.choices
+    ? `<select data-collector-field="${esc(field.key)}">${Object.entries(field.choices).map(([key,label])=>
+       `<option value="${esc(key)}" ${key===value?'selected':''}>${esc(label)}</option>`).join('')}</select>`
+    : `<input data-collector-field="${esc(field.key)}" inputmode="numeric" pattern="${esc(field.pattern)}" value="${esc(value)}">`;
+   return `<label class="field">${esc(field.label)}${input}</label>`;
+  }).join('');
+  return `<div class="stack" data-collector="${esc(type.kind)}">
+   <label class="field"><span><input type="checkbox" data-collector-enable ${current?'checked':''}> ${esc(type.title)}</span></label>
+   <div data-collector-options class="form-grid" ${current?'':'hidden'}>${fields}
+    <label class="field">采集间隔（秒）<input data-collector-interval type="number"
+     min="${type.min_interval_s}" max="${type.max_interval_s}" step="1" value="${current?.interval_s??type.interval_s}"></label>
+   </div></div>`;
+ }).join('')}</div></details>`;
+}
+
+function taskCollectorOptions() {
+ if(!$('#task-collection-settings'))return S.routes?.find(route=>route.id===routeId)?.options?.collectors||[];
+ return $$('#task-collection-settings [data-collector]')
+  .filter(row=>row.querySelector('[data-collector-enable]').checked)
+  .map(row=>({kind:row.dataset.collector,interval_s:+row.querySelector('[data-collector-interval]').value,
+              ...Object.fromEntries([...row.querySelectorAll('[data-collector-field]')].map(field=>[field.dataset.collectorField,field.value]))}));
+}
+
 function routeEditorPage(){
  return heading(btn('任务中心','goto-tasks','','tasks'))+operationPanel()+
  `<div class="route-workspace">
@@ -184,6 +216,7 @@ function routeEditorPage(){
     <div class="range-label"><strong>行进顺序</strong><b id="point-count">${points.length} 个点</b></div>
     <div id="waypoints" class="waypoints"></div>
     <p class="help">点击地图添加，展开航点可设置位置、朝向和到点任务。</p>
+    ${taskCollectionSettings()}
     <details class="route-advanced"><summary>速度、步态与方向</summary><div class="form-grid">${select('导航方式','nav-mode',[[1,'自主导航'],[0,'分段直线']])}${select('导航速度','nav-speed',[[1,'低速'],[0,'正常'],[2,'高速']])}${select('路径步态','nav-gait',[['flat','敏捷平地'],['stair','敏捷楼梯']])}${select('运动朝向','nav-manner',[[0,'前进'],[1,'倒退']])}</div></details>
     <div class="divider"></div>
     <h3>已保存路线</h3>
@@ -211,7 +244,7 @@ ui['nav-goal-mode']=()=>{navIntent='goal';points=[];routeId=null;render();};
 ui['nav-route-mode']=()=>{navIntent='route';points=[];routeId=null;render();};
 ui['nav-takeover']=async()=>{await job('/api/nav/manual',{},'暂停路线并切换手动');await fetchState();toast('已切换手动，按住方向键移动');};
 ui['undo-waypoint']=()=>{points.pop();renderPoints();};
-function routeOptions(){return {nav_mode:+($('#nav-mode')?.value??1),speed:+($('#nav-speed')?.value??1),gait:$('#nav-gait')?.value||'flat',manner:+($('#nav-manner')?.value??0),pause_at_point:$('#route-arrival')?.value==='pause'};}
+function routeOptions(){return {nav_mode:+($('#nav-mode')?.value??1),speed:+($('#nav-speed')?.value??1),gait:$('#nav-gait')?.value||'flat',manner:+($('#nav-manner')?.value??0),pause_at_point:$('#route-arrival')?.value==='pause',collectors:taskCollectorOptions()};}
 saveRoute=async function(){
  const r=await api('/api/route/save',{id:routeId,name:$('#route-name')?.value||'新巡检路线',map_id:mapId,points,options:routeOptions()});routeId=r.route.id;await fetchState();return r.route;
 };
@@ -273,9 +306,32 @@ renderPoints=function(){
 
 const dayRender=render,dayUpdate=update;
 const detailedTaskSummary=taskSummary;
+function collectionDownloadButton(task) {
+ const id=task?.collection_run?.id;
+ return id&&task.collection?.some(row=>row.samples||row.failures)
+  ? `<button type="button" class="btn small" data-collection-download="${esc(id)}">下载采集记录</button>` : '';
+}
+function collectionResults(task) {
+ const rows=task?.collection||[];
+ if(!rows.length)return '';
+ const types=S.task_collectors||[];
+ const content=rows.map(row=>{
+  const label=types.find(type=>type.kind===row.spec?.kind)?.title||'采集项';
+  const values=row.latest?.values;
+  const summary=row.spec?.kind==='people_count'&&values
+   ? `最近一帧 ${esc(values.people)} 人 · 峰值 ${esc(row.peak_people)} 人`
+   : Object.entries(values||{}).slice(0,4).map(([key,value])=>esc(key)+' '+esc(value)).join(' · ');
+  const state={waiting:'等待行进',collecting:'采集中',ended:'已结束',error:'采集异常'}[row.state]||'等待采集';
+  return `<div class="route-row"><div><strong>${esc(label)} · ${state}</strong>
+   <small>${summary||'等待首条读数'} · ${esc(row.samples)} 条记录</small>
+   ${row.error?`<small>${esc(row.error)}</small>`:''}</div></div>`;
+ }).join('');
+ return card('沿途采集',`<div class="card-pad">${content}${collectionDownloadButton(task)}</div>`,'vision');
+}
+
 function patrolResults(nav) {
  const rows = nav?.station_results || [];
- if (!rows.length) return '';
+ if (!rows.length) return collectionResults(nav);
  const content = rows.map(row=>{
   const camera = {front:'前视',rear:'后视',ball:'外接球机'}[row.camera] || '相机';
   const readings = Object.entries(row.measurements || {}).map(([name,value])=>esc(name)+' '+esc(value)).join(' · ');
@@ -283,7 +339,7 @@ function patrolResults(nav) {
     <small>${camera} · 最高同帧人数${readings?' · '+readings:''}</small>
     ${row.iot_error?`<small>${esc(row.iot_error)}</small>`:''}</div></div>`;
  }).join('');
- return card('到点统计',`<div class="card-pad">${content}</div>`,'vision');
+ return card('到点统计',`<div class="card-pad">${content}</div>`,'vision')+collectionResults(nav);
 }
 
 taskSummary=function(){
@@ -318,11 +374,36 @@ update=function(){
  if(S?.nav.stop_reason==='waypoint_pause'&&S.nav.status==='paused')text('nav-status','任务点已到达 · 等待继续');
  const navDisplay=typeof navigationFeedback==='function'?navigationFeedback(S?.nav):null;if(navDisplay){text('nav-status',navDisplay.label);html('nav-feedback',navDisplay.html);}
  if(page==='navigation'){
-  const latest=S.nav?.station_results?.length?S.nav:[...(S.task_history||[])].reverse().find(task=>task.station_results?.length);
+  const hasData=task=>task?.station_results?.length||task?.collection?.length;
+  const latest=hasData(S.nav)?S.nav:[...(S.task_history||[])].reverse().find(hasData);
   html('patrol-station-results',patrolResults(latest));
  }
  const pause=$('[data-ui="pause-nav"]'),resume=$('[data-ui="resume-nav"]');if(pause)pause.disabled=S?.nav.status!=='running';if(resume)resume.disabled=S?.nav.status!=='paused';
 };
+document.addEventListener('change',event=>{
+ if(!event.target.matches('[data-collector-enable]'))return;
+ event.target.closest('[data-collector]').querySelector('[data-collector-options]').hidden=!event.target.checked;
+});
+document.addEventListener('click',async event=>{
+ const button=event.target.closest('[data-collection-download]');
+ if(!button||button.disabled)return;
+ button.disabled=true;
+ const run_id=button.dataset.collectionDownload,rows=[];
+ try{
+  let offset=0;
+  while(offset!==null){
+   const page=await api('/api/tasks/collection?run_id='+encodeURIComponent(run_id)+'&offset='+offset,undefined,true);
+   rows.push(...page.rows);
+   if(page.next_offset!==null&&(!Number.isInteger(page.next_offset)||page.next_offset<=offset))throw Error('采集记录页码无效');
+   offset=page.next_offset;
+  }
+  const url=URL.createObjectURL(new Blob([JSON.stringify({run_id,rows},null,2)],{type:'application/json'}));
+  const link=document.createElement('a');
+  link.href=url;link.download='巡检采集-'+run_id.slice(0,8)+'.json';link.click();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+ }catch(error){toast(error.message,true);}
+ finally{button.disabled=false;}
+});
 document.addEventListener('click',async event=>{
  const setup=event.target.closest('[data-quick-setup]');if(setup){$('#connection-advanced').open=true;setupWizard(setup.dataset.quickSetup).catch(error=>toast(error.message,true));}
  const view=event.target.closest('[data-scan-view]');if(view){$('#mapping-views').className='mapping-views show-'+view.dataset.scanView;$$('[data-scan-view]').forEach(b=>b.classList.toggle('active',b===view));scanSequence=null;drawScan();}

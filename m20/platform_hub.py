@@ -476,6 +476,12 @@ class Hub:
         if path=='/api/maps/extensions':return dict(ok=True,plans=self.app.store.value.get('map_extensions',[]),native_extension_supported=False,platform_extension_supported=True,message='平台保留旧图，采集新轮次并配准融合为新版本；不调用会覆盖历史记录的隐藏 -c 参数')
         if path=='/api/maps/project':return self.remote_maps('/maps/project',dict(name=query.get('name',['active'])[0]))
         if path=='/api/nav/resident/capabilities':return self.app.resident_navigation.capabilities()
+        if path=='/api/tasks/collectors':
+            from m20.task_collectors import collector_catalog
+            return dict(ok=True, collectors=collector_catalog())
+        if path=='/api/tasks/collection':
+            return self.app.resident_navigation.collection_page(query.get('run_id',[None])[0],
+                                                                 int(query.get('offset',['0'])[0]))
         if path=='/api/connections':return dict(ok=True,connections=self.connections.public())
         if path=='/api/operations':return dict(ok=True,jobs=self.operations.get(query.get('id',[None])[0]))
         if path=='/api/files':return dict(ok=True,files=self.files.list())

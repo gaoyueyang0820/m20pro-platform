@@ -7,8 +7,8 @@
  const cancelled=()=>Object.assign(new Error('导航准备已取消'),{navigationPreparationCancelled:true});
  const connection=s=>JSON.stringify([s?.mode,s?.ip,s?.server_instance,s?.connection_generation]);
  const routeKey=id=>{const r=S.routes?.find(r=>r.id===id);return r?JSON.stringify([r.id,r.map_id,r.points,r.options]):'';};
- const routeEngine=(rows,selected)=>rows?.some(p=>Number(p.type)===3)?'native':rows?.some(p=>p.station_action)?'gos':selected||'platform';
- const currentOptions=id=>{const r=S.routes?.find(r=>r.id===id),options=$('#nav-mode')&&r?.id===routeId?routeOptions():r?.options||{nav_mode:1,speed:1,gait:'flat',manner:0,pause_at_point:false};return {...options,engine:routeEngine(r?.points,options.engine)};};
+ const routeEngine=(rows,selected,collectors)=>rows?.some(p=>Number(p.type)===3)?'native':collectors?.length||rows?.some(p=>p.station_action)?'gos':selected||'platform';
+ const currentOptions=id=>{const r=S.routes?.find(r=>r.id===id),options=$('#nav-mode')&&r?.id===routeId?routeOptions():r?.options||{nav_mode:1,speed:1,gait:'flat',manner:0,pause_at_point:false};return {...options,engine:routeEngine(r?.points,options.engine,options.collectors)};};
  const routeSignature=id=>{const r=S.routes?.find(r=>r.id===id);return r?JSON.stringify([r.id,r.points,r.options]):'';};
  const selection=()=>JSON.stringify([mapId,routeId,typeof mapLibrary==='undefined'?null:mapLibrary.active]);
  const draftKey=()=>JSON.stringify([mapId,points,routeOptions(),$('#route-name')?.value||'新巡检路线']);
@@ -49,7 +49,7 @@
   return fallback;
  }
  const previousRouteOptions=routeOptions;
- routeOptions=function(){const options=previousRouteOptions();return {...options,engine:routeEngine(points,$('#route-navigation-engine')?.value||S.routes?.find(r=>r.id===routeId)?.options?.engine)};};
+ routeOptions=function(){const options=previousRouteOptions();return {...options,engine:routeEngine(points,$('#route-navigation-engine')?.value||S.routes?.find(r=>r.id===routeId)?.options?.engine,options.collectors)};};
  function paintRouteEngine(){
   if(page!=='navigation'||navIntent!=='route')return;
   let select=$('#route-navigation-engine');const anchor=$('#nav-mode');
@@ -61,12 +61,12 @@
   }
   if(select){
    const docking=points.some(p=>Number(p.type)===3);
-   const station=points.some(p=>p.station_action);
+   const station=points.some(p=>p.station_action)||previousRouteOptions().collectors?.length>0;
    if(docking&&!select.dataset.chargeEngine){select.dataset.chargeEngine=select.value;select.value='native';}
    else if(!docking&&select.dataset.chargeEngine){select.value=select.dataset.chargeEngine;delete select.dataset.chargeEngine;}
    if(station&&!docking)select.value='gos';
    select.disabled=docking||station||!!pending||['running','cancelling'].includes(S.nav?.status);
-   select.title=docking?'回充路线使用原厂导航':station?'到点任务由 GOS 执行':'';
+   select.title=docking?'回充路线使用原厂导航':station?'巡检采集由 GOS 执行':'';
    for(const id of ['nav-mode','nav-speed','nav-gait','nav-manner']){const field=$('#'+id)?.closest?.('.field');if(field)field.hidden=select.value!=='native';}
   }
  }
@@ -300,7 +300,7 @@
  for(const key of ['pause-nav','cancel-nav','resume-nav','nav-takeover','motion-stop','clear-points','nav-goal-mode','nav-route-mode','goal-replan','hub-connect','hub-demo']){
   const previous=ui[key];if(previous)ui[key]=function(...args){cancel();return previous.apply(this,args);};
  }
- const changed=e=>{if(e.target.matches('#map-select,#goal-yaw,#goal-yaw-mode,#point-navigation-engine,#route-navigation-engine,#nav-mode,#nav-speed,#nav-gait,#nav-manner,#route-arrival,#route-name,[data-point],[data-station-point]'))cancel('目标、地图或路线设置已变化，已取消后续自动开始');};
+ const changed=e=>{if(e.target.matches('#map-select,#goal-yaw,#goal-yaw-mode,#point-navigation-engine,#route-navigation-engine,#nav-mode,#nav-speed,#nav-gait,#nav-manner,#route-arrival,#route-name,[data-point],[data-station-point],#task-collection-settings input,#task-collection-settings select')){cancel('目标、地图或路线设置已变化，已取消后续自动开始');paintRouteEngine();}};
  document.addEventListener('input',changed,true);document.addEventListener('change',changed,true);
  document.addEventListener('click',e=>{if(e.target.closest('[data-action],[data-route-load],[data-route-delete],[data-connection-role],[data-service-role]'))cancel();},true);
  document.addEventListener('pointerdown',e=>{if(e.target.closest('#nav-map,[data-velocity]'))cancel('已手动操作，已取消后续自动开始');},true);

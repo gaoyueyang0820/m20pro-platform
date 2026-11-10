@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import re
 import time
+from contextlib import suppress
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
@@ -168,12 +169,21 @@ class StationActions:
         self.ball_rtsp = self.config.get('ball_rtsp', '')
         self.fastbee = FastBee(self.config)
         self.model = None
+        self.person_classes = None
+
+    def _people_model_path(self):
+        from m20.vision_models import default_path
+        if self.config.get('people_model'):
+            return Path(self.config['people_model'])
+        weights = default_path('counting')
+        exported = weights.with_suffix('.onnx')
+        return exported if exported.is_file() else weights
 
     def capabilities(self):
         from importlib.util import find_spec
-        from m20.vision_models import default_path
-        model = Path(self.config.get('people_model') or default_path('counting'))
-        ready = model.is_file() and find_spec('cv2') is not None and find_spec('ultralytics') is not None
+        model = self._people_model_path()
+        runtime = 'onnxruntime' if model.suffix=='.onnx' else 'ultralytics'
+        ready = model.is_file() and find_spec('cv2') is not None and find_spec(runtime) is not None
         return dict(people_count=ready, ball_camera=bool(self.ball_rtsp or self.fastbee.sip_ready),
                     ptz=self.fastbee.sip_ready and self.fastbee.ptz_enabled, iot=self.fastbee.configured)
 
@@ -218,49 +228,79 @@ class StationActions:
             return self.ball_rtsp or self.fastbee.play()
         return 'rtsp://%s:8554/video%d' % (self.aos, 1 if camera == 'front' else 2)
 
-    def _counts(self, camera, guard):
-        import cv2
-        from m20.camera_streams import capture_params
-        from m20.ffmpeg_capture import FFmpegCapture, find_ffmpeg
-        from m20.vision_models import default_path, detections
-        if self.model is None:
-            os.environ.setdefault('YOLO_OFFLINE', 'true')
-            os.environ.setdefault('YOLO_AUTOINSTALL', 'false')
-            from ultralytics import YOLO
-            model_path = Path(self.config.get('people_model') or default_path('counting'))
-            if not model_path.is_file():
-                raise ValueError('GOS 本地人数识别模型不可用')
-            self.model = YOLO(str(model_path))
-        labels = self.model.names
+    def load_people_model(self, worker=False):
+        if self.model is not None:
+            return
+        model_path = self._people_model_path()
+        if not model_path.is_file():
+            raise ValueError('GOS 本地人数识别模型不可用')
+        if model_path.suffix=='.onnx':
+            from m20.onnx_people import OnnxPeople
+            self.model = OnnxPeople(model_path)
+            return
+        if worker:
+            import torch
+            torch.set_num_threads(1)
+            with suppress(RuntimeError):
+                torch.set_num_interop_threads(1)
+        os.environ.setdefault('YOLO_OFFLINE', 'true')
+        os.environ.setdefault('YOLO_AUTOINSTALL', 'false')
+        from ultralytics import YOLO
+        model = YOLO(str(model_path))
+        labels = model.names
         classes = [i for i, name in (labels.items() if isinstance(labels, dict) else enumerate(labels))
                    if str(name).casefold() == 'person']
         if not classes:
             raise ValueError('当前模型缺少 person 类别')
+        self.model, self.person_classes = model, classes
+
+    def count_people(self, frame, size=480):
+        from m20.vision_models import detections
+        self.load_people_model()
+        if self.person_classes is None:
+            return int(self.model.count(frame))
+        return len(detections(self.model, frame, confidence=.3, size=size, classes=self.person_classes))
+
+    def open_camera(self, camera, guard=lambda: None):
+        import cv2
+        from m20.camera_streams import capture_params
+        from m20.ffmpeg_capture import FFmpegCapture, ffmpeg_major, find_ffmpeg
         guard()
         binary = find_ffmpeg()
+        legacy_version = None
+        if not binary and os.name=='posix':
+            binary = find_ffmpeg(4)
+            if binary:
+                legacy_version = ffmpeg_major(binary)
         def open_stream(source):
             if urlsplit(source).scheme not in ('rtsp', 'http', 'https'):
                 raise ValueError('巡检相机需要 RTSP 或 HTTP 实时视频')
             try:
-                return (FFmpegCapture(cv2, source, binary, open_timeout=4.) if binary
+                return (FFmpegCapture(cv2, source, binary, open_timeout=4., legacy_version=legacy_version) if binary
                         else cv2.VideoCapture(source, cv2.CAP_FFMPEG, capture_params(cv2)))
             except (OSError, cv2.error):
                 raise ValueError('巡检相机解码服务不可用') from None
         capture = open_stream(self._stream(camera))
+        if not capture.isOpened() and camera == 'ball' and self.ball_rtsp and self.fastbee.sip_ready:
+            capture.release()
+            guard()
+            capture = open_stream(self.fastbee.play())
+        if not capture.isOpened():
+            capture.release()
+            raise ValueError('无法取得巡检相机实时视频')
+        return capture
+
+    def _counts(self, camera, guard):
+        self.load_people_model()
+        capture = self.open_camera(camera, guard)
         try:
-            if not capture.isOpened() and camera == 'ball' and self.ball_rtsp and self.fastbee.sip_ready:
-                capture.release()
-                guard()
-                capture = open_stream(self.fastbee.play())
-            if not capture.isOpened():
-                raise ValueError('无法取得航点相机实时视频')
             counts = []
             for _ in range(3):
                 guard()
                 ok, frame = capture.read()
                 if not ok or frame is None:
                     raise ValueError('航点相机画面中断')
-                counts.append(len(detections(self.model, frame, confidence=.3, size=480, classes=classes)))
+                counts.append(self.count_people(frame))
             guard()
             return counts
         finally:

@@ -12,6 +12,7 @@ from bridge.gos_navigation import GOSNavigation, pack_grid
 from bridge.map_service import MapService
 from bridge.resident_mission import held_map_lease, manage_map_lease, navigation_grid_identity
 from bridge.root_actions import execute
+from bridge.task_collection import CollectionCancelled, RouteCollection
 from m20.autonomy_core import disk
 from m20.patrol_actions import FastBee, StationActions, station_spec
 from m20.resident_navigation_client import ResidentNavigationClient
@@ -146,6 +147,38 @@ class GOSPatrolTests(unittest.TestCase):
         self.assertGreater(self.link.pose[0], 2.9)
         self.assertEqual(result['station_results'][0]['people'], 3)
         self.assertTrue(any(after is not None for after,_ in self.sensors.stamps))
+
+    def test_along_route_counts_while_moving_and_slow_iot_does_not_hold_navigation(self):
+        started = threading.Event()
+        walking = []
+        self.request['collectors'] = [dict(kind='people_count',camera='front',interval_s=1),
+                                      dict(kind='iot_readings',device_id='42',interval_s=2)]
+        def worker_factory(data, aos, spec):
+            def sample(cancelled):
+                if spec['kind']=='iot_readings':
+                    started.set()
+                    while not cancelled():
+                        time.sleep(.03)
+                    raise CollectionCancelled
+                walking.append((self.link.pose[0], tuple(self.link.axes)))
+                return dict(sampled_at=time.time(),values={'people':3})
+            return SimpleNamespace(sample=sample,close=lambda:None)
+        def collection(*args):
+            return RouteCollection(*args,worker_factory=worker_factory)
+        with patch('bridge.gos_navigation.RouteCollection',side_effect=collection):
+            self.service.dispatch('/missions/start',self.request)
+        result=self.wait_for(lambda s:s.get('stop_confirmed'),pulse=True)
+        self.assertEqual(result['phase'],'completed',result)
+        self.assertTrue(started.is_set())
+        for worker in self.service.collection.threads:
+            worker.join(timeout=1)
+            self.assertFalse(worker.is_alive())
+        self.assertTrue(any(2. <= x < 3.12 and any(axes) for x,axes in walking),walking)
+        rows=self.service.dispatch('/missions/collection',dict(id=self.identity['id'],offset=0))['rows']
+        self.assertTrue(rows)
+        self.assertTrue(all(row['kind']=='people_count' and row['values']=={'people':3} for row in rows))
+        self.assertEqual(result['collection'][0]['peak_people'],3)
+        self.assertEqual(result['collection'][1]['samples'],0)
 
     def test_expired_lease_parks_and_late_pulse_does_not_resume(self):
         self.request['points'][0]['x'] = 4.

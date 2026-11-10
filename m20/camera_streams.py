@@ -31,8 +31,10 @@ def decoded_frame_type(cv, capture):
 
 
 class CameraFeed:
-    def __init__(self, decoder, ip, camera, port=8554):
+    def __init__(self, decoder, ip, camera, port=8554, *, open_capture=None, encode=True):
         self.decoder=decoder; self.ip=ip; self.camera=camera; self.port=port
+        self.open_capture = open_capture
+        self.encode = encode
         self.condition=threading.Condition(); self.thread=None; self.closed=False
         self.viewers=0; self.last_view=time.monotonic(); self.jpeg=None; self.at=0
         self.frame_mono=0; self.sequence=0; self.raw_sequence=0; self.raw=None
@@ -72,6 +74,14 @@ class CameraFeed:
     def read(self, after=-1, timeout=1):
         packet=self.read_packet(after,timeout)
         return packet[:2] if packet else None
+
+    def read_raw(self, after, timeout):
+        """Read a new, recent frame with the decoder's capture timestamp."""
+        with self.condition:
+            def ready():
+                return self.raw is not None and self.raw[0] > after and time.monotonic()-self.raw[3] < MAX_FRAME_AGE
+            self.condition.wait_for(lambda: self.closed or ready(), timeout)
+            return self.raw[:4] if not self.closed and ready() else None
 
     def status(self):
         with self.condition:
@@ -129,9 +139,10 @@ class CameraFeed:
         cv=self.decoder; cap=None; done=threading.Event()
         os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS']=CAPTURE_OPTIONS
         url='rtsp://%s:%s/%s'%(self.ip,self.port,'video1' if self.camera=='front' else 'video2')
-        binary=find_ffmpeg() if getattr(cv,'__name__',None)=='cv2' else None
+        binary=find_ffmpeg() if self.open_capture is None and getattr(cv,'__name__',None)=='cv2' else None
         self.capture_backend='ffmpeg-strict' if binary else 'opencv'
-        encoder=threading.Thread(target=self._encode,args=(generation,done),daemon=True); encoder.start()
+        if self.encode:
+            threading.Thread(target=self._encode,args=(generation,done),daemon=True).start()
         try:
             while True:
                 with self.condition:
@@ -147,7 +158,10 @@ class CameraFeed:
                         with self.condition:
                             self.phase='opening'; self.retry_at=0.; self.awaiting_keyframe=True
                             self.frame_type=None; self.frame_type_supported=None
-                        cap=FFmpegCapture(cv,url,binary) if binary else cv.VideoCapture(url,cv.CAP_FFMPEG,capture_params(cv))
+                        if self.open_capture:
+                            cap=self.open_capture()
+                        else:
+                            cap=FFmpegCapture(cv,url,binary) if binary else cv.VideoCapture(url,cv.CAP_FFMPEG,capture_params(cv))
                         self.open_ms=(time.monotonic()-opened)*1000
                         if not cap.isOpened():
                             view,path=('前视','video1') if self.camera=='front' else ('后视','video2')
