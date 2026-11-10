@@ -18,8 +18,8 @@ motion=function(){
  return heading(btn('停稳并建图','start-map-here','','maps')+cmd('停止运动','stop','danger'))+
  `<div class="drive-layout">
    <div class="drive-camera-panel">${video}</div>
-   <div class="drive-control-panel">${control?control.outerHTML:''}</div>
-   <div class="drive-settings">${take('姿态与步态')}${take('照明与方向')}${take('电源与充电')}</div>
+   <div class="drive-control-panel">${control?control.outerHTML:''}${take('姿态与步态')}</div>
+   <div class="drive-settings drive-settings-secondary">${take('照明与方向')}${take('电源与充电')}</div>
   </div>
   <div id="drive-advanced"></div>`;
 };
@@ -58,7 +58,7 @@ cameraOpen=function(cam){
  if(overlay)image.dataset.overlay='true';
  const notice=document.createElement('div');notice.id='camera-notice-'+cam;notice.className='camera-notice';notice.hidden=true;notice.setAttribute('role','status');image.parentElement.append(notice);
  const state={closed:false,sequence:-1,failures:0,url:null,times:[],error:'',revision:0,suspended:!previewVisible(image)};cameraSessions.set(cam,state);
- state.timer=setInterval(()=>{if(!document.hidden)paintCameraStatus();},250);
+ state.timer=setInterval(()=>{if(!document.hidden)paintCameraStatus();},1000);
  const poll=async()=>{
   while(!state.closed&&image.isConnected){
    if(overlay&&(!S.ppe.enabled||S.ppe.camera!==cam)){cameraOpen(cam);return;}
@@ -115,8 +115,10 @@ function paintCameraStatus(){
   const placeholder=$('#placeholder-'+cam);if(placeholder)placeholder.hidden=hasFrame;
   const message=S.mode==='live'&&!S.online?'机器人未连接 · 等待开机或连接网络':unavailable|| (S.cameras?.available===false?'请安装视频依赖后重启平台':session.error||status?.error||'正在连接相机…');
   const label=placeholder?.querySelector('strong');if(label)label.textContent=message;
-  const notice=$('#camera-notice-'+cam);if(notice){notice.hidden=!hasFrame||fresh;notice.textContent='画面已暂停 · '+(age/1000).toFixed(1)+' 秒未更新 · '+message;}
-  text('cam-'+cam+'-tag',fresh?(overlay?'YOLO · ':'')+(image.dataset.fps||'—')+' 帧/秒 · 取图 '+(image.dataset.roundTrip||'—')+' ms':hasFrame?'画面暂停':'等待画面');
+  const notice=$('#camera-notice-'+cam);if(notice){notice.hidden=!hasFrame||fresh;if(!notice.hidden)notice.textContent='画面已暂停 · 等待恢复 · '+message;}
+  const fps=Number(image.dataset.fps),latency=Number(image.dataset.roundTrip);
+  const tag=fresh?(overlay?'YOLO · ':'')+(Number.isFinite(fps)?Math.round(fps)+' 帧/秒':'—')+' · 取图 '+(Number.isFinite(latency)?Math.round(latency/10)*10+' ms':'—'):hasFrame?'画面暂停':'等待画面';
+  text('cam-'+cam+'-tag',tag);
   text('cam-'+cam+'-note',fresh?status?.width+' × '+status?.height:message);
  }
  text('drive-video-state',S.mode==='demo'?'演示模式 · 未连接真实相机':!S.online?'机器人未连接 · 等待开机':live===2?'前后视角实时画面':live?(driveView==='rear'?'后视':'前视')+'实时画面':'等待相机画面');

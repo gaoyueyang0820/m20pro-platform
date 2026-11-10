@@ -26,6 +26,19 @@ function fixture(){
 }
 function plan(data={}){return {plan_id:'test-plan',map_id:data.map_id||'m1',path:[{x:1,y:1},{x:data.x||2,y:data.y||3}],length_m:3,points:[{x:2,y:3}],goal:{x:2,y:3,yaw:0}};}
 
+test('browser shortcuts and composition do not start global motion',()=>{
+ const source=fs.readFileSync('platform_web/app.js','utf8'),listeners={},moves=[];
+ const c=vm.createContext({document:{addEventListener:(name,handler)=>listeners[name]=handler},
+  $:()=>({open:false}),keys:new Set(),page:'tasks',session:null,
+  startMotion:axes=>moves.push(Array.from(axes)),stopMotion:()=>moves.push([0,0,0])});
+ vm.runInContext(source.slice(source.indexOf('function typingTarget('),source.indexOf('function blurStop(')),c);
+ const event={key:'a',code:'KeyA',target:{closest:()=>null},preventDefault(){}};
+ for(const modifier of ['metaKey','ctrlKey','altKey','shiftKey','isComposing'])listeners.keydown({...event,[modifier]:true});
+ assert.deepEqual(moves,[]);
+ listeners.keydown(event);listeners.keyup(event);
+ assert.deepEqual(moves,[[0,1,0],[0,0,0]]);
+});
+
 test('single-goal execution explicitly selects platform or native without changing it in flight',async()=>{
  const f=fixture();await f.c.refreshGoalPlan();await f.c.ui['go-goal']();
  assert.equal(f.requests.at(-1).path,'/api/nav/goal');assert.equal(f.requests.at(-1).data.engine,'platform');
@@ -52,7 +65,7 @@ test('map readiness and task state are included in the same button decision',asy
 test('repeated status drawing keeps one preview; clearing removes it immediately',async()=>{
  const f=fixture();await f.c.refreshGoalPlan();for(let i=0;i<30;i++)f.c.drawMap();assert.equal(f.lines.length,1);
  f.c.ui['clear-points']();assert.equal(f.lines.length,0);assert.equal(f.button.disabled,true);assert.equal(f.value('goalPlan'),null);
- assert.match(f.nodes.get('#goal-plan-status').textContent,/点选/);
+ assert.match(f.nodes.get('#goal-plan-status').textContent,/选定目标|自动规划/);
 });
 test('clear then reselect the same point rejects a late plan from before the clear',async()=>{
  const f=fixture();let finish;f.c.api=()=>new Promise(r=>finish=r);const request=f.c.refreshGoalPlan();
