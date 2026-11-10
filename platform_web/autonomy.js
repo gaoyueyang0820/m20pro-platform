@@ -89,7 +89,7 @@ function autoExplorePanel(mapKind){
 function autoFollowPanel(){
  return `<span class="eyebrow">PERSON FOLLOWING</span><h2>人员识别与跟随</h2><p class="help">开启人员识别后，在画面中选择跟随目标。人员需全身进入画面，在期望间距站定后再选择；目标丢失或多人交叉时自动停车。</p>
  <div class="auto-config"><h4 class="field-heading">人员识别与目标选择</h4><div class="auto-actions">${btn('开启人员识别','auto-vision-start','primary','vision')}${btn('关闭识别','auto-vision-stop','small')}</div><div id="auto-people" class="auto-people"></div><p id="auto-vision-error" class="help"></p><p class="help">检测到人物后点选目标即开始跟随；已锁定目标显示为绿色框。切换目标前先暂停当前跟随。</p></div>
- <details class="compatibility-tools"><summary>人员检测模型设置</summary><div class="section-gap"><div class="field"><label for="auto-model">本机人员检测模型路径</label><input id="auto-model" placeholder="默认已配好 YOLO11n，可留空"></div><p class="help">留空使用默认人员模型，也可选择自定义模型；修改后需重新开启识别。</p></div></details>`;
+ <details open class="compatibility-tools"><summary>人员检测模型设置</summary><div class="section-gap"><div class="field"><label for="auto-model">本机人员检测模型路径</label><input id="auto-model" placeholder="默认已配好 YOLO11n，可留空"></div><p class="help">留空使用默认人员模型，也可选择自定义模型；修改后需重新开启识别。</p></div></details>`;
 }
 function autonomyPage(){
  const live=S.mode==='live',a=S.autonomy||{},mapKind=autoDefaultMapKind();

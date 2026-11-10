@@ -1088,3 +1088,7 @@ dialog#modal::backdrop{background:rgba(9,28,35,.46);backdrop-filter:blur(3px)}
 .sdk-steps{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 14px}
 .sdk-steps span{display:inline-flex;align-items:center;gap:7px;padding:7px 12px;border:1px solid var(--line);border-radius:999px;background:#fff;font-size:12px;color:var(--ink-2)}
 .sdk-steps b{display:grid;place-items:center;width:18px;height:18px;border-radius:50%;background:var(--brand-soft);color:var(--brand-dark);font-size:10px}
+
+/* 折叠内容默认展开：不再用收起隐藏操作，只保留可收起的可能性 */
+details[open]>summary{margin-bottom:8px}
+details[open]{padding-bottom:2px}
