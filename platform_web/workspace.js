@@ -18,8 +18,8 @@ motion=function(){
  return heading(btn('停稳并建图','start-map-here','','maps')+cmd('停止运动','stop','danger'))+
  `<div class="drive-layout">
    <div class="drive-camera-panel">${video}</div>
-   <div class="drive-control-panel">${control?control.outerHTML:''}</div>
-   <div class="drive-settings">${take('姿态与步态')}${take('照明与方向')}${take('电源与充电')}</div>
+   <div class="drive-control-panel">${control?control.outerHTML:''}${take('姿态与步态')}</div>
+   <div class="drive-settings drive-settings-secondary">${take('照明与方向')}${take('电源与充电')}</div>
   </div>
   <div id="drive-advanced"></div>`;
 };

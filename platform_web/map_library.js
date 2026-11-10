@@ -3,6 +3,7 @@
 let mapEditMode=false,mapEditBusy=false,mapSearch='',mapEditScope=null,mapTrashScope=null,mapTrashRows=[];
 let mapScopeGeneration=0,mapObservedConnection=null,mapListGeneration=0,mapListPending=null,mapListError='';
 let mapOperation=null,mapDialogGeneration=0,mapOwnedDialog=null,mapOwnedAction=null,mapTrashRequest=0;
+const mapSelection=new Set(),mapTrashSelection=new Set();
 const mapScope=()=>{const connection=JSON.stringify([S?.mode,S?.ip||'',S?.server_instance,S?.connection_generation]);if(mapObservedConnection!==null&&mapObservedConnection!==connection)mapScopeGeneration++;mapObservedConnection=connection;return connection+'|'+mapScopeGeneration;};
 const mapLabel=m=>m.display_name||m.name;
 const previousMapModal=modal;
@@ -24,6 +25,7 @@ function mapMutationReason(action){
 function invalidateMapList(){mapListGeneration++;mapListPending=null;}
 function syncMapScope(){
  const scope=mapScope();if(mapEditScope===scope)return scope;
+ mapSelection.clear();
  const previous=mapEditScope;mapEditScope=scope;mapEditMode=false;mapSearch='';mapEditBusy=false;mapOperation=null;
  if(previous!==null){mapTrashScope=null;mapTrashRows=[];}mapTrashRequest++;invalidateMapList();mapListError='';
  if(previous!==null){if(mapOwnedDialog===mapDialogGeneration)$('#modal')?.close();mapDialogGeneration++;mapOwnedDialog=null;mapLibrary={maps:[]};selectedRemote=null;}
@@ -72,16 +74,23 @@ paintMapLibrary=function(){
  const search=$('#map-library-search');if(search&&search.value!==mapSearch)search.value=mapSearch;
  const enabled=mapLibrary.management_version===1&&mapLibrary.desktop_management_version===1,editing=mapEditMode&&enabled,reason=mapMutationReason(),blocked=mapEditBusy||!!reason;
  const button=$('[data-ui="map-library-edit"]');
- if(button){button.textContent=editing?'完成编辑':'编辑地图';button.disabled=!enabled||mapEditBusy||!!mapMutationReason('rename');button.title=enabled?'重命名或移入回收站':'连接地图服务后可编辑';}
+ if(button){button.textContent=editing?'完成管理':'管理地图';button.disabled=!enabled||mapEditBusy||!!mapMutationReason('rename');button.title=enabled?'重命名、多选删除或移入回收站':'连接地图服务后可编辑';}
  for(const id of ['map-edit-confirm','map-purge-confirm','hub-confirm-apply']){const confirm=$(`[data-ui="${id}"]`);if(confirm&&mapOwnedDialog===mapDialogGeneration){const dialogReason=mapMutationReason(mapOwnedAction);confirm.disabled=mapEditBusy||!!dialogReason;confirm.title=dialogReason;}}
  const activate=$('[data-ui="apply-selected-map"]');if(activate){activate.disabled=blocked||!selectedRemote;activate.title=reason;}
  for(const entry of document.querySelectorAll?.('[data-map-restore],[data-map-purge]')||[]){const row=mapTrashRows.find(m=>m.id===(entry.dataset.mapRestore||entry.dataset.mapPurge));if(row){entry.disabled=blocked||!(entry.dataset.mapRestore?trashRestorable(row):trashPurgeable(row));entry.title=reason;}}
  const list=$('#remote-map-list');if(!list)return;
  const rows=visibleLibraryMaps();
- const markup=rows.map(m=>`<div class="map-library-entry ${m.name===selectedRemote?'selected':''}">
+ const markup=rows.map(m=>`<div class="map-library-entry ${editing?'has-pick':''} ${m.name===selectedRemote?'selected':''}">
+  ${editing?`<label class="map-pick" title="选择 ${esc(mapLabel(m))}"><input type="checkbox" data-map-pick="${esc(m.name)}" ${mapSelection.has(m.name)?'checked':''} ${m.active||m.name===mapLibrary.active?'disabled':''}></label>`:''}
   <button class="map-library-item" data-remote-map="${esc(m.name)}" title="${esc(m.name)}"><span class="map-thumb">${icon('maps')}</span><span class="map-entry-label"><strong>${esc(mapLabel(m))}</strong><small>${m.grids.length} 份栅格 · ${sizeLabel(m.cloud_bytes)}</small>${m.display_name&&m.display_name!==m.name?`<small class="map-identity">${esc(m.name)}</small>`:''}</span><span class="map-active-label">${m.active?'使用中':''}</span></button>
   ${editing?`<div class="map-row-edit"><button class="btn small" data-map-rename="${esc(m.name)}" ${mapEditBusy?'disabled':''}>重命名</button><button class="btn small danger" data-map-delete="${esc(m.name)}" ${m.active||m.name===mapLibrary.active||blocked?'disabled':''} title="${esc(reason||(m.active||m.name===mapLibrary.active?'当前活动地图不可删除':'移入回收站，可恢复'))}">删除</button></div>`:''}</div>`).join('')||empty(mapListError?'地图服务未连接':mapSearch?'没有匹配的地图':'还没有地图',mapListError?esc(mapListError):mapSearch?'换个名称或编号搜索。':'可以开始建图或导入地图包。','maps');
  if(list._editorMarkup!==markup){list.innerHTML=markup;list._editorMarkup=markup;}
+ const batchBar=$('#map-batch-bar');
+ if(batchBar){
+  const deletable=rows.filter(m=>!m.active&&m.name!==mapLibrary.active),allPicked=deletable.length>0&&deletable.every(m=>mapSelection.has(m.name));
+  batchBar.hidden=!editing;
+  if(editing)batchBar.innerHTML=`<label class="map-pick-all"><input type="checkbox" data-map-pick-all ${allPicked?'checked':''}>全选可删除地图</label><span class="help">已选 ${mapSelection.size} 张</span><button class="btn small danger" data-map-batch-delete ${mapSelection.size?'':'disabled'}>批量删除</button>`;
+ }
  text('map-disk',mapLibrary.disk?'存储可用 '+sizeLabel(mapLibrary.disk.free):'—');
  text('map-library-count',`${rows.length} / ${mapLibrary.maps.length} 张地图`);
  const trash=$('[data-ui="map-library-trash"]');if(trash){trash.disabled=!enabled||mapEditBusy;trash.textContent='回收站'+(mapLibrary.trash_count?' ('+mapLibrary.trash_count+')':'');}
@@ -146,7 +155,8 @@ ui['map-library-trash']=async()=>{
  mapTrashScope=scope;mapTrashRows=result.maps;
  const purge=mapLibrary.permanent_delete_supported&&mapLibrary.desktop_permanent_delete_supported&&mapLibrary.catalog_integrity_protocol===1&&mapLibrary.desktop_catalog_integrity_protocol===1,blocked=mapEditBusy||!!mapMutationReason();
  const state=m=>m.state==='purge_failed'?'删除未完成，原地图已不能完整恢复':m.state==='purging'?(m.purge_retryable?'上次删除结果尚未确认，可检查并重试；不能恢复':'正在删除，暂不可恢复'):m.state==='purged'?'文件已彻底删除':'';
- modal('地图回收站',`<p class="help">恢复后不会自动启用。回收站仍占用存储空间；彻底删除文件后不可恢复。</p><div class="map-trash-list">${result.maps.map(m=>`<div class="map-trash-row"><span><strong>${esc(mapLabel(m))}</strong><small>${esc(m.name)}</small>${state(m)?`<small>${esc(state(m))}</small>`:''}</span><div class="button-row"><button class="btn small" data-map-restore="${esc(m.id)}" ${blocked||!trashRestorable(m)?'disabled':''}>恢复</button>${purge?`<button class="btn small danger" data-map-purge="${esc(m.id)}" ${blocked||!trashPurgeable(m)?'disabled':''}>${m.state==='purging'?'检查并重试删除':m.state==='purge_failed'?'重试彻底删除':'彻底删除'}</button>`:''}</div></div>`).join('')||'<p>回收站为空</p>'}</div>`);
+ mapTrashSelection.clear();
+ modal('地图回收站',`<p class="help">恢复后不会自动启用。回收站仍占用存储空间；彻底删除文件后不可恢复。</p><div class="map-batch-bar" id="trash-batch-bar"><label class="map-pick-all"><input type="checkbox" data-trash-pick-all>全选</label><span class="help" id="trash-picked-count">已选 0 张</span><div class="button-row"><button class="btn small" data-trash-restore-batch disabled ${blocked?'disabled':''}>恢复选中</button>${purge?'<button class="btn small danger" data-trash-purge-batch disabled>彻底删除选中</button>':''}</div></div><div class="map-trash-list">${result.maps.map(m=>`<div class="map-trash-row"><label class="map-pick" title="选择 ${esc(mapLabel(m))}"><input type="checkbox" data-trash-pick="${esc(m.id)}" ${trashRestorable(m)?'':'disabled'}></label><span><strong>${esc(mapLabel(m))}</strong><small>${esc(m.name)}</small>${state(m)?`<small>${esc(state(m))}</small>`:''}</span><div class="button-row"><button class="btn small" data-map-restore="${esc(m.id)}" ${blocked||!trashRestorable(m)?'disabled':''}>恢复</button>${purge?`<button class="btn small danger" data-map-purge="${esc(m.id)}" ${blocked||!trashPurgeable(m)?'disabled':''}>${m.state==='purging'?'检查并重试删除':m.state==='purge_failed'?'重试彻底删除':'彻底删除'}</button>`:''}</div></div>`).join('')||'<p>回收站为空</p>'}</div>`);
  mapOwnedDialog=mapDialogGeneration;
 };
 function purgeMapDialog(id){
@@ -167,6 +177,9 @@ document.addEventListener('click',async e=>{
   else if(b.dataset.mapDelete)editMapDialog(b.dataset.mapDelete,'delete');
   else if(b.dataset.mapRestore){const row=mapTrashRows.find(m=>m.id===b.dataset.mapRestore);if(!row||!trashRestorable(row))throw Error('这份地图已开始永久删除，不能恢复');await editLibrary('restore',{id:b.dataset.mapRestore},mapTrashScope);}
   else if(b.dataset.mapPurge)purgeMapDialog(b.dataset.mapPurge);
+  else if(b.dataset.mapBatchDelete){confirmBatchDelete();}
+  else if(b.dataset.trashRestoreBatch){trashBatch('restore');}
+  else if(b.dataset.trashPurgeBatch){trashBatch('purge');}
  }catch(error){toast(error.message,true);}
 });
 
@@ -198,3 +211,67 @@ function openMapActivation(name,grid=0){
 ui['apply-selected-map']=()=>{if(!selectedRemote)throw Error('请先选择地图');openMapActivation(selectedRemote,+($('#remote-grid-id')?.value||0));};
 if(typeof update==='function'){const previousMapUpdate=update;update=function(...args){previousMapUpdate.apply(this,args);syncMapScope();if(page==='maps'||mapOwnedDialog===mapDialogGeneration)paintMapLibrary();};}
 document.addEventListener('click',e=>{if(e.target.closest('[data-ui="hub-connect"],[data-ui="hub-demo"],[data-connection-role="nos"],[data-service-role="nos"]')){mapScopeGeneration++;syncMapScope();paintMapLibrary();}},true);
+
+
+/* ---------- 批量管理：多选删除与回收站一键清理 ---------- */
+function paintTrashSelection(){
+ const n=mapTrashSelection.size;
+ const count=document.getElementById('trash-picked-count');if(count)count.textContent='已选 '+n+' 张';
+ const restore=document.querySelector('[data-trash-restore-batch]');if(restore)restore.disabled=!n;
+ const purge=document.querySelector('[data-trash-purge-batch]');if(purge)purge.disabled=!n;
+}
+document.addEventListener('change',e=>{
+ const t=e.target;if(!t||!t.dataset)return;
+ if(t.dataset.mapPick!==undefined){if(t.checked)mapSelection.add(t.dataset.mapPick);else mapSelection.delete(t.dataset.mapPick);paintMapLibrary();}
+ else if(t.dataset.mapPickAll!==undefined){
+  const rows=visibleLibraryMaps().filter(m=>!m.active&&m.name!==mapLibrary.active);
+  if(t.checked)rows.forEach(m=>mapSelection.add(m.name));else rows.forEach(m=>mapSelection.delete(m.name));
+  paintMapLibrary();
+ }else if(t.dataset.trashPick!==undefined){if(t.checked)mapTrashSelection.add(t.dataset.trashPick);else mapTrashSelection.delete(t.dataset.trashPick);paintTrashSelection();}
+ else if(t.dataset.trashPickAll!==undefined){
+  const rows=mapTrashRows.filter(trashRestorable);
+  if(t.checked)rows.forEach(m=>mapTrashSelection.add(m.id));else mapTrashSelection.clear();
+  paintTrashSelection();
+ }
+});
+function mapBatchLabel(action){return action==='delete'?'删除地图':action==='restore'?'恢复地图':'彻底删除地图文件';}
+async function batchLibrary(action,payloads){
+ const scope=syncMapScope();requireMapMutation(scope,null,action);
+ if(mapEditBusy||!payloads.length)return;
+ const token={scope,dialog:mapDialogGeneration};mapOperation=token;mapEditBusy=true;invalidateMapList();paintMapLibrary();
+ const label=mapBatchLabel(action),failures=[];let completed=0;
+ try{
+  for(const payload of payloads){
+   if(!mapOperationCurrent(token))break;
+   try{await job('/api/maps/library/'+action,payload,label+' '+completed+'/'+payloads.length,()=>mapOperationCurrent(token));completed++;}
+   catch(error){failures.push(error.message);}
+  }
+  if(!mapOperationCurrent(token))return;
+  if(action==='delete'){
+   for(const item of payloads)mapLibrary.maps=mapLibrary.maps.filter(m=>m.name!==item.name);
+   mapSelection.clear();
+  }
+  invalidateMapList();paintMapLibrary();await loadMapLibrary();await fetchState();
+  reconcileMapSelection(null);
+  if(action!=='delete'&&$('#modal')?.open)await ui['map-library-trash']();
+  toast(label+'完成：成功 '+completed+' 张'+(failures.length?'，失败 '+failures.length+' 张':''));
+  if(failures.length)toast(failures[0],true);
+ }catch(error){
+  if(mapOperationCurrent(token))throw error;
+ }finally{if(mapOperation===token){mapOperation=null;mapEditBusy=false;paintMapLibrary();}}
+}
+function confirmBatchDelete(){
+ const names=[...mapSelection];if(!names.length)return;
+ modal('批量删除地图',`<p>将选中的 <strong>${names.length}</strong> 张地图移入回收站？</p><p class="help">可以随时从回收站恢复；当前活动地图不在可删除范围内。</p>`,[{label:'移入回收站',ui:'map-batch-delete-confirm',style:'danger'}]);
+ const dialog=mapDialogGeneration;mapOwnedDialog=dialog;mapOwnedAction='delete';
+ ui['map-batch-delete-confirm']=()=>batchLibrary('delete',names.map(name=>({name})));
+}
+function trashBatch(action){
+ const ids=[...mapTrashSelection];if(!ids.length)return;
+ if(action==='restore'){batchLibrary('restore',ids.map(id=>({id})));return;}
+ const payloads=ids.map(id=>{const row=mapTrashRows.find(m=>m.id===id);return row?{id,confirmed_name:row.name}:null;}).filter(Boolean);
+ if(!payloads.length)throw Error('回收站列表已变化，请刷新后重试');
+ modal('批量彻底删除地图文件',`<p>彻底删除选中的 <strong>${payloads.length}</strong> 张地图文件？</p><p>点云、栅格与地图记录将被移除，无法从回收站恢复。</p>`,[{label:'永久删除文件',ui:'trash-purge-batch-confirm',style:'danger'}]);
+ const dialog=mapDialogGeneration;mapOwnedDialog=dialog;
+ ui['trash-purge-batch-confirm']=()=>batchLibrary('purge',payloads);
+}

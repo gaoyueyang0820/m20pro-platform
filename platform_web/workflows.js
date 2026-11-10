@@ -81,7 +81,7 @@ mapsPage=function(){
  `<section class="card mapping-phase-card"><div><span id="mapping-phase" class="mapping-phase idle">等待状态</span><strong id="mapping-phase-message">正在读取建图状态</strong><small id="mapping-phase-extra"></small></div><div class="button-row">${btn('开始建图','hub-mapping-start','primary','play')}${btn('停止并保存','hub-mapping-stop','danger','stop')}</div></section>
   <div class="mapping-layout">
    <aside class="mapping-sidebar">
-    ${card('我的地图','<div class="map-library-toolbar"><input id="map-library-search" type="search" placeholder="搜索地图名称或编号" aria-label="搜索地图"><div><span id="map-library-count" class="help"></span><button class="text-button" data-ui="map-library-trash">回收站</button></div></div><div id="remote-map-list" class="compact-map-library"></div><p id="map-disk" class="help card-pad"></p>','maps',`<div class="button-row"><span id="map-library-source" class="pill ${S.mode==='demo'?'amber':'gray'}">${S.mode==='demo'?'演示 NOS':'NOS'}</span>${btn('编辑地图','map-library-edit','small')}</div>`)}
+    ${card('我的地图','<div class="map-library-toolbar"><input id="map-library-search" type="search" placeholder="搜索地图名称或编号" aria-label="搜索地图"><div><span id="map-library-count" class="help"></span><button class="text-button" data-ui="map-library-trash">回收站</button></div></div><div id="map-batch-bar" class="map-batch-bar" hidden></div><div id="remote-map-list" class="compact-map-library"></div><p id="map-disk" class="help card-pad"></p>','maps',`<div class="button-row"><span id="map-library-source" class="pill ${S.mode==='demo'?'amber':'gray'}">${S.mode==='demo'?'演示 NOS':'NOS'}</span>${btn('编辑地图','map-library-edit','small')}</div>`)}
     <section class="card card-pad selected-map-work"><div><strong id="selected-map-info">请选择一张地图</strong><p class="help">选择地图后可用于导航、导出或继续补扫。</p></div>${select('栅格','remote-grid-id',[[0,'栅格 0']])}<div class="button-row">${btn('用于导航','map-use-navigation','primary','navigation')}${btn('导出地图包','export-selected-map','','download')}${btn('查看二维地图','sync-selected-map','small')}${btn('补扫与版本','map-project','small')}${btn('刷新地图','map-library-refresh','small')}</div></section>
    </aside>
    <div class="mapping-visuals">
@@ -159,21 +159,30 @@ renderRoutes=function(){
 };
 function compactDrive(){return `<div class="mapping-dpad compact-dpad"><button data-velocity="0,0,1" aria-label="左转">↶</button><button data-velocity="1,0,0" aria-label="前进">↑</button><button data-velocity="0,0,-1" aria-label="右转">↷</button><button data-velocity="0,1,0" aria-label="左移">←</button><button class="center" data-action="stop">停止</button><button data-velocity="0,-1,0" aria-label="右移">→</button><span></span><button data-velocity="-1,0,0" aria-label="后退">↓</button><span></span></div>`;}
 function routeEditorPage(){
+ const single=points.length<=1;
+ const runButton=single?btn('执行导航','go-goal','primary','play'):btn('执行巡检','start-nav','primary','play');
  return heading(btn('任务中心','goto-tasks','','tasks'))+operationPanel()+
  `<div class="route-workspace">
    <div class="route-map-column">
-    <div class="route-action-bar">${btn('撤销一点','undo-waypoint','small ghost')}${btn('保存路线','save-route','','file')}${btn('开始执行路线','start-nav','primary','play')}${btn('暂停','pause-nav')}${btn('继续','resume-nav')}${btn('结束任务','cancel-nav','danger')}</div>
-    ${card('地图选点，按顺序添加航点',mapStage(),'maps','<span class="pill blue" id="nav-status">待命</span>')}
+    <p class="nav-flow-hint">在地图上点选目标：只选一个点可以直接导航，继续点选会按顺序组成巡检路线。</p>
+    <div class="route-action-bar" id="nav-action-bar">${btn('撤销一点','undo-waypoint','small ghost')}${btn('保存路线','save-route','','file')}${runButton}${btn('暂停','pause-nav')}${btn('继续','resume-nav')}${btn('结束任务','cancel-nav','danger')}</div>
+    ${card('地图选点，自动规划路径',mapStage(),'maps','<span class="pill blue" id="nav-status">待命</span>')}
     <div id="nav-feedback" class="card nav-feedback-empty"></div>
     <details class="navigation-drive"><summary>临时手动驾驶与前视画面</summary><div class="navigation-drive-body"><div><p class="help">暂停任务后切换手动。返回路线时点击继续。</p>${btn('切换手动驾驶','nav-takeover')}${compactDrive()}<input id="motion-speed" aria-label="手动驾驶幅度" type="range" min="0.05" max="0.25" step="0.05" value="0.1"><small id="motion-readiness"></small></div><div class="camera-feed"><img id="camera-front" alt="前置相机" hidden><div id="placeholder-front" class="camera-placeholder">${icon('vision')}<strong>${S.mode==='demo'?'演示模式没有实机画面':'正在连接前置相机'}</strong></div><div class="camera-hud"><span>前视</span><span id="cam-front-tag">等待画面</span></div></div></div></details>
    </div>
    <aside class="route-editor card card-pad">
-    ${mapSelect()}
+    ${mapSelect().replace('当前编辑地图','导航地图')}
+    <div class="divider"></div>
+    <h3 id="nav-target-title">导航目标</h3>
+    <div id="goal-position" class="goal-position">尚未选择目标</div>
+    <label class="field">到达朝向<select id="goal-yaw-mode"><option value="auto">沿路径末段方向</option><option value="manual">指定朝向</option></select></label>
+    <div id="goal-yaw-field" hidden>${field('到达朝向 / 度','goal-yaw',0,'number')}</div>
+    <div id="goal-plan-status" class="goal-plan-status">${single?'在地图上选定目标，自动规划可通行路径':'多个航点将按顺序执行；点击“执行巡检”开始。'}</div>
+    <div class="divider"></div>
     ${field('路线名称','route-name',routeId?(S.routes.find(r=>r.id===routeId)?.name||'新路线'):'新路线')}
-    <div class="field route-behavior"><label for="route-arrival">到点后</label><select id="route-arrival"><option value="continue">自动前往下一点，终点结束</option><option value="pause">每个任务点暂停，点击继续</option></select></div>
     <div class="range-label"><strong>行进顺序</strong><b id="point-count">${points.length} 个点</b></div>
     <div id="waypoints" class="waypoints"></div>
-    <p class="help">在地图上点击添加航点；航点可展开调整坐标、朝向与任务类型。</p>
+    <p class="help">航点可展开调整坐标、朝向与任务类型。</p>
     <div class="route-advanced"><h4 class="field-heading">速度、步态与方向</h4><div class="form-grid">${select('导航方式','nav-mode',[[1,'自主导航'],[0,'分段直线']])}${select('导航速度','nav-speed',[[1,'低速'],[0,'正常'],[2,'高速']])}${select('路径步态','nav-gait',[['flat','敏捷平地'],['stair','敏捷楼梯']])}${select('运动朝向','nav-manner',[[0,'前进'],[1,'倒退']])}</div></div>
     <div class="divider"></div>
     <h3>已保存路线</h3>
@@ -182,25 +191,21 @@ function routeEditorPage(){
    </aside>
   </div>`;
 }
-
+function refreshNavActions(){
+ const bar=$('#nav-action-bar');if(!bar)return;
+ const single=points.length<=1;
+ const run=single?btn('执行导航','go-goal','primary','play'):btn('执行巡检','start-nav','primary','play');
+ bar.innerHTML=btn('撤销一点','undo-waypoint','small ghost')+btn('保存路线','save-route','','file')+run+btn('暂停','pause-nav')+btn('继续','resume-nav')+btn('结束任务','cancel-nav','danger');
+ const title=$('#nav-target-title');if(title)title.textContent=single?'导航目标':'巡检航点';
+ const status=$('#goal-plan-status');if(status&&!single)status.textContent='多个航点将按顺序执行；点击“执行巡检”开始。';
+}
 navPage=function(){
  mapTool='waypoint';
- const modebar=`<div class="nav-intent segmented" role="tablist" aria-label="导航任务类型"><button data-ui="nav-goal-mode" role="tab" aria-selected="${navIntent==='goal'}" class="${navIntent==='goal'?'active':''}">单点导航</button><button data-ui="nav-route-mode" role="tab" aria-selected="${navIntent==='route'}" class="${navIntent==='route'?'active':''}">多航点巡检</button></div>`;
  const holder=document.createElement('div');holder.innerHTML=routeEditorPage();
- holder.querySelector('.page-heading').insertAdjacentHTML('afterend',modebar);
- if(navIntent==='goal'){
-  holder.querySelector('.route-action-bar').innerHTML=btn('执行导航','go-goal','primary','play')+btn('重新规划','goal-replan')+btn('清除目标','clear-points')+btn('暂停','pause-nav')+btn('继续','resume-nav')+btn('结束任务','cancel-nav','danger');
-  holder.querySelector('.route-editor').innerHTML=mapSelect().replace('当前编辑地图','导航地图')+`<p class="panel-kicker">单点导航</p><h3>在地图上选择目标点</h3><p class="help">系统按当前导航地图规划绕行路径，不需要手工绘制路线；选定目标后点击“执行导航”。</p><div id="goal-position" class="goal-position">尚未选择目标</div><label class="field">到达朝向<select id="goal-yaw-mode"><option value="auto">沿路径末段方向</option><option value="manual">指定朝向</option></select></label><div id="goal-yaw-field" hidden>${field('到达朝向 / 度','goal-yaw',0,'number')}</div><div id="goal-plan-status" class="goal-plan-status">选定目标后自动规划可通行路径</div><p class="help">按默认低速行走并避障；到达目标后停车。</p><div class="button-row section-gap">${btn('停稳并建图','start-map-here','small','maps')}${btn('原图续建 / 优化','extend-map','small','maps')}</div><div class="divider"></div><h3>已保存巡检路线</h3><div id="route-list"></div>`;
-  holder.querySelector('.card-title').innerHTML=icon('navigation')+'地图选点，自动规划路径';
-  holder.querySelector('.map-tools').innerHTML=btn('设定初始位置','map-pose','small')+btn('清除目标','clear-points','small');
-  holder.querySelector('.map-caption').textContent='绿色线为平台规划路径；机器人行走时仍会实时避障';
- }
  return holder.innerHTML;
 };
-ui['nav-goal-mode']=()=>{navIntent='goal';points=[];routeId=null;render();};
-ui['nav-route-mode']=()=>{navIntent='route';points=[];routeId=null;render();};
 ui['nav-takeover']=async()=>{await job('/api/nav/manual',{},'暂停路线并切换手动');await fetchState();toast('已切换手动，按住方向键移动');};
-ui['undo-waypoint']=()=>{points.pop();renderPoints();};
+ui['undo-waypoint']=()=>{points.pop();navIntent=points.length>1?'route':'goal';renderPoints();};
 function routeOptions(){return {nav_mode:+($('#nav-mode')?.value??1),speed:+($('#nav-speed')?.value??1),gait:$('#nav-gait')?.value||'flat',manner:+($('#nav-manner')?.value??0),pause_at_point:$('#route-arrival')?.value==='pause'};}
 saveRoute=async function(){
  const r=await api('/api/route/save',{id:routeId,name:$('#route-name')?.value||'新巡检路线',map_id:mapId,points,options:routeOptions()});routeId=r.route.id;await fetchState();return r.route;

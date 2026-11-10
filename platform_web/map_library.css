@@ -22,3 +22,15 @@
 .map-trash-row small{display:block;color:var(--muted);margin-top:3px}
 .map-cleanup-choice{display:flex;align-items:flex-start;gap:8px;margin-top:18px;line-height:1.5}
 .map-cleanup-choice input{width:auto;margin-top:4px}
+
+/* 批量管理：列表选择框、批量操作条与回收站多选 */
+.map-library-entry.has-pick>.map-pick{position:absolute;left:6px;top:0;bottom:0;z-index:1}
+.map-library-entry.has-pick>.map-library-item{padding-left:36px}
+.map-pick{display:flex;align-items:center;justify-content:center;width:28px;flex:none}
+.map-pick input{width:15px;height:15px;accent-color:#0c7d67;cursor:pointer}
+.map-pick-all{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:#365159}
+.map-pick-all input{width:15px;height:15px;accent-color:#0c7d67;cursor:pointer}
+.map-batch-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:8px 12px;margin:0 0 8px;border:1px solid #dde6e8;border-radius:8px;background:#f7f9fa}
+.map-batch-bar[hidden]{display:none}
+.map-batch-bar .help{margin:0 auto 0 0;font-size:12px}
+.map-trash-row>.map-pick{margin-left:-4px}
