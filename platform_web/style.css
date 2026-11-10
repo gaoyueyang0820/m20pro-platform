@@ -586,6 +586,11 @@ dialog#modal::backdrop{background:rgba(9,28,35,.46);backdrop-filter:blur(3px)}
 .navigation-drive .camera-feed{min-height:210px}
 .route-advanced{border-top:1px solid var(--line);margin-top:10px;padding-top:9px}
 .route-advanced .form-grid{margin-top:9px}
+.collector-list{display:grid;gap:7px}
+.collector-row{padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface-2);min-width:0}
+.collector-toggle{align-items:center;min-height:34px;margin:0;font-size:12px}
+.collector-options.form-grid{margin:0 0 9px}
+.route-editor .collector-options .field{margin:0}
 .route-map-tools{border-top:1px solid var(--line);margin-top:12px;padding-top:10px}
 .route-map-tools summary{font-size:10.5px;color:var(--muted);cursor:pointer}
 .route-map-tools .button-row{margin-top:8px}

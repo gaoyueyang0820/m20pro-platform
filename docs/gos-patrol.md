@@ -1,8 +1,8 @@
 # GOS 自主寻路与到点作业
 
-在单点导航或多点巡检中选择 **GOS 自主寻路**。电脑提交活动栅格和任务，GOS 从机内雷达读取最新观测，计算路线并通过机内 AOS 连接执行。电脑接收状态并维护任务授权。短暂丢包与雷达观测过期分别处理，持续 5 秒未收到电脑心跳时 GOS 请求停车。
+单点导航和多点巡检统一使用 **GOS 机载寻路**。电脑提交活动栅格和任务，GOS 负责路线预览，并结合机内雷达计算和执行行进路线。电脑接收状态并维护任务授权。短暂丢包与雷达观测过期分别处理，持续 5 秒未收到电脑心跳时 GOS 请求停车。
 
-GOS 执行器使用敏捷平地步态和正向机身坐标。包含进桩的路线仍从原厂导航入口执行。
+GOS 执行器使用敏捷平地步态和正向机身坐标。普通已保存路线可以直接执行。包含充电航点的路线自动使用专用回桩流程。
 
 全局规划先尝试二维通路导引和整段机身扫掠，再用航向搜索处理窄道。空旷直行复用地图区段，只需核对最新雷达下的前向及制动包络。障碍挡路时，先找可接回主路线的位置或重新规划通往目标的路线，再尝试局部绕行。此分层方式参考自动驾驶的参考路线、行为规划与速度约束。 [Autoware 行为规划](https://autowarefoundation.github.io/autoware_universe/main/planning/behavior_path_planner/autoware_behavior_path_planner/)
 
@@ -44,7 +44,7 @@ GOS 执行器使用敏捷平地步态和正向机身坐标。包含进桩的路�
 
 ## 接口
 
-- `POST /api/nav/plan`、`/api/nav/goal`、`/api/nav/start` 接受 `engine: "gos"`。
+- `POST /api/nav/plan`、`/api/nav/goal`、`/api/nav/start` 由平台统一派发到 GOS。演示模式使用本地模拟，充电航点交给专用回桩流程。
 - `POST /api/route/save` 的航点可带 `station_action: {camera, pan, iot_device_id}`。相机支持 `front`、`rear`、`ball`，方向支持 `none`、`left`、`right`。
 - `GET /api/tasks/collectors` 返回采集项和字段定义。通过 `POST /api/route/save` 的 `options.collectors` 保存沿途采集配置，例如 `[{"kind":"people_count","camera":"front","interval_s":2},{"kind":"iot_readings","device_id":"42","interval_s":5}]`。
 - `GET /api/tasks/collection?run_id=<任务执行编号>&offset=0` 读取当前或历史任务的采集记录，按响应的 `next_offset` 分页。记录包含采集类型、采集时间、采集请求时的航点索引及读数或错误。

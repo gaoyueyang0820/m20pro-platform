@@ -27,9 +27,8 @@ document.addEventListener('click',async e=>{const b=e.target.closest('[data-lear
 
 let goalPlan=null,goalPlanKey='',goalPlanBusy=false,goalPlanError='',goalPlanGeneration=0,goalSubmitting=false;
 let goalPlanDiagnostics=null;
-let pointNavigationEngine='platform';
 let goalPlanRequest=null,goalReplanning=false;
-function goalKey(){if(page!=='navigation'||navIntent!=='goal'||points.length!==1)return '';return [mapId,points[0].x,points[0].y,$('#goal-yaw-mode')?.value,$('#goal-yaw')?.value,pointNavigationEngine].join('|');}
+function goalKey(){if(page!=='navigation'||navIntent!=='goal'||points.length!==1)return '';return [mapId,points[0].x,points[0].y,$('#goal-yaw-mode')?.value,$('#goal-yaw')?.value].join('|');}
 function validGoalPlan(){return !!(goalKey()&&goalPlan&&goalKey()===goalPlanKey&&performance.now()-goalPlan.received<55000);}
 function invalidateGoalPlan(){
  goalPlanGeneration++;goalPlan=null;goalPlanKey='';goalPlanError='';goalPlanDiagnostics=null;$('#goal-plan-preview')?.remove();$('#goal-recovery-preview')?.remove();
@@ -43,7 +42,7 @@ async function refreshGoalPlan(){
  const request={controller:new AbortController(),timedOut:false};goalPlanRequest=request;
  request.timer=setTimeout(()=>{request.timedOut=true;request.controller.abort();},15000);
  try{const manual=$('#goal-yaw-mode')?.value==='manual',degrees=+($('#goal-yaw')?.value||0);const yaw=manual?(((degrees+180)%360+360)%360-180)*Math.PI/180:null;
-  const r=await api('/api/nav/plan',{map_id:mapId,x:points[0].x,y:points[0].y,yaw,engine:pointNavigationEngine},true,{signal:request.controller.signal});if(generation===goalPlanGeneration&&goalKey()===key)goalPlan={...r,received:performance.now()};
+  const r=await api('/api/nav/plan',{map_id:mapId,x:points[0].x,y:points[0].y,yaw,engine:S.mode==='demo'?'native':'gos'},true,{signal:request.controller.signal});if(generation===goalPlanGeneration&&goalKey()===key)goalPlan={...r,received:performance.now()};
  }catch(err){if(generation===goalPlanGeneration&&goalKey()===key){goalPlanError=request.timedOut?'规划请求超时，请检查平台连接后点击“重新规划”':err.message;goalPlanDiagnostics=err.navigation||null;}}
  finally{clearTimeout(request.timer);if(goalPlanRequest===request){goalPlanRequest=null;goalPlanBusy=false;paintGoalPlan();drawMap();}}
 }
@@ -79,12 +78,6 @@ function paintGoalDiagnostics(){
 }
 function paintGoalPlan(){
  if(page!=='navigation'||navIntent!=='goal')return;const key=goalKey();
- const status=$('#goal-plan-status');
- if(status&&!$('#point-navigation-engine')){
-  const controls=document.createElement('div');controls.innerHTML=`<label class="field">寻路方式<select id="point-navigation-engine" aria-label="寻路方式"><option value="platform">电脑端寻路</option><option value="gos">GOS 自主寻路</option><option value="native">原厂导航</option></select></label><p class="help">GOS 寻路在机内处理雷达和控制，适合 Wi-Fi 容易波动的现场。</p>`;
-  status.parentNode.insertBefore(controls,status);$('#point-navigation-engine').value=pointNavigationEngine;
-  $('#point-navigation-engine').addEventListener('change',e=>{pointNavigationEngine=e.target.value;invalidateGoalPlan();paintGoalPlan();drawMap();});
- }
  const valid=validGoalPlan(),ready=navigationMapReady(),active=['running','cancelling'].includes(S.nav.status);
  const reason=!ready?'请先同步当前活动地图':goalSubmitting?'正在提交导航，请稍候':goalReplanning?'正在重新规划，请稍候':active?'当前导航尚未结束':!key?'请先点选目标':goalPlanBusy?'正在规划，请稍候':!valid?goalPlanError||'请等待有效路线或重新规划':'';
  const b=$('[data-ui="go-goal"]');if(b){const disabled=!!reason;if(b.disabled!==disabled)b.disabled=disabled;b.title=reason||'沿预览路线前往目标';}
@@ -114,7 +107,7 @@ ui['go-goal']=async()=>{
  if(!navigationMapReady())throw Error('请先同步当前活动地图');
  if(['running','cancelling'].includes(S.nav.status))throw Error('请先结束当前导航');
  goalSubmitting=true;paintGoalPlan();
- try{const r=await api('/api/nav/goal',{map_id:mapId,plan_id:goalPlan.plan_id,engine:pointNavigationEngine});await fetchState();toast(r.message);}finally{goalSubmitting=false;paintGoalPlan();}
+ try{const r=await api('/api/nav/goal',{map_id:mapId,plan_id:goalPlan.plan_id,engine:S.mode==='demo'?'native':'gos',disconnect_policy:'stop'});await fetchState();toast(r.message);}finally{goalSubmitting=false;paintGoalPlan();}
 };
 const plannedDraw=drawMap;drawMap=function(){plannedDraw();$('#goal-plan-preview')?.remove();$('#goal-recovery-preview')?.remove();if(page!=='navigation'||navIntent!=='goal')return;const m=selectedMap(),svg=$('#nav-map');if(!m||!svg)return;
  const p=(S?.nav?.engine==='platform'||S?.nav?.executor==='gos')&&S.nav.status==='running'?S.nav.plan:goalKey()&&goalKey()===goalPlanKey?goalPlan:null;if(!p?.path?.length)return;

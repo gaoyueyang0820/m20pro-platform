@@ -31,6 +31,21 @@ class PlatformRouteDispatchTests(unittest.TestCase):
         submitted=a.point_navigation.start.call_args.args[0]
         self.assertEqual(submitted['id'],route['id']);self.assertEqual(submitted['points'],route['points'])
         self.assertIsNone(self.planning[0]['yaw']);self.assertEqual(self.planning[0]['x'],-5.)
+    def test_operator_patrol_uses_gos_with_legacy_route_settings(self):
+        a,route=self.prepare();a.demo=False
+        route['options']=dict(engine='native',disconnect_policy='finish',pause_at_point=True)
+        a._start_gos_route=Mock(return_value={'executor':'gos'})
+        reply=a.navigation_request('start',dict(id=route['id'],engine='platform'))
+        self.assertEqual(reply['executor'],'gos')
+        self.assertEqual(a._start_gos_route.call_args.args[0]['disconnect_policy'],'stop')
+        self.assertEqual(a._start_gos_route.call_args.kwargs['route'],route)
+        a.plan_goal.assert_not_called()
+    def test_operator_dock_route_uses_charging_workflow(self):
+        a,route=self.prepare();a.demo=False;route['points'][-1]['type']=3
+        a._start_gos_route=Mock();a.start_route=Mock(return_value={'ok':True})
+        a.navigation_request('start',dict(id=route['id'],engine='gos'))
+        a._start_gos_route.assert_not_called()
+        self.assertEqual(a.start_route.call_args.kwargs['goal'],route)
     def test_current_matching_preview_is_reused_but_wrong_preview_is_replanned(self):
         a,route=self.prepare();query=dict(map_id='demo',x=-5.,y=-3.,yaw=None,engine='platform');plan=a.plan_goal(query)
         a.start_route(dict(id=route['id'],engine='platform',plan_id=plan['plan_id']))

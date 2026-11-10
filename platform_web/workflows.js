@@ -171,8 +171,8 @@ function taskCollectionSettings() {
  const saved=S.routes?.find(route=>route.id===routeId)?.options?.collectors||[];
  const types=S.task_collectors||[];
  if(!types.length)return '';
- return `<details id="task-collection-settings" ${saved.length?'open':''}><summary>沿途采集</summary>
- <div class="stack section-gap">${types.map(type=>{
+ return `<details id="task-collection-settings" class="route-advanced" ${saved.length?'open':''}><summary>沿途采集</summary>
+ <div class="collector-list">${types.map(type=>{
   const current=saved.find(item=>item.kind===type.kind);
   const fields=type.fields.map(field=>{
    const value=current?.[field.key]??'';
@@ -182,9 +182,9 @@ function taskCollectionSettings() {
     : `<input data-collector-field="${esc(field.key)}" inputmode="numeric" pattern="${esc(field.pattern)}" value="${esc(value)}">`;
    return `<label class="field">${esc(field.label)}${input}</label>`;
   }).join('');
-  return `<div class="stack" data-collector="${esc(type.kind)}">
-   <label class="field"><span><input type="checkbox" data-collector-enable ${current?'checked':''}> ${esc(type.title)}</span></label>
-   <div data-collector-options class="form-grid" ${current?'':'hidden'}>${fields}
+  return `<div class="collector-row" data-collector="${esc(type.kind)}">
+   <label class="check collector-toggle"><input type="checkbox" data-collector-enable ${current?'checked':''}><span>${esc(type.title)}</span></label>
+   <div data-collector-options class="form-grid collector-options" ${current?'':'hidden'}>${fields}
     <label class="field">采集间隔（秒）<input data-collector-interval type="number"
      min="${type.min_interval_s}" max="${type.max_interval_s}" step="1" value="${current?.interval_s??type.interval_s}"></label>
    </div></div>`;
@@ -210,14 +210,15 @@ function routeEditorPage(){
     <details class="navigation-drive"><summary>临时手动驾驶与前视画面</summary><div class="navigation-drive-body"><div><p class="help">暂停任务后切换手动。返回路线时点击继续。</p>${btn('切换手动驾驶','nav-takeover')}${compactDrive()}<input id="motion-speed" aria-label="手动驾驶幅度" type="range" min="0.05" max="0.25" step="0.05" value="0.1"><small id="motion-readiness"></small></div><div class="camera-feed"><img id="camera-front" alt="前置相机" hidden><div id="placeholder-front" class="camera-placeholder">${icon('vision')}<strong>${S.mode==='demo'?'演示模式没有实机画面':'正在连接前置相机'}</strong></div><div class="camera-hud"><span>前视</span><span id="cam-front-tag">等待画面</span></div></div></div></details>
    </div>
    <aside class="route-editor card card-pad">
-    ${mapSelect()}
+    ${mapSelect().replace('当前编辑地图','巡检地图')}
+    <p id="navigation-executor-status" class="help" role="status"></p>
     ${field('路线名称','route-name',routeId?(S.routes.find(r=>r.id===routeId)?.name||'新路线'):'新路线')}
     <div class="field route-behavior"><label for="route-arrival">到点后</label><select id="route-arrival"><option value="continue">自动前往下一点，终点结束</option><option value="pause">每个任务点暂停，点击继续</option></select></div>
     <div class="range-label"><strong>行进顺序</strong><b id="point-count">${points.length} 个点</b></div>
     <div id="waypoints" class="waypoints"></div>
     <p class="help">点击地图添加，展开航点可设置位置、朝向和到点任务。</p>
     ${taskCollectionSettings()}
-    <details class="route-advanced"><summary>速度、步态与方向</summary><div class="form-grid">${select('导航方式','nav-mode',[[1,'自主导航'],[0,'分段直线']])}${select('导航速度','nav-speed',[[1,'低速'],[0,'正常'],[2,'高速']])}${select('路径步态','nav-gait',[['flat','敏捷平地'],['stair','敏捷楼梯']])}${select('运动朝向','nav-manner',[[0,'前进'],[1,'倒退']])}</div></details>
+    <details id="dock-route-settings" class="route-advanced" ${points.some(p=>p.type===3)?'':'hidden'}><summary>回桩参数</summary><div class="form-grid">${select('行进方式','nav-mode',[[1,'自主导航'],[0,'分段直线']])}${select('导航速度','nav-speed',[[1,'低速'],[0,'正常'],[2,'高速']])}${select('路径步态','nav-gait',[['flat','敏捷平地'],['stair','敏捷楼梯']])}${select('运动朝向','nav-manner',[[0,'前进'],[1,'倒退']])}</div></details>
     <div class="divider"></div>
     <h3>已保存路线</h3>
     <div id="route-list"></div>
@@ -236,7 +237,8 @@ navPage=function(){
   holder.querySelector('.route-editor').innerHTML=mapSelect().replace('当前编辑地图','导航地图')+`<span class="eyebrow">SINGLE GOAL</span><h3>点一下你想去的位置</h3><p class="help">机器人根据地图自动规划绕行路径，无需绘制整条路线。选点后点击“前往目标”。</p><div id="goal-position" class="goal-position">尚未选择目标</div><label class="field">到达朝向<select id="goal-yaw-mode"><option value="auto">顺着最后一段路径</option><option value="manual">指定朝向</option></select></label><div id="goal-yaw-field" hidden>${field('到达朝向 / 度','goal-yaw',0,'number')}</div><div id="goal-plan-status" class="goal-plan-status">选择目标后预览可通行路线</div><p class="help">默认低速行走并避障；到达后停车。</p><details class="route-map-tools"><summary>地图与建图工具</summary><div class="button-row">${btn('停稳并建图','start-map-here','small','maps')}${btn('原图续建 / 优化','extend-map','small','maps')}</div></details><div class="divider"></div><h3>已保存巡检路线</h3><div id="route-list"></div>`;
   holder.querySelector('.card-title').innerHTML=icon('navigation')+'点选目的地，自动寻路';
   holder.querySelector('.map-tools').innerHTML=btn('设定初始位置','map-pose','small')+btn('清除目标','clear-points','small');
-  holder.querySelector('.map-caption').textContent='绿色线为平台规划通路；机器人行走时仍会实时避障';
+  holder.querySelector('.map-caption').textContent='绿色线为路线预览，行走时按现场障碍调整';
+  holder.querySelector('#goal-plan-status').insertAdjacentHTML('beforebegin','<p id="navigation-executor-status" class="help" role="status"></p>');
  }
  return holder.innerHTML;
 };
@@ -282,8 +284,6 @@ function stationFields(index, point) {
   } else {
    if (configured.camera !== 'ball') configured.pan = 'none';
    point.station_action = configured;
-   const engine = $('#route-navigation-engine');
-   if (engine) engine.value = 'gos';
   }
   row.querySelector('.station-options').hidden = !point.station_action;
   row.querySelector('.station-pan').hidden = configured.camera !== 'ball';

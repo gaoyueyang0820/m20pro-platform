@@ -641,6 +641,8 @@ class Platform:
         if engine not in ['native','platform','gos']:raise ValueError('未知导航执行器')
         x,y=number(req.get('x')),number(req.get('y'));yaw=None if req.get('yaw') is None else number(req['yaw'],-math.pi,math.pi)
         with self.lock:
+            if req.get('_start_generation',self._nav_start_generation)!=self._nav_start_generation:
+                raise ValueError('连接已改变，请重新规划')
             generation=self._plan_generation;planning_link=self.link;planning_demo=self.demo
             map_=copy.deepcopy(next((m for m in self.maps() if m['id']==req.get('map_id')),None))
             if not map_:raise ValueError('请选择地图')
@@ -757,6 +759,7 @@ class Platform:
     def start_goal(self, req):
         with self.lock:
             intent=self._nav_start_generation
+            if req.get('_start_generation',intent)!=intent:raise ValueError('导航启动已取消')
             client_intent=self.navigation_intents.register(req,self.instance_id,self._plan_generation)
         if not req.get('plan_id'):req=dict(req,plan_id=self.plan_goal(req)['plan_id'])
         return self._start_planned_goal(req,intent,client_intent)
@@ -866,6 +869,23 @@ class Platform:
                 raise
             return dict(ok=True, engine='resident', executor='gos', phase=nav['phase'],
                         message=nav['message'])
+
+    def navigation_request(self, operation, req):
+        """Route operator requests to GOS; the charging workflow owns docking."""
+        with self.lock:
+            request=dict(req,engine='native' if self.demo else 'gos',disconnect_policy='stop',
+                         _start_generation=self._nav_start_generation)
+            if operation=='start':
+                route=copy.deepcopy(next((r for r in self.store.value['routes'] if r['id']==req.get('id')),None))
+                if not route:raise ValueError('路线不存在，请先保存路线')
+                if any(p.get('type')==3 for p in route['points']):
+                    if route.get('options',{}).get('collectors') or any(p.get('station_action') for p in route['points']):
+                        raise ValueError('巡检采集与进桩请分别配置任务')
+                    request['engine']='native'
+        if operation=='plan':return self.plan_goal(request)
+        if operation=='goal':return self.start_goal(request)
+        if request['engine']=='gos':return self._start_gos_route(request,route=route)
+        return self.start_route(request,goal=route)
 
     def start_route(self, req, goal=None,client_intent=None):
         if goal is None:
@@ -1706,10 +1726,9 @@ class Handler(original.Handler):
                 return self._json(APP.hub.operations.submit('model-check',lambda progress:APP.model_checks.run(req.get('kind','ppe'),progress)))
             if p=='/api/maps/refinement':return self._json(APP.map_learning.control(req))
             if p=='/api/people':return self._json(APP.people.control(req))
-            if p=='/api/nav/plan':return self._json(APP.plan_goal(req))
-            if p=='/api/nav/goal':return self._json(APP.start_goal(req))
+            if p in ['/api/nav/plan','/api/nav/goal','/api/nav/start']:
+                return self._json(APP.navigation_request(p.rsplit('/',1)[-1],req))
             if p=='/api/nav/lease':return self._json(APP.point_navigation.renew(req.get('run_id')))
-            if p=='/api/nav/start':return self._json(APP.start_route(req))
             if p=='/api/nav/intent/cancel':return self._json(APP.cancel_navigation_intent(req))
             if p=='/api/nav/resume':return self._json(APP.resume_route())
             result=APP.autonomy.post(p,req)
@@ -1760,7 +1779,6 @@ class Handler(original.Handler):
                     if APP.nav['status'] in ['running','cancelling']: raise ValueError('任务运行中不能删除路线')
                     APP.store.value['routes']=[r for r in APP.store.value['routes'] if r['id']!=req.get('id')]
                     APP.store.save();result=dict(ok=True)
-                elif p=='/api/nav/goal': result=APP.start_goal(req)
                 elif p in ['/api/nav/cancel','/api/nav/pause']:
                     after='paused' if p.endswith('pause') else 'cancelled'
                     if APP.resident_navigation.gos_busy():

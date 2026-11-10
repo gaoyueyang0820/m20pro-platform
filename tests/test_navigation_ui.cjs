@@ -26,12 +26,11 @@ function fixture(){
 }
 function plan(data={}){return {plan_id:'test-plan',map_id:data.map_id||'m1',path:[{x:1,y:1},{x:data.x||2,y:data.y||3}],length_m:3,points:[{x:2,y:3}],goal:{x:2,y:3,yaw:0}};}
 
-test('single-goal execution explicitly selects platform or native without changing it in flight',async()=>{
+test('single-goal preview and execution use the onboard planner',async()=>{
  const f=fixture();await f.c.refreshGoalPlan();await f.c.ui['go-goal']();
- assert.equal(f.requests.at(-1).path,'/api/nav/goal');assert.equal(f.requests.at(-1).data.engine,'platform');
- const select=f.nodes.get('#point-navigation-engine');select.change({target:{value:'native'}});
- assert.equal(f.button.disabled,true);await f.c.refreshGoalPlan();assert.equal(f.requests.at(-1).data.engine,'native');
- await f.c.ui['go-goal']();assert.equal(f.requests.at(-1).data.engine,'native');
+ assert.equal(f.requests[0].data.engine,'gos');
+ assert.equal(f.requests.at(-1).path,'/api/nav/goal');assert.equal(f.requests.at(-1).data.engine,'gos');
+ assert.equal(f.nodes.has('#point-navigation-engine'),false);
 });
 
 test('active platform navigation displays its updated route rather than the old preview',async()=>{
