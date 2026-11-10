@@ -92,6 +92,19 @@ class TrajectoryTests(unittest.TestCase):
         self.assertNotEqual(out['state'],'arrived');self.assertGreater(out['remaining_path_m'],3.)
         self.assertLess(f.index,4)
 
+    def test_clear_straight_uses_one_envelope_and_fresh_obstacle_breaks_it(self):
+        f=TrajectoryFollower()
+        f.set_path([[0,0],[4,0]])
+        f.straight_clearance=lambda pose,length,margin:True
+        scan=dict(pose=[0,0,0],floor=[(x,y) for x in range(-12,13) for y in range(-12,13)],
+                  obstacles=[],_velocity_body=[.28,0.],age=.03)
+        clear=f.command(scan)
+        self.assertEqual(clear['policy'],'straight_corridor')
+        self.assertEqual(clear['candidate_count'],1)
+        self.assertEqual(clear['axes'],[.35,0.,0.])
+        changed=f.command(dict(scan,obstacles=[(3,0)]))
+        self.assertEqual(changed['policy'],'sampled_trajectory')
+
     def test_two_times_input_speed_brakes_before_near_wall_goal_and_waits_for_stillness(self):
         g=world_grid();g[:,60:]=0;goal=[5.54,4.5,0.]
         r=run_closed_loop(g,[2.,4.5,0.],goal,steps=550,gain=2.)

@@ -98,7 +98,7 @@ for role,target in r['targets'].items():
   sources=[]
  vision_python=root/'vision-runtime/python'
  if role=='gos' and (vision_python/'onnxruntime/__init__.py').is_file():
-  sources.append('export PYTHONPATH='+shlex.quote(str(vision_python))+'${PYTHONPATH:+:$PYTHONPATH}')
+  sources.append('export PYTHONPATH='+shlex.quote(str(vision_python)))
  command='; '.join(sources+['export ROS_DOMAIN_ID='+str(target.get('domain_id',0)),'exec '+shlex.join(argv)])
  # % is a systemd specifier, including inside shell quotes.
  shell=('/bin/bash -lc '+shlex.quote(command)).replace('%','%%')

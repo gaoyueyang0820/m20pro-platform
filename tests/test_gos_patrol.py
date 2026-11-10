@@ -26,6 +26,7 @@ class LocalLink:
         self.deadline = 0.
         self.stamp = time.monotonic()
         self.events = []
+        self.auxiliary = False
 
     def _advance(self):
         now = time.monotonic()
@@ -44,10 +45,12 @@ class LocalLink:
             self._advance()
             records = {
                 (1002, 6): dict(BasicStatus=dict(HES=0, MotionState=17, Sleep=False,
-                                                ControlUsageMode=0, Gait=0x3002, Direction=0)),
+                                                ControlUsageMode=2 if self.auxiliary else 0, Gait=0x3002, Direction=0,
+                                                OOA=3 if self.auxiliary else 0)),
                 (1002, 4): dict(MotionStatus=dict(zip(('LinearX','LinearY','OmegaZ'),self.axes))),
                 (1007, 1): dict(Status=0),
                 (1007, 2): dict(Location=0, Confidence=.99, **dict(zip(('PosX','PosY','Yaw'),self.pose))),
+                (2002, 1): dict(ObsState=1 if self.auxiliary else 0),
             }
             return dict(items=records[(kind,command)], monotonic_at=self.stamp)
 
@@ -151,6 +154,7 @@ class GOSPatrolTests(unittest.TestCase):
     def test_along_route_counts_while_moving_and_slow_iot_does_not_hold_navigation(self):
         started = threading.Event()
         walking = []
+        self.link.auxiliary = True
         self.request['collectors'] = [dict(kind='people_count',camera='front',interval_s=1),
                                       dict(kind='iot_readings',device_id='42',interval_s=2)]
         def worker_factory(data, aos, spec):
@@ -170,6 +174,7 @@ class GOSPatrolTests(unittest.TestCase):
         result=self.wait_for(lambda s:s.get('stop_confirmed'),pulse=True)
         self.assertEqual(result['phase'],'completed',result)
         self.assertTrue(started.is_set())
+        self.assertTrue(self.service.nav['vendor_avoidance'])
         for worker in self.service.collection.threads:
             worker.join(timeout=1)
             self.assertFalse(worker.is_alive())

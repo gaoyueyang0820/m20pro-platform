@@ -77,6 +77,7 @@ class PointNavigator:
         self.after_stop='cancelled';self.planner=None;self.follower=None
         self.goal_intent=None
         self.last_sensor_stamp=None
+        self.motion_mode=None
         self.observations=None
         self.worker=None
 
@@ -117,6 +118,7 @@ class PointNavigator:
         self.active = True
         self.context = context
         self.last_sensor_stamp = None
+        self.motion_mode = None
         self.client_intent = client_intent
         self.lease = time.monotonic()
         self.deadline = self.lease + 600
@@ -228,10 +230,17 @@ class PointNavigator:
         end=min(range(follower.index,len(follower.path)),key=lambda i:math.dist(follower.path[i],goal))
         candidates=[i for i in range(follower.index+1,end+1) if .25<math.dist(follower.path[i],pose[:2])<1.4]
         geometry=LocalSurface.cached(scan);c,s=math.cos(pose[2]),math.sin(pose[2])
+        def connects(a,b):
+            ax,ay=a[0]-pose[0],a[1]-pose[1]
+            bx,by=b[0]-pose[0],b[1]-pose[1]
+            x1,y1=c*ax+s*ay,-s*ax+c*ay
+            x2,y2=c*bx+s*by,-s*bx+c*by
+            return (planner.segment_fits(a,b,pose[2])
+                    and geometry.valid((x1+x2)/2,(y1+y2)/2,0.,padding=(abs(x2-x1)/2,abs(y2-y1)/2)))
         for i in reversed(candidates):
-            point=follower.path[i];dx,dy=point[0]-pose[0],point[1]-pose[1];x,y=c*dx+s*dy,-s*dx+c*dy
-            if (planner.pose_fits(point[0],point[1],pose[2])
-                    and geometry.valid(x/2,y/2,0.,padding=(abs(x)/2,abs(y)/2))):
+            point=follower.path[i]
+            ahead=follower.path[min(end,i+3)]
+            if connects(pose[:2],point) and connects(point,ahead):
                 follower.set_path([pose[:2],*follower.path[i:]],terminal=follower.terminal);return True
         return False
 
@@ -262,13 +271,15 @@ class PointNavigator:
                 elif native.get('items',{}).get('Status') not in [0,4]:raise ValueError('原厂仍有活动导航任务')
                 elif basic.get('Sleep'):
                     if 'wake' not in commands:commands['wake']=time.monotonic();link.command(1101,6,{'Sleep':False},'平台导航唤醒')
-                elif basic.get('ControlUsageMode')!=0:
+                elif basic.get('ControlUsageMode') not in (0,2):
                     if 'mode' not in commands:commands['mode']=time.monotonic();link.set_mode(0)
                 elif basic.get('Gait')!=0x3002:
                     motion=link.record(1002,4);v=motion.get('items',{}).get('MotionStatus',{})
                     if age_of(motion)<.5 and all(abs(v.get(k,999))<.08 for k in ['LinearX','LinearY','OmegaZ']) and 'gait' not in commands:
                         commands['gait']=time.monotonic();link.command(2,23,{'GaitParam':0x3002},'平台导航敏捷平地')
-                elif all(app._navigation_record_after(b,0,at) for name,at in commands.items() if name!='query'):return
+                elif all(b.get('monotonic_at',-math.inf)>at for name,at in commands.items() if name!='query'):
+                    self.motion_mode=basic['ControlUsageMode']
+                    return
             time.sleep(.06)
         raise ValueError('平台导航模式准备未获确认')
 
@@ -325,6 +336,8 @@ class PointNavigator:
         if not poses_consistent(sp,age,evidence):
             raise ValueError('雷达与地图定位坐标不同步')
         result['_velocity_body']=[vx,vy];result['_speed_mps']=math.hypot(vx,vy)
+        avoidance=app.link.record(2002,1)
+        result['_vendor_avoidance']=(age_of(avoidance)<1.35 and avoidance.get('items',{}).get('ObsState')==1)
         self.last_sensor_stamp=result.get('stamp')
         return result,omega
 
@@ -334,6 +347,9 @@ class PointNavigator:
             if not self.app.demo:
                 native=self.app.link.record(1007,1)
                 if age_of(native)>2 or native.get('items',{}).get('Status') not in [0,4]:raise ValueError('原厂导航状态变化，平台已让出控制')
+                if any(axes) and self.motion_mode is not None:
+                    basic=self.app.link.record(1002,6).get('items',{}).get('BasicStatus',{})
+                    if basic.get('ControlUsageMode')!=self.motion_mode:raise ValueError('运控模式已切换')
                 if time.monotonic()>=scan.get('_valid_until',0):axes=[0.,0.,0.]
             self.app.set_velocity(dict(zip(['forward','side','yaw'],axes)),autonomous=True,valid_until=scan.get('_valid_until'))
             return list(axes)
@@ -358,12 +374,13 @@ class PointNavigator:
             preview_recovery=initial_result.get('recovery',{})
             initial_path=preview_recovery.get('global_plan',initial_result)
             route_index=self.nav.get('index',0);route_goals={};covered=route_index;final_yaw=None;follower=TrajectoryFollower()
+            follower.straight_clearance=planner.straight_clearance
             def install_path(new):
-                nonlocal covered,final_yaw
-                joined,goals,covered=self._join_waypoints(planner,new,route_index);route_goals.update(goals)
+                nonlocal covered,final_yaw,route_goals
+                joined,route_goals,covered=self._join_waypoints(planner,new,route_index)
                 if covered==len(route['points'])-1 or self._stops_at(covered):follower.set_path(joined.get('dense_path') or joined['path'])
                 else:follower.set_path(joined.get('dense_path') or joined['path'],terminal=False)
-                final_yaw=goals[covered].get('yaw')
+                final_yaw=route_goals[covered].get('yaw')
                 return joined
             initial_path=install_path(initial_path)
             with app.lock:
@@ -372,7 +389,8 @@ class PointNavigator:
             recovery=None;start_checked=False;start_wait=time.monotonic()
             from m20.autonomy_runtime import MotionProgress
             progress=MotionProgress();dynamic={};last_stamp=None
-            local_follower=None;local_plan=None;local_pending=False;local_tried=[];avoid_axes=None
+            local_follower=None;local_plan=None;local_pending=False;local_tried=[];avoid_axes=None;route_first=False
+            vendor_rechecked=False
             def update_dynamic(scan,now):
                 nonlocal dynamic
                 pose=scan['pose'];c,s=math.cos(pose[2]),math.sin(pose[2])
@@ -381,12 +399,13 @@ class PointNavigator:
                 for p in scan['obstacles']:dynamic[world(p)]=now
                 dynamic={p:t for p,t in dynamic.items() if now-t<15}
                 planner.update_obstacles([(p[0]*.2,p[1]*.2) for p in dynamic],robot_pose=pose)
-            def request_local(reason,failed=None):
-                nonlocal local_follower,local_plan,local_pending,avoid_axes,blocked_at
+            def request_local(reason,failed=None,prefer_route=False):
+                nonlocal local_follower,local_plan,local_pending,avoid_axes,blocked_at,route_first
                 if local_plan:
                     local_tried.append((local_plan['goal']['x'],local_plan['goal']['y']))
                     del local_tried[:-16]
                 local_follower=None;local_plan=None;local_pending=True;avoid_axes=failed;blocked_at=None
+                route_first=prefer_route
                 progress.recovery_started();self._drive(token,[0,0,0],scan)
                 self._update(token,phase='finding_bypass',execution_state='waiting_progress',message=reason,
                              recovery=dict(state='choosing_local_path',original_goal=dict(goal)))
@@ -406,8 +425,9 @@ class PointNavigator:
                     route_index+=1;goal=dict(route_goals.get(route_index,route['points'][route_index]));goal.setdefault('yaw',None)
                     self.goal_intent=dict(goal=dict(goal));initial=None
                     self._update(token,index=route_index,completed=route_index,message='已通过中间点，继续下一点',progress=route_index/len(route['points']))
-                    if route_index>covered:local_pending=True
+                    if route_index>covered:local_pending=True;route_first=True
                 distance=math.hypot(goal['x']-pose[0],goal['y']-pose[1]);initial=initial or max(.01,distance)
+                vendor_avoidance=bool(scan.get('_vendor_avoidance'))
                 if app.demo:
                     projected=scan;localization=dict(normal=True,confidence=1.,pose=list(pose),age=0.,epoch='demo')
                     standing=app.basic.get('MotionState')==17 and app.basic.get('HES')==0
@@ -417,7 +437,9 @@ class PointNavigator:
                     surface=planner.update_live_surface(projected,localization)
                     basic_record=app.link.record(1002,6);basic=basic_record.get('items',{}).get('BasicStatus',{})
                     standing=age_of(basic_record)<.5 and basic.get('MotionState')==17 and basic.get('HES')==0 and not basic.get('Sleep')
-                    self._update(token,live_surface=surface)
+                    vendor_avoidance |= age_of(basic_record)<.65 and basic.get('ControlUsageMode')==2 and basic.get('OOA')==3
+                    self._update(token,live_surface=surface,vendor_avoidance=vendor_avoidance)
+                if not vendor_avoidance:vendor_rechecked=False
                 motion_supported=math.hypot(*scan.get('_velocity_body',[0.,0.]))>.08
                 progress_detail=progress.update(pose,(goal['x'],goal['y']),0.,now,motion_supported)
                 stuck=progress.stuck_reason(now)
@@ -447,6 +469,29 @@ class PointNavigator:
                             fresh=install_path(fresh);self._update(token,plan=fresh)
                     start_checked=True
                 if local_pending and recovery is None:
+                    if route_first:
+                        route_first=False;last_replan=now
+                        if route_index<=covered and self._rejoin_live_route(planner,follower,scan,[goal['x'],goal['y']]):
+                            local_pending=False
+                            self._update(token,phase='tracking',message='已找到通往原路线的安全接续段')
+                            continue
+                        update_dynamic(scan,now)
+                        try:
+                            new=plan_with_recovery(planner,pose,[goal['x'],goal['y']],goal['yaw'],
+                                                   projected,localization,standing,budget=.55)
+                        except ValueError:
+                            new=None
+                        self.check(token)
+                        if new:
+                            goal=dict(new['goal'])
+                            if new.get('recovery',{}).get('required'):
+                                recovery=TranslationRecovery(new['recovery'],now=time.monotonic())
+                            else:
+                                new=install_path(new)
+                            local_pending=False
+                            self._update(token,plan=new,phase='tracking',message='已按当前障碍调整通往目标的路线',
+                                         replans=self.nav.get('replans',0)+1)
+                            continue
                     candidate=plan_local_detour(scan,[goal['x'],goal['y']],tried=local_tried,avoid_axes=avoid_axes) if standing else None
                     self.check(token)
                     if candidate:
@@ -461,14 +506,7 @@ class PointNavigator:
                         # Recheck the original route as well: a person may have
                         # moved away while the short local maneuver was pending.
                         if now-last_replan>1.5:
-                            last_replan=now;update_dynamic(scan,now)
-                            try:new=plan_with_recovery(planner,pose,[goal['x'],goal['y']],goal['yaw'],projected,localization,standing,budget=.3)
-                            except ValueError:new=None
-                            self.check(token)
-                            if new:
-                                if new.get('recovery',{}).get('required'):recovery=TranslationRecovery(new['recovery'],now=time.monotonic())
-                                else:new=install_path(new)
-                                local_pending=False;self._update(token,plan=new,phase='tracking',message='通路已恢复，继续前往原目标')
+                            route_first=True
                         time.sleep(.04);continue
                 if recovery is not None:
                     result=recovery.command(planner,projected,localization,yaw_rate,standing=standing)
@@ -525,7 +563,7 @@ class PointNavigator:
                                 local_tried.clear();initial=None;blocked_at=None;progress=MotionProgress()
                                 continue
                         if route_index<len(route['points'])-1:
-                            request_local('正在连接下一段巡检路线');continue
+                            request_local('正在连接下一段巡检路线',prefer_route=True);continue
                         with app.lock:self.stop('completed','到达目标，正在确认停车')
                         return
                     local_tried.append((local_plan['goal']['x'],local_plan['goal']['y']))
@@ -537,8 +575,12 @@ class PointNavigator:
                     if not self.current(token):return
                     self.nav.update(phase='local_bypass' if local_follower is not None else 'tracking',execution_state=('moving' if motion_supported or abs(yaw_rate)>.12 else 'awaiting_progress') if any(result['axes']) else 'waiting_progress',
                                     message=result['reason'],controller=result,progress=max(0,min(.99,(route_index+1-distance/initial)/len(route['points']))),distance_remaining=round(distance,2),progress_detail=progress_detail)
-                if blocked_at and now-blocked_at>.6 and now-last_replan>1.5:
-                    last_replan=now;request_local('正在从实时空地绕开障碍',progress.failed_axes());continue
+                held_by_vendor=(vendor_avoidance and not vendor_rechecked and any(issued) and not motion_supported
+                                and abs(yaw_rate)<.12 and progress_detail['seconds_without_progress']>.65)
+                if (held_by_vendor or blocked_at and now-blocked_at>(.18 if vendor_avoidance else .6)) and now-last_replan>1.5:
+                    vendor_rechecked |= held_by_vendor
+                    reason='原厂避障已介入，正在复核并调整路线' if vendor_avoidance else '正在核对通路并调整路线'
+                    request_local(reason,progress.failed_axes(),prefer_route=True);continue
                 time.sleep(.04)
         except Exception as exc:
             with app.lock:

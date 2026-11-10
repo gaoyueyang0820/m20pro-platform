@@ -203,7 +203,7 @@ class GOSNavigation:
             record = self.link.record(1002, 6)
             basic = record.get('items', {}).get('BasicStatus', {})
             if (age_of(record) >= 1 or basic.get('HES') != 0 or basic.get('MotionState') != 17
-                    or basic.get('Sleep') or basic.get('ControlUsageMode') != 0
+                    or basic.get('Sleep') or basic.get('ControlUsageMode') not in (0,2)
                     or basic.get('Direction') != 0 or basic.get('Gait') != 0x3002):
                 raise ValueError('机内运控状态已变化')
             valid_until = min(valid_until, self.lease_until)

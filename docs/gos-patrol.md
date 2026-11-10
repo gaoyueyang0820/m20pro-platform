@@ -4,6 +4,10 @@
 
 GOS 执行器使用敏捷平地步态和正向机身坐标。包含进桩的路线仍从原厂导航入口执行。
 
+全局规划先尝试二维通路导引和整段机身扫掠，再用航向搜索处理窄道。空旷直行复用地图区段，只需核对最新雷达下的前向及制动包络。障碍挡路时，先找可接回主路线的位置或重新规划通往目标的路线，再尝试局部绕行。此分层方式参考自动驾驶的参考路线、行为规划与速度约束。 [Autoware 行为规划](https://autowarefoundation.github.io/autoware_universe/main/planning/behavior_path_planner/autoware_behavior_path_planner/)
+
+已处于原厂辅助模式时沿用该模式。原厂定位状态 `2002/1` 的 `ObsState` 和基础状态 `1002/6` 的 `OOA` 可在跟踪受阻时提前触发复核。 [定位回包](https://support.deeprobotics.cn/docs/#/259675879) · [辅助遥控](https://support.deeprobotics.cn/docs/#/259675901)
+
 ## 沿途采集
 
 在巡检路线编辑器展开「沿途采集」，勾选人数统计、物联网读数或两项一起使用。为人数统计选择相机，为物联网读数填写设备 ID，再设置每项的采集间隔。配置随路线保存，可以和到点作业一起使用。
