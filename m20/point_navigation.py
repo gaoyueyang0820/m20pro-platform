@@ -528,12 +528,9 @@ class PointNavigator:
                         self._update(token,plan=new,phase='tracking',message='起点恢复已停稳，已从实际位置接续原目标',recovery=dict(result,state='completed'))
                     time.sleep(.04);continue
                 if local_follower is not None:
-                    geometry=LocalSurface.cached(scan);c,s=math.cos(pose[2]),math.sin(pose[2])
-                    def local_valid(x,y,angle):
-                        dx,dy=x-pose[0],y-pose[1]
-                        return geometry.valid(c*dx+s*dy,-s*dx+c*dy,wrap(angle-pose[2]))
+                    # The bypass edges were certified with the body held at its heading.
                     near_final=distance<.5 and math.dist([local_plan['goal']['x'],local_plan['goal']['y']],[goal['x'],goal['y']])<.25
-                    result=local_follower.command(scan,yaw_rate,goal['yaw'] if near_final else None,allowed_pose=local_valid)
+                    result=local_follower.command(scan,yaw_rate,goal['yaw'] if near_final else None,fixed_heading=True)
                     if result.get('remaining_path_m',math.inf)<.65 and self._rejoin_live_route(planner,follower,scan,[goal['x'],goal['y']]):
                         local_follower=None;local_plan=None
                         result=follower.command(scan,yaw_rate,final_yaw,allowed_pose=planner.pose_fits)

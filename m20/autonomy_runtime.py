@@ -12,7 +12,8 @@ import time
 import uuid
 from collections import deque
 
-from m20.autonomy_core import Explorer, PriorMap, PersonLock, clearance, RESOLUTION
+from m20.autonomy_core import (Explorer, PriorMap, PersonLock, clearance, RESOLUTION,
+                               DIAGONAL_DIRECTIONS, OBLIQUE_DIRECTIONS)
 from m20.platform_core import number, age_of
 from m20.vision_models import default_path
 from m20.localization_runtime import OperationCancelled
@@ -325,6 +326,9 @@ class Autonomy:
         if self.app.demo:return
         check=check or (lambda:None)
         last='等待雷达与地面观测';clear_frames=0;last_stamp=None
+        starts = [('forward',.1,0.,0.),('reverse',-.1,0.,0.),('left',0.,.1,0.),('right',0.,-.1,0.)]
+        starts += [('diagonal',.1*f,.1*s,0.) for f,s in DIAGONAL_DIRECTIONS + OBLIQUE_DIRECTIONS]
+        starts += [('turn_left',0.,0.,.1),('turn_right',0.,0.,-.1)]
         for attempt in range(10):
             check()
             try:scan=self.scan_now(self.app.mapping)
@@ -338,8 +342,7 @@ class Autonomy:
             # This checks whether exploration can begin, not whether it must
             # initially drive forward or rotate. Recovery may start by moving
             # backward or sideways; the actual command is checked again later.
-            for name,forward,side,yaw in [('forward',.1,0.,0.),('reverse',-.1,0.,0.),('left',0.,.1,0.),
-                                          ('right',0.,-.1,0.),('turn_left',0.,0.,.1),('turn_right',0.,0.,-.1)]:
+            for name,forward,side,yaw in starts:
                 clear,reason=clearance(scan,forward,yaw,side=side)
                 if clear:
                     self.scan_timing['preflight_direction']=name
@@ -571,6 +574,7 @@ class Autonomy:
         last_plan=0;last_vision=None;blocked_attempts=0;waiting=time.monotonic();completion=ExplorationCompletion();progress=MotionProgress()
         last_yaw=None;scan_sweep=0.;scan_started=None
         sensing_lost=None;recovery_frames=0;recovery_stamp=None;ground_waiting=False;environment_waiting=False
+        no_passage_since=None
         pump=None;pump_generation=None;pump_capture_id=None;consumed_sequence=None;last_cache_state=None;scanning=False
         captured_context=self.context
         source_role=self.app.hub.connections.value.get('sensor_source','nos')
@@ -755,6 +759,11 @@ class Autonomy:
                         if outcome=='blocked':
                             self._drive(run_id,0,0);blocked_attempts+=1;explorer.path=[]
                             environment_waiting=explorer.recovery_block_reason=='no_verified_corridor'
+                            if environment_waiting:
+                                if no_passage_since is None:no_passage_since=now
+                                if now-no_passage_since>=12:
+                                    raise ValueError('持续未验证到可通行方向，已暂停探索，可手动换位后继续本轮采集')
+                            else:no_passage_since=None
                             with self.app.lock:
                                 if self.run_id==run_id:self.message='正在重新选择通路，通路恢复后自动继续'
                             if blocked_attempts>=10 and not environment_waiting and not explorer.frontier_metrics.get('deferred_regions'):
@@ -847,6 +856,7 @@ class Autonomy:
                     raise ValueError(reason)
                 if mode=='explore' and environment_waiting and any([forward,side,yaw]):
                     progress=MotionProgress();environment_waiting=False
+                if mode=='explore' and any([forward,side,yaw]):no_passage_since=None
                 blocked_attempts=0
                 with self.app.lock:
                     if not self.active or self.run_id!=run_id:return

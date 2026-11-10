@@ -250,7 +250,7 @@ document.addEventListener('click',async event=>{
   if(button.dataset.setupRole)return await setupWizard(button.dataset.setupRole,{reinstall:button.dataset.setupUpdate==='true'});
   if(button.dataset.connectionRole){const role=button.dataset.connectionRole;await api('/api/connections/target',{role,action:button.dataset.connectionOperation==='disconnect'?'stop':'start'});await loadConnections();return;}
   if(button.dataset.serviceRole){await serviceOperation(button.dataset.serviceRole,button.dataset.serviceOperation);return;}
-  if(button.dataset.remoteMap){selectedRemote=button.dataset.remoteMap;paintMapLibrary();await previewCloud('map',selectedRemote);return;}
+  if(button.dataset.remoteMap){selectedRemote=button.dataset.remoteMap;paintMapLibrary();if(typeof mappingView==='undefined'||mappingView!=='grid')await previewCloud('map',selectedRemote);return;}
   if(button.dataset.filePreview){await previewCloud('file',button.dataset.filePreview);return;}
   if(button.dataset.fileInspect){const r=await api('/api/files/inspect',{id:button.dataset.fileInspect});modal('地图包内容',`<p>${r.package.files} 个文件，展开后 ${sizeLabel(r.package.unpacked_size)}</p><pre class="pre">${esc(r.package.contents.map(f=>f.name+' · '+sizeLabel(f.size)).join('\n'))}</pre>`);return;}
   if(button.dataset.fileImport){

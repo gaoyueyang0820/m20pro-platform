@@ -10,7 +10,6 @@
  const routeExecutor=(rows,options)=>rows.some(p=>p.type===3)?'native':options.engine||'gos';
  const currentOptions=id=>{
   const route=S.routes?.find(r=>r.id===id);
-  if($('#route-navigation-engine')&&route?.id===routeId)return routeOptions();
   const options=route?.options||{};
   return options.explicit_execution===true?options:{...options,engine:'gos',disconnect_policy:'stop'};
  };
@@ -279,19 +278,16 @@
   if(['#route-navigation-engine','#disconnect-policy'].some(id=>$(id)?.selectedOptions?.[0]?.disabled)){
    throw Error($('#disconnect-policy-help')?.textContent||'请调整当前路线的寻路方式或断联策略');
   }
-  const options={...routeOptions()},draft={id:routeId,map_id:mapId,name:$('#route-name')?.value||'新巡检路线',points:JSON.parse(JSON.stringify(points)),options};
+  const options={...routeOptions()},draft={map_id:mapId,name:$('#route-name')?.value||'临时巡检',points:JSON.parse(JSON.stringify(points)),options};
   const t=begin('draft',{key:draftKey(),skipLocalization:true});if(!t)return;
   return finish(t,async()=>{
    const engine=routeExecutor(draft.points,options);
    await ensureNavigationMap(t,draft);await localize(t);const plan=await checkFirstWaypoint(t,draft,draft.points,engine);
-   status(t,'正在保存巡检路线','saving');
-   const saved=await request(t,'/api/route/save',draft);
-   if(!saved.route?.id)throw Error('路线保存未返回有效编号');
    status(t,'正在开始巡检','submitting');guard(t);
    t.startDispatched=true;
-   const result=await request(t,'/api/nav/start',{...t.clientRequest,id:saved.route.id,...options,engine,
+   const result=await request(t,'/api/nav/start',{...t.clientRequest,route:draft,...options,engine,
     disconnect_policy:options.disconnect_policy||'stop',explicit_execution:true,...(engine==='platform'?{plan_id:plan}:{})},20000);
-   routeId=saved.route.id;t.selection=selection();notice='';toast(result.message||'路线已提交，等待导航反馈');await fetchState();return result;
+   notice='';toast(result.message||'临时巡检已提交，等待导航反馈');await fetchState();return result;
   });
  };
  const previousPaint=paintGoalPlan;paintGoalPlan=function(...args){previousPaint.apply(this,args);paint();};

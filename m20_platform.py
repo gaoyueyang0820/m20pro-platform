@@ -34,7 +34,7 @@ from m20.shared_access import SharedAccess, lan_addresses, shared_listener
 from m20.camera_streams import Cameras
 from m20.autonomy_runtime import Autonomy
 from m20.vision_models import ModelChecks, catalog as vision_catalog, default_path
-from m20.ppe_runtime import SharedPPEDetector
+from m20.ppe_runtime import PPESources
 from m20.map_learning_runtime import MapLearning
 from m20.people_counting import PeopleCounter
 from m20.patrol_actions import station_spec
@@ -215,7 +215,7 @@ class Platform:
                 port = integer(req.get('port', 30000), 1, 65535)
                 self.link = RobotLink(ip, port)
                 original.LINK = self.link
-                original.PPE = SharedPPEDetector(self)
+                original.PPE = PPESources(self)
                 self.add_log('system', '开始连接 %s:%s；收到有效状态前禁止运动' % (ip, port))
             else:
                 self.basic['MotionState'] = 17
@@ -909,7 +909,13 @@ class Platform:
                 engine = req.get('engine', 'gos')
                 request['engine'] = 'native' if demo and engine == 'gos' else engine
             if operation=='start':
-                route=copy.deepcopy(next((r for r in self.store.value['routes'] if r['id']==req.get('id')),None))
+                if 'route' in req:
+                    if not isinstance(req['route'], dict) or req.get('id'):
+                        raise ValueError('请选择保存的路线或提交临时航点')
+                    route = self.route_save(dict(req['route'], id=None), persist=False)['route']
+                    route['temporary'] = True
+                else:
+                    route=copy.deepcopy(next((r for r in self.store.value['routes'] if r['id']==req.get('id')),None))
                 if not route:raise ValueError('路线不存在，请先保存路线')
                 saved = route.get('options', {})
                 selected = req if req.get('explicit_execution') is True else saved
@@ -1511,6 +1517,7 @@ class Platform:
                          GPS=dict(FixQuality=4,NumSatellites=24,Latitude=30.2741,Longitude=120.1551,HDOP=.8),
                          DevEnable=dict(Lidar=dict(Front=1,Back=1),Video=dict(Front=1,Back=1),GPS=1))
                 motion=dict(Roll=.01*math.sin(t),Pitch=.008*math.cos(t),Yaw=self.pose['Yaw'],LinearX=self.velocity[0],LinearY=self.velocity[1],OmegaZ=self.velocity[2],Height=.56)
+                motion_age=0.
                 # 演示模式的打招呼：用合成姿态变化让界面可预览，不含任何实机指令。
                 demo_greet=self._greet_demo
                 if demo_greet:
@@ -1530,7 +1537,9 @@ class Platform:
                 sdk=dict(self.sdk,connected=True,backend='demo',fresh=True,vendor_running=self.hub.demo_policy.get('vendor_running',False))
             else:
                 dev=self.link.record(1002,5).get('items',{}) if self.link else {}
-                motion=self.link.record(1002,4).get('items',{}).get('MotionStatus',{}) if self.link else {}
+                motion_record=self.link.record(1002,4) if self.link else {}
+                motion=motion_record.get('items',{}).get('MotionStatus',{})
+                motion_age=age_of(motion_record)
                 sdk=dict(self.sdk)
                 sdk['connected']=sdk.get('connected',False) and age_of(dict(at=self.sdk_seen))<2
                 joints=[dict(j,position=None,target=None,velocity=None,torque=None,temperature=None,fresh=False,source='unavailable') for j in JOINTS]
@@ -1541,15 +1550,18 @@ class Platform:
                     for i,j in enumerate(joints): j.update(sdk['joints'][i],source='sdk_calibrated')
             self.history.append(dict(t=now,temp=max([v.get('Temperature',0) for v in dev.get('CPU',{}).values()] or [0]),velocity=motion.get('LinearX',0)))
             del self.history[:-120]
+            angles = [motion.get(key) for key in ('Roll', 'Pitch', 'Yaw')]
+            attitude = dict(zip(('roll', 'pitch', 'yaw'), angles)) if motion_age < 2 and all(
+                type(angle) in (int, float) and math.isfinite(angle) for angle in angles) else None
             pose_view=self.pose_monitor.update(self.pose,self.velocity,motion,
                 pose_age=0. if self.demo else age_of(self.link.record(1007,2)) if self.link else float('inf'),
-                motion_age=0. if self.demo else age_of(self.link.record(1002,4)) if self.link else float('inf'),
+                motion_age=motion_age,
                 relocation_epoch=(self._plan_generation,id(self.link),self.pose.get('Relocation')))
             return dict(mode='demo' if self.demo else 'live',online=bool(online),server_instance=self.instance_id,pose_view=pose_view,resident_navigation=self.resident_navigation.snapshot(),
                         connection_generation=self._plan_generation,
                         navigation_preparation=dict(client_intent_protocol=1,verify_current_localization=True),
                         previous_connection_stop=copy.deepcopy(self.store.value.get('previous_connection_stop')),
-                        ip=self.link.ip if self.link else None,basic=self.basic,motion=motion,device=dev,
+                        ip=self.link.ip if self.link else None,basic=self.basic,motion=motion,body_attitude=attitude,device=dev,
                         pose=self.pose,velocity=self.velocity,lights=self.lights,reverse=self.reverse,
                         estopped=self.estopped,joints=joints,sdk=sdk,nav=self.nav,faults=self.faults,
                         events=self.events,audit=self.audit[:100],maps=self.maps(),routes=self.store.value['routes'],
@@ -1577,13 +1589,37 @@ class Handler(original.Handler):
     def _ppe_frame(self,query):
         if APP.demo or not original.PPE or not original.PPE.enabled:
             return self._json(dict(ok=False,err='安全帽识别尚未启动'),409)
-        packet=original.PPE.frame(int(query.get('after',['-1'])[0]),timeout=1)
-        if not packet:return self._json(dict(ok=False,err=original.PPE.status().get('error') or '等待新检测画面'),503)
+        detector=original.PPE.detector(query.get('camera',[None])[0])
+        if not detector.enabled:return self._json(dict(ok=False,err='这台相机的识别尚未启动'),409)
+        packet=detector.frame(int(query.get('after',['-1'])[0]),timeout=1)
+        if not packet:return self._json(dict(ok=False,err=detector.status().get('error') or '等待新检测画面'),503)
         sequence,jpeg,age=packet
         self.send_response(200);self.send_header('Content-Type','image/jpeg')
         self.send_header('Content-Length',str(len(jpeg)));self.send_header('Cache-Control','no-store')
         self.send_header('X-Frame-Sequence',str(sequence));self.send_header('X-Frame-Age',str(age))
         self.end_headers();self.wfile.write(jpeg)
+
+    def _video_ppe(self):
+        if not original.PPE or not original.PPE.enabled:
+            return self._json(dict(ok=False, err='安全帽识别尚未启动'), 409)
+        query = parse_qs(urlparse(self.path).query)
+        detector = original.PPE.detector(query.get('camera', [None])[0])
+        frame = detector.frame(timeout=4)
+        if frame is None:
+            return self._json(dict(ok=False, err=detector.status().get('error') or '等待新检测画面'), 503)
+        self.send_response(200)
+        self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=frame')
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('Connection', 'close')
+        self.end_headers()
+        try:
+            while frame and detector.enabled and not APP.done and self._auth():
+                sequence, jpeg, _ = frame
+                self.wfile.write(b'--frame\r\nContent-Type: image/jpeg\r\nContent-Length: '+str(len(jpeg)).encode()+b'\r\n\r\n'+jpeg+b'\r\n')
+                self.wfile.flush()
+                frame=detector.frame(sequence,timeout=2)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
 
     def _camera_frame(self,query):
         if APP.demo:return self._json(dict(ok=False,err='演示模式没有实机视频'),409)
@@ -1698,6 +1734,17 @@ class Handler(original.Handler):
             if p in ['/api/platform','/api/status']: return self._json(APP.snapshot())
             if p=='/api/camera/frame':return self._camera_frame(parse_qs(urlparse(self.path).query))
             if p=='/api/ppe/frame':return self._ppe_frame(parse_qs(urlparse(self.path).query))
+            if p=='/api/maps/library/preview':
+                query = parse_qs(urlparse(self.path).query)
+                grid = APP.hub.remote_maps('/maps/grid', dict(name=query.get('name', ['active'])[0],
+                          grid_id=integer(int(query.get('grid_id', ['0'])[0]), 0, 65535)), timeout=15)
+                _, _, png = import_pgm(grid['pgm'])
+                self.send_response(200)
+                self.send_header('Content-Type', 'image/png')
+                self.send_header('Content-Length', str(len(png)))
+                self.send_header('Cache-Control', 'no-store')
+                self.end_headers();self.wfile.write(png)
+                return
             if p in ['/api/people/frame','/api/people/snapshot']:return self._people_frame(parse_qs(urlparse(self.path).query),p.endswith('snapshot'))
             if p=='/api/vision/models':return self._json(dict(ok=True,models=vision_catalog()))
             if p.startswith('/api/vision/check-image/'):
@@ -1901,7 +1948,7 @@ class Handler(original.Handler):
                 elif p=='/api/ppe/start':
                     if APP.demo: raise ValueError('PPE 检测需要真机视频、OpenCV 和已配置的 YOLO 模型')
                     cam=req.get('camera','front')
-                    if cam not in original.CAM: raise ValueError('相机必须为 front 或 rear')
+                    if cam not in (*original.CAM, 'both'): raise ValueError('请选择前视、后视或前后双相机')
                     ok,msg=original.PPE.start(cam);result=dict(ok=ok,message=msg,err=msg if not ok else None)
                 elif p=='/api/ppe/stop':
                     if original.PPE: original.PPE.stop()

@@ -63,6 +63,14 @@ class PlatformRouteDispatchTests(unittest.TestCase):
         a._start_platform_route=Mock(return_value={'ok':True})
         a.navigation_request('start',dict(id=route['id'],engine='platform',explicit_execution=True))
         self.assertEqual(a._start_platform_route.call_args.kwargs['route'],route)
+    def test_draft_dispatch_leaves_saved_routes_untouched(self):
+        a,route=self.prepare()
+        a.start_route=Mock(return_value={'ok':True})
+        a.navigation_request('start',dict(route=dict(route,name='临时巡检')))
+        temporary=a.start_route.call_args.kwargs['goal']
+        self.assertTrue(temporary['temporary'])
+        self.assertNotEqual(temporary['id'],route['id'])
+        self.assertEqual(a.store.value['routes'],[route])
     def test_current_matching_preview_is_reused_but_wrong_preview_is_replanned(self):
         a,route=self.prepare();query=dict(map_id='demo',x=-5.,y=-3.,yaw=None,engine='platform');plan=a.plan_goal(query)
         a.start_route(dict(id=route['id'],engine='platform',plan_id=plan['plan_id']))

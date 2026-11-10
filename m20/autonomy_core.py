@@ -12,6 +12,8 @@ from m20.exploration_frontiers import FrontierSelector
 RESOLUTION = .2
 RADIUS = .65  # Conservative circular envelope for the complete wheel-legged body.
 SUPPORT_RADIUS = .50  # Encloses the .84 x .506 m contact/body projection; clearance is separate.
+DIAGONAL_DIRECTIONS = tuple((math.cos(i*math.pi/4), math.sin(i*math.pi/4)) for i in range(1,8,2))
+OBLIQUE_DIRECTIONS = tuple((math.cos(i*math.pi/8), math.sin(i*math.pi/8)) for i in range(1,16,2))
 
 
 def wrap(a):
@@ -137,6 +139,7 @@ class Explorer:
         self.recovery_candidate_failures=0
         self.plan_state='idle'
         self.distance_anchor=None
+        self._traversed=deque(maxlen=12)
         self._current_yaw_rate=0.
         self.frontiers=FrontierSelector(RESOLUTION)
         self.frontier_metrics={}
@@ -163,6 +166,7 @@ class Explorer:
         if scan.get('_speed_mps',1.)<.08:self.distance_anchor=(x,y)
         elif math.dist((x,y),self.distance_anchor)>=.06:
             self.distance+=math.dist((x,y),self.distance_anchor);self.distance_anchor=(x,y)
+        self._observe_traversal(scan, (x,y,yaw))
         self._update_recovery_episode(scan)
         self.last_pose = (x,y,yaw)
         self.frontiers.observe_pose(self.last_pose)
@@ -257,6 +261,38 @@ class Explorer:
         self.frontiers.blocked(self.goal,self.last_stamp if self.last_stamp is not None else time.monotonic(),self.obstacles,reason)
         self.path=[];self.goal=None;self.recovery=None
 
+    def _observe_traversal(self, scan, pose):
+        """Keep the recent approach backed by paired pose and measured motion."""
+        velocity = scan.get('_velocity_body')
+        stamp = scan.get('stamp')
+        if self.last_pose is None or self.last_stamp is None or stamp is None:
+            return
+        dx, dy = pose[0] - self.last_pose[0], pose[1] - self.last_pose[1]
+        distance = math.hypot(dx, dy)
+        dt = stamp - self.last_stamp
+        if dt <= 0 or distance < .005:
+            return
+        c, s = math.cos(pose[2]), math.sin(pose[2])
+        valid_velocity = isinstance(velocity, (list, tuple)) and len(velocity) == 2 and all(
+            isinstance(v, (float, int)) and math.isfinite(v) for v in velocity
+        )
+        if valid_velocity:
+            speed = math.hypot(*velocity)
+            along = (c*dx+s*dy)*velocity[0] + (-s*dx+c*dy)*velocity[1]
+            if (dt <= .75 and speed >= .08 and distance <= 2*speed*dt+.04
+                    and along >= .5*distance*speed):
+                if self._traversed and math.dist(self.last_pose[:2], self._traversed[-1]) > .24:
+                    self._traversed.clear()
+                if not self._traversed:
+                    self._traversed.append(self.last_pose[:2])
+                if math.dist(pose[:2], self._traversed[-1]) >= .16:
+                    self._traversed.append(pose[:2])
+                return
+        if distance > .12:
+            # A pose correction, manual move without paired feedback, or gap
+            # must not be recorded as part of the same measured approach.
+            self._traversed.clear()
+
     def _update_recovery_episode(self,scan):
         """Earn a new escape budget by observed translation into NEW space.
 
@@ -329,21 +365,51 @@ class Explorer:
         dx,dy=gx*RESOLUTION-x,gy*RESOLUTION-y;c,s=math.cos(yaw),math.sin(yaw)
         return c*dx+s*dy,-s*dx+c*dy
 
+    def _traversed_directions(self, speed):
+        x, y, yaw = self.last_pose
+        c, s = math.cos(yaw), math.sin(yaw)
+        directions = []
+        for px, py in reversed(self._traversed):
+            dx, dy = px-x, py-y
+            distance = math.hypot(dx, dy)
+            if not .30 <= distance <= 1.1:
+                continue
+            forward, side = (c*dx+s*dy)/distance, (-s*dx+c*dy)/distance
+            if any(forward*f+side*d >= math.cos(math.pi/12) for f,d in directions):
+                continue
+            directions.append((forward, side))
+            if len(directions) == 3:
+                break
+        return [(speed*f, speed*s) for f,s in directions]
+
     def _escape_candidates(self):
         if self.recovery_attempts>=3 or self.recovery_candidate_failures>=3:return []
         gx,gy=self._direct_goal();n=max(.001,math.hypot(gx,gy));scored=[]
-        for f,side in [(self.forward_limit,0.),(0.,min(.25,self.forward_limit)),(0.,-min(.25,self.forward_limit)),(-min(.25,self.forward_limit),0.)]:
-            if self._recovery_was_tried(f,side,0.):continue
-            if not self._inside_bound(f,side) or not clearance(self.current_scan,f,0,side=side)[0]:continue
-            magnitude=math.hypot(f,side);dx=round(f/magnitude*.4/RESOLUTION);dy=round(side/magnitude*.4/RESOLUTION)
-            preview=dict(self.current_scan,floor=[[a-dx,b-dy] for a,b in self.current_scan['floor']],obstacles=[[a-dx,b-dy] for a,b in self.current_scan['obstacles']],_speed_mps=0.)
-            if 'measured_floor' in self.current_scan:preview['measured_floor']=[[a-dx,b-dy] for a,b in self.current_scan['measured_floor']]
-            if 'obstacle_bounds' in self.current_scan:
-                try:preview['obstacle_bounds']=[[a-dx*RESOLUTION,b-dy*RESOLUTION,c-dx*RESOLUTION,d-dy*RESOLUTION] for a,b,c,d in self.current_scan['obstacle_bounds']]
-                except (ValueError,TypeError):pass  # malformed bounds retain conservative legacy handling
-            opens_forward=clearance(preview,self.forward_limit,0)[0]
-            score=(gx*f+gy*side)/(n*magnitude)+2*opens_forward-(.25 if f<0 else 0)
-            scored.append((score,f,side,0.))
+        slow = min(.25, self.forward_limit)
+        cardinal = [(self.forward_limit, 0.), (0., slow), (0., -slow), (-slow, 0.)]
+        traversed = self._traversed_directions(slow)
+        diagonals = [(slow*f, slow*s) for f,s in DIAGONAL_DIRECTIONS]
+        oblique = [(slow*f, slow*s) for f,s in OBLIQUE_DIRECTIONS]
+        forward_open = False
+        for directions in (cardinal + traversed, diagonals, oblique):
+            for f,side in dict.fromkeys(directions):
+                if self._recovery_was_tried(f,side,0.):continue
+                if not self._inside_bound(f,side) or not clearance(self.current_scan,f,0,side=side)[0]:continue
+                magnitude=math.hypot(f,side);dx=round(f/magnitude*.4/RESOLUTION);dy=round(side/magnitude*.4/RESOLUTION)
+                preview=dict(self.current_scan,floor=[[a-dx,b-dy] for a,b in self.current_scan['floor']],obstacles=[[a-dx,b-dy] for a,b in self.current_scan['obstacles']],_speed_mps=0.)
+                if 'measured_floor' in self.current_scan:preview['measured_floor']=[[a-dx,b-dy] for a,b in self.current_scan['measured_floor']]
+                if 'obstacle_bounds' in self.current_scan:
+                    try:preview['obstacle_bounds']=[[a-dx*RESOLUTION,b-dy*RESOLUTION,c-dx*RESOLUTION,d-dy*RESOLUTION] for a,b,c,d in self.current_scan['obstacle_bounds']]
+                    except (ValueError,TypeError):pass  # malformed bounds retain conservative legacy handling
+                opens_forward=clearance(preview,self.forward_limit,0)[0]
+                score=(gx*f+gy*side)/(n*magnitude)+2*opens_forward-(.25 if f<0 else 0)
+                forward_open = forward_open or f > 0 and side == 0
+                if (f, side) in traversed and not forward_open:
+                    # An observed approach is a useful exit from a coarse-grid
+                    # dead end. Its entire motion is still checked above.
+                    score += 4
+                scored.append((score,f,side,0.))
+            if scored:break
         for yaw in [self.yaw_limit,-self.yaw_limit]:
             if not self._recovery_was_tried(0.,0.,yaw) and clearance(self.current_scan,0,yaw)[0]:
                 scored.append((-.2,0.,0.,yaw))
@@ -364,7 +430,10 @@ class Explorer:
     def _recovery_was_tried(self,forward,side,yaw):
         direction=self._recovery_world_direction(forward,side)
         if direction is None:return self._recovery_direction(forward,side,yaw) in self.recovery_tried
-        return any(direction[0]*old[0]+direction[1]*old[1]>=math.cos(math.pi/6) for old in self.recovery_tried_world)
+        # Suppress small bearing changes without hiding the adjacent 22.5°
+        # heading from the newly measured corridor search.
+        same_heading = math.cos(math.pi/12)
+        return any(direction[0]*old[0]+direction[1]*old[1]>=same_heading for old in self.recovery_tried_world)
 
     def _remember_recovery_direction(self,forward,side,yaw,heading=None):
         self.recovery_tried.add(self._recovery_direction(forward,side,yaw))
@@ -390,7 +459,11 @@ class Explorer:
         if velocity is None or len(velocity)!=2 or not all(math.isfinite(float(v)) for v in velocity):
             self.recovery_block_reason='missing_motion_feedback';self.motion_hint='缺少新鲜运动反馈，不能启动脱困';return False
         self._begin_recovery_episode()
-        if any(abs(v)>.1 for v in failed_axes):self._remember_recovery_direction(*failed_axes,heading=failed_yaw)
+        forward, side, yaw = failed_axes
+        # A blocked arc does not rule out either component in isolation.
+        # Recovery only issues fixed-heading translations or in-place turns.
+        if any(abs(v)>.1 for v in failed_axes) and not (yaw and (forward or side)):
+            self._remember_recovery_direction(forward, side, yaw, heading=failed_yaw)
         if not self._escape_candidates():self._no_recovery();return False
         self.frontiers.blocked(self.goal,self.last_stamp if self.last_stamp is not None else time.monotonic(),self.obstacles,reason)
         self.goal=None;self.path=[];self.plan_state='recovering'
@@ -475,6 +548,7 @@ class Explorer:
             self.recovery_history=set();self.recovery_new_cells=set();self.recovery_measured_distance=0.;self.recovery_last_translation=None
             self.recovery_tried=set();self.recovery_tried_world=[];self.recovery_block_reason=None
             self.recovery_reset_reason=reason
+            self._traversed.clear()
 
     def _recover_axes(self):
         if self.recovery is None:
@@ -511,7 +585,7 @@ class Explorer:
             self.motion_hint='先停稳再退让';return 0.,0.,0.
         if not self._inside_bound(f,side) or not clearance(self.current_scan,f,yaw,side=side)[0]:
             self._finish_recovery('path_blocked');self.motion_hint='退让方向已被阻挡，已记录本次结果并重新检查通路';return 0.,0.,0.
-        self.motion_hint='小角度转向重新观察' if yaw else '向左侧移让开' if side>0 else '向右侧移让开' if side<0 else '短距离后退脱困' if f<0 else '短距离前移重新观察'
+        self.motion_hint='小角度转向重新观察' if yaw else '沿斜向通路短移观察' if f and side else '向左侧移让开' if side>0 else '向右侧移让开' if side<0 else '短距离后退脱困' if f<0 else '短距离前移重新观察'
         return f,side,yaw
 
     def command_axes(self,yaw_rate=0.,observation_age=0.):

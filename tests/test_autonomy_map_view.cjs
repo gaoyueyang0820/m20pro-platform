@@ -38,6 +38,11 @@ test('waiting for a new task first scan clears old map and marker',()=>{
  assert.equal(f.html(),'');assert.equal(f.nodes.get('#auto-empty').hidden,false);
  assert.match(f.nodes.get('#auto-observation-status').textContent,/等待本轮/);
 });
+test('discarded capture clears the drawing despite a retained last scan',()=>{
+ const f=fixture();f.c.autoDrawMap(f.map);assert.ok(f.html());
+ f.c.S.autonomy={active:false,state:'discarded',can_resume:false,cleanup_pending:false};f.c.autoDrawMap(f.map);
+ assert.equal(f.html(),'');assert.equal(f.nodes.get('#auto-empty').hidden,false);
+});
 test('a stalled browser status stream ages the last position instead of staying live',()=>{
  const f=fixture();f.c.autoDrawMap(f.map);f.advance(2500);f.c.autoPaintMapObservation(f.map);
  assert.equal(f.marker.attrs['data-observation-state'],'history');assert.equal(f.path.attrs.display,'none');

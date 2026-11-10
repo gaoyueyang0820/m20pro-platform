@@ -789,8 +789,22 @@ class Hub:
             context=self.context()
             def edit(progress):
                 if not self.same_context(context):raise OperationCancelled('地图编辑连接已变化，未向新连接提交操作')
+                payload=req
                 if action!='rename':
-                    if self.app.mapping or self.remote_maps('/maps/build/status',context=context).get('in_progress'):raise ValueError('正在保存地图，完成后即可编辑文件')
+                    if self.app.mapping:raise ValueError('正在保存地图，完成后即可编辑文件')
+                    status=self.remote_maps('/maps/build/status',context=context)
+                    if status.get('in_progress'):raise ValueError('正在保存地图，完成后即可编辑文件')
+                    if action=='delete' and 'observation_capture' in req:
+                        stop=status.get('stop_mapping') or {}
+                        observations=status.get('temporary_observations') or []
+                        if (status.get('phase')!='discarded' or status.get('observation_ownership')!='unique'
+                                or not req['observation_capture'] or stop.get('expected_start_request_id')!=req['observation_capture']
+                                or not any(row.get('name')==req.get('name') and row.get('ownership_verified') is True for row in observations)):
+                            raise ValueError('临时观测归属已变化，请重新核对本轮采集')
+                        payload=dict(name=req['name'])
+                        details=self.remote_maps('/maps/details',payload,context=context)
+                        if not any(row['name']=='.m20-session-source.json' for row in details['files']):
+                            raise ValueError('临时观测文件已变化，未移入回收站')
                     learning=self.app.map_learning.snapshot()
                     if learning.get('enabled') or learning.get('state')=='generating':raise ValueError('地图更新正在使用文件，结束更新后即可编辑文件')
                 if action=='purge':
@@ -798,7 +812,7 @@ class Hub:
                     if capabilities.get('catalog_integrity_protocol')!=1:raise ValueError('请先更新 NOS 地图管理服务，再彻底删除；未发送删除命令')
                     with self.app.lock:
                         if not self.same_context(context):raise OperationCancelled('地图编辑连接已变化')
-                result=self.remote_maps('/maps/'+action,req,context=context)
+                result=self.remote_maps('/maps/'+action,payload,context=context)
                 with self.app.lock:
                     if not self.same_context(context):raise OperationCancelled('连接已变化，旧机器人编辑结果未写入当前地图缓存')
                     for cached in self.app.store.value['maps']:

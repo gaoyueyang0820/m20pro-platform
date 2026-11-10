@@ -15,12 +15,23 @@ window.createRobotViewer = function(element) {
   const grid=new THREE.GridHelper(8,40,0xb3ced0,0xdde7e8);grid.rotation.x=Math.PI/2;grid.position.z=-.003;scene.add(grid);
   const ring=new THREE.Mesh(new THREE.RingGeometry(.68,.683,90),new THREE.MeshBasicMaterial({color:0x39b89d,side:THREE.DoubleSide,transparent:true,opacity:.45}));ring.position.z=.003;scene.add(ring);
   let robot=null,disposed=false,selected=null,frame,preview=null;
+  const orientation=new THREE.Quaternion(),bodyEuler=new THREE.Euler(0,0,0,'ZYX');
+  const referenceJoints={fl_hipy_joint:-.3,fl_knee_joint:.6,fr_hipy_joint:-.3,fr_knee_joint:.6,hl_hipy_joint:.3,hl_knee_joint:-.6,hr_hipy_joint:.3,hr_knee_joint:-.6};
   const loader=new URDFLoader();
   loader.manager.onLoad=()=>{if(disposed||!robot)return;robot.traverse(o=>{if(o.isMesh){o.castShadow=true;o.receiveShadow=true;let p=o;while(p&&!p.isURDFLink)p=p.parent;const name=p?.name||'';o.userData.link=name;const color=name.includes('wheel')?'#25323c':name==='base_link'?'#304a55':'#8cabb1';o.material=new THREE.MeshStandardMaterial({color,metalness:.35,roughness:.55});o.userData.base=color;}});selected=null;element.dispatchEvent(new CustomEvent('modelready'));};
-  loader.load('/assets/model/M20.urdf', r=>{ if(disposed)return;robot=r;r.position.z=.58;scene.add(r);r.setJointValues({fl_hipy_joint:-.3,fl_knee_joint:.6,fr_hipy_joint:-.3,fr_knee_joint:.6,hl_hipy_joint:.3,hl_knee_joint:-.6,hr_hipy_joint:.3,hr_knee_joint:-.6});},undefined,()=>element.dispatchEvent(new CustomEvent('modelerror')));
+  loader.load('/assets/model/M20.urdf', r=>{ if(disposed)return;robot=r;r.position.z=.58;scene.add(r);r.setJointValues(referenceJoints);},undefined,()=>element.dispatchEvent(new CustomEvent('modelerror')));
   const resize=()=>{const w=element.clientWidth,h=element.clientHeight;if(!w||!h)return;renderer.setSize(w,h);camera.aspect=w/h;camera.updateProjectionMatrix();};const observer=new ResizeObserver(resize);observer.observe(element);resize();
-  function animate(){if(disposed)return;frame=requestAnimationFrame(animate);controls.update();renderer.render(scene,camera);}animate();
-  return {update(joints,leg){if(!robot)return;for(const j of joints||[]){if(j.position!=null)robot.setJointValue(j.name,preview?.[j.index]??j.position);}if(selected!==leg){selected=leg;robot.traverse(o=>{if(o.isMesh)o.material.color.set(leg&&o.userData.link?.startsWith(leg.toLowerCase())?'#00b89c':o.userData.base);});}},preview(values){preview=values;},reset(){camera.position.set(1.6,-1.9,1.3);controls.target.set(0,0,.37);},dispose(){disposed=true;cancelAnimationFrame(frame);observer.disconnect();controls.dispose();scene.traverse(o=>{if(o.isMesh){o.geometry?.dispose();if(o.material?.dispose)o.material.dispose();}});renderer.dispose();renderer.domElement.remove();}};
+  function animate(){if(disposed)return;frame=requestAnimationFrame(animate);if(robot)robot.quaternion.slerp(orientation,.18);controls.update();renderer.render(scene,camera);}animate();
+  return {update(joints,leg,attitude){
+    if(attitude)orientation.setFromEuler(bodyEuler.set(attitude.roll,attitude.pitch,attitude.yaw,'ZYX'));
+    else orientation.identity();
+    if(!robot)return;
+    for(const j of joints||[]){
+      const position=preview?.[j.index]??j.position;
+      robot.setJointValue(j.name,Number.isFinite(position)?position:(referenceJoints[j.name]??0));
+    }
+    if(selected!==leg){selected=leg;robot.traverse(o=>{if(o.isMesh)o.material.color.set(leg&&o.userData.link?.startsWith(leg.toLowerCase())?'#00b89c':o.userData.base);});}
+  },preview(values){preview=values;},reset(){camera.position.set(1.6,-1.9,1.3);controls.target.set(0,0,.37);},dispose(){disposed=true;cancelAnimationFrame(frame);observer.disconnect();controls.dispose();scene.traverse(o=>{if(o.isMesh){o.geometry?.dispose();if(o.material?.dispose)o.material.dispose();}});renderer.dispose();renderer.domElement.remove();}};
 };
 
 window.createCloudViewer=function(element){

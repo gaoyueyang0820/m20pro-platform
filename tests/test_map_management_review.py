@@ -71,6 +71,23 @@ class MapManagementReviewTests(unittest.TestCase):
         restored=self.done(self.app.hub.post('/api/maps/library/restore',dict(id=deleted['result']['trash_id'])))
         self.assertEqual(restored['status'],'completed');self.assertFalse(row['archived']);self.assertFalse(row['verified_for_robot'])
         self.assertEqual(row['id'],'cache');self.assertEqual(self.app.store.value['routes'][0]['map_id'],'cache')
+    def test_discard_cleanup_only_archives_matching_hidden_observation(self):
+        maps=self.candidate();service=self.app.hub.demo_maps
+        capture='synthetic-capture'
+        service.demo_build.update(phase='discarded',observation_ownership='unique',
+                                  temporary_observations=[dict(name='candidate',ownership_verified=True)])
+        service.demo_stop['expected_start_request_id']=capture
+        def cleanup(name='candidate',identity=capture):
+            return self.done(self.app.hub.post('/api/maps/library/delete',dict(name=name,observation_capture=identity)))
+        self.assertIn('文件已变化',cleanup()['error'])
+        (maps/'candidate/.m20-session-source.json').write_text(json.dumps(dict(discarded=True,capture_id=capture)))
+        self.assertIn('归属已变化',cleanup(identity='another-capture')['error'])
+        self.assertIn('归属已变化',cleanup(name='demo-yard')['error'])
+        self.assertEqual(service.dispatch('/maps/trash',{})['maps'],[])
+        result=cleanup()
+        self.assertEqual(result['status'],'completed',result)
+        self.assertFalse((maps/'candidate').exists());self.assertEqual(service.library()['active'],'demo-yard')
+        self.assertEqual([row['name'] for row in service.dispatch('/maps/trash',{})['maps']],['candidate'])
     def test_unconfirmed_or_different_cleanup_base_only_applies_without_archiving(self):
         for confirmed in [None,'other-map']:
             with self.subTest(confirmed=confirmed):

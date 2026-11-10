@@ -133,3 +133,17 @@ test('camera-off feedback aborts the current preview without affecting the other
  f.context.S.device.DevEnable.Video.Front=0;f.context.paintCameraStatus();assert.equal(signal.aborted,true);
  assert.match(f.context.cameraUnavailableReason('front'),/关闭/);assert.equal(f.context.cameraUnavailableReason('rear'),'');
 });
+
+test('front and rear PPE previews request their own annotated feeds',t=>{
+ const f=fixture(),rear=f.element(),requests=[];
+ rear.parentElement=f.img.parentElement;f.items.set('#camera-rear',rear);
+ f.items.set('#ppe-overlay',{checked:true});
+ f.context.S.ppe={enabled:true,camera:'both',cameras:{front:{enabled:true},rear:{enabled:true}}};
+ f.context.fetch=async(url,{signal})=>{
+  requests.push(url);
+  return new Promise((_,reject)=>signal.addEventListener('abort',()=>reject(Error('aborted'))));
+ };
+ t.after(()=>{f.context.cameraClose('front');f.context.cameraClose('rear');});
+ f.context.cameraOpen('front');f.context.cameraOpen('rear');
+ assert.deepEqual(requests,['/api/ppe/frame?camera=front&after=-1','/api/ppe/frame?camera=rear&after=-1']);
+});

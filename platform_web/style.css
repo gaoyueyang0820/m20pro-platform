@@ -514,6 +514,10 @@ dialog#modal::backdrop{background:rgba(9,28,35,.46);backdrop-filter:blur(3px)}
 .mapping-views.show-both{grid-template-columns:repeat(2,minmax(0,1fr))}
 .mapping-views.show-scan .mapping-cloud{display:none}
 .mapping-views.show-cloud .mapping-scan{display:none}
+.mapping-views:not(.show-grid) .mapping-grid,.mapping-views.show-grid .mapping-cloud,.mapping-views.show-grid .mapping-scan{display:none}
+.map-grid-preview{display:grid;place-items:center;min-height:320px;background:var(--surface-2);padding:12px}
+.map-grid-preview img{display:block;max-width:100%;max-height:540px;object-fit:contain;image-rendering:pixelated}
+.task-history-pagination{display:flex;gap:8px;align-items:center;justify-content:flex-end;padding:12px 16px}
 .mapping-cloud{min-width:0}
 .mapping-cloud .card{overflow:hidden}
 .scan-canvas-wrap{position:relative;height:360px;background:#10262e;border-radius:0 0 var(--r) var(--r);overflow:hidden}

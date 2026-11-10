@@ -8,10 +8,19 @@ import math,sys,unittest
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from m20.autonomy_core import Explorer,clearance,disk,cell,RESOLUTION
+from m20.robot_geometry import CLEARANCE_HALF_LENGTH, CLEARANCE_HALF_WIDTH
 
 def scan(pose=(0.,0.,0.),obstacles=(),stamp=1.,floor=None):
     return dict(pose=list(pose),floor=[list(p) for p in disk(4)] if floor is None else floor,
                 obstacles=[list(p) for p in obstacles],stamp=stamp)
+
+
+def oblique_passage(stamp, trail_blocked=False):
+    hx, hy = CLEARANCE_HALF_LENGTH, CLEARANCE_HALF_WIDTH
+    points = [(hx+.38, 0), (-hx-.175, 0), (0, hy+.175), (0, -hy-(.10 if trail_blocked else .175))]
+    return dict(scan(obstacles=[cell(x,y) for x,y in points], stamp=stamp),
+                geometry_version=2, obstacle_bounds=[[x,y,x,y] for x,y in points],
+                _speed_mps=0., _velocity_body=[0.,0.])
 
 
 def applied(e,**kwargs):
@@ -52,6 +61,87 @@ class RecoveryTests(unittest.TestCase):
         f,side,yaw=applied(e,)
         self.assertEqual(f,0);self.assertNotEqual(side,0);self.assertEqual(yaw,0)
         self.assertTrue(clearance(s,f,yaw,side=side)[0]);self.assertEqual(e.recovery_attempts,1)
+    def test_oblique_passage_survives_disconnected_coarse_footprints(self):
+        e = Explorer(8)
+        frame = oblique_passage(1.)
+        e.ingest(frame)
+        for i in range(8):
+            heading = i * math.pi/4
+            self.assertFalse(clearance(frame, .25*math.cos(heading), 0, side=.25*math.sin(heading))[0])
+        self.assertEqual(e.plan(), 'recovering')
+        f, side, yaw = applied(e)
+        self.assertGreater(f, 0)
+        self.assertAlmostEqual(abs(math.atan2(side, f)), math.pi/8)
+        self.assertEqual(yaw, 0)
+        self.assertTrue(clearance(frame, f, yaw, side=side)[0])
+
+    def test_failed_straight_recovery_leaves_adjacent_oblique_passage_available(self):
+        e = Explorer(8)
+        e.ingest(scan(stamp=1.))
+        e.plan_state = 'recovering'
+        self.assertEqual(applied(e), (e.forward_limit, 0., 0.))
+
+        frame = oblique_passage(1.2)
+        e.ingest(frame)
+        self.assertEqual(applied(e), (0.,0.,0.))
+        self.assertEqual(e.recovery_outcomes[-1]['reason'], 'path_blocked')
+        self.assertTrue(e._recovery_was_tried(e.forward_limit, 0., 0.))
+        self.assertTrue(e._recovery_was_tried(.25, .25*math.tan(math.pi/18), 0.))
+
+        self.assertEqual(e.plan(), 'recovering')
+        f, side, yaw = applied(e)
+        self.assertAlmostEqual(abs(math.atan2(side, f)), math.pi/8)
+        self.assertEqual(yaw, 0.)
+        self.assertTrue(clearance(frame, f, yaw, side=side)[0])
+        self.assertEqual(e.recovery_attempts, 2)
+
+    def test_measured_approach_is_preferred_until_a_fresh_obstacle_blocks_it(self):
+        e = Explorer(8)
+        slope = math.tan(math.pi/8)
+        for i in range(5):
+            x = (4-i)*.16
+            e.ingest(dict(scan((x, -x*slope, 0.), stamp=1+i*.4),
+                          _speed_mps=math.hypot(.4, .4*slope), _velocity_body=[-.4, .4*slope]))
+        e.ingest(oblique_passage(3.))
+        self.assertEqual(e.plan(), 'recovering')
+        f, side, yaw = applied(e)
+        self.assertAlmostEqual(math.atan2(side, f), -math.pi/8)
+        self.assertEqual(yaw, 0)
+
+        e.ingest(oblique_passage(3.2, trail_blocked=True))
+        self.assertEqual(applied(e), (0.,0.,0.))
+        self.assertEqual(e.recovery_outcomes[-1]['reason'], 'path_blocked')
+        self.assertEqual(e.plan(), 'recovering')
+        f, side, yaw = applied(e)
+        self.assertAlmostEqual(math.atan2(side, f), math.pi/8)
+        self.assertTrue(clearance(e.current_scan, f, yaw, side=side)[0])
+
+    def test_pose_corrections_without_measured_motion_do_not_create_an_approach(self):
+        e = Explorer(3)
+        for i in range(8):
+            e.ingest(dict(scan(((7-i)*.08, i*.02, 0.), stamp=1+i*.2),
+                          _speed_mps=0., _velocity_body=[0.,0.]))
+        self.assertEqual(e._traversed_directions(.25), [])
+
+    def test_blocked_rotating_arc_can_recover_with_fixed_heading_side_motion(self):
+        e = Explorer(8)
+        obstacles = [(3,0),(-3,0),(0,-3)]
+        frame = dict(scan(obstacles=obstacles), _speed_mps=0., _velocity_body=[0.,0.])
+        e.ingest(frame)
+        for f, side, yaw in [(.35,0.,0.),(-.25,0.,0.),(0.,-.25,0.),(0.,0.,.7),(0.,0.,-.7)]:
+            self.assertFalse(clearance(frame, f, yaw, side=side)[0])
+        self.assertTrue(clearance(frame, 0.,0.,side=.25)[0])
+        self.assertTrue(e.request_recovery((0.,.25,.7), '原转弯轨迹受阻'))
+        self.assertEqual(applied(e), (0.,0.,0.))  # Wait for a fresh stopped frame.
+
+        e.ingest(dict(frame, stamp=1.2))
+        self.assertEqual(applied(e), (0.,.25,0.))
+        self.assertEqual(e.recovery_attempts, 1)
+
+        e.ingest(dict(frame, stamp=1.4, obstacles=[*frame['obstacles'], [0,3]]))
+        self.assertEqual(applied(e), (0.,0.,0.))
+        self.assertEqual(e.recovery_outcomes[-1]['reason'], 'path_blocked')
+
     def test_recovery_stops_if_person_enters_selected_side(self):
         e=Explorer(3);s=scan(obstacles=[(3,0)]);e.ingest(s)
         e.path=[(2,0),(3,0),(4,0)];e.goal=(4,0);e.plan_state='planned'

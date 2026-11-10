@@ -54,14 +54,15 @@ cameraOpen=function(cam){
  if(S.mode==='demo')return;
  const image=$('#camera-'+cam);if(!image)return;
  cameraClose(cam);image.dataset.requested='true';
- const overlay=$('#ppe-overlay')?.checked&&S.ppe.enabled&&S.ppe.camera===cam;
+ const hasOverlay=()=>$('#ppe-overlay')?.checked&&(S.ppe.cameras?.[cam]?.enabled??(S.ppe.enabled&&S.ppe.camera===cam));
+ const overlay=hasOverlay();
  if(overlay)image.dataset.overlay='true';
  const notice=document.createElement('div');notice.id='camera-notice-'+cam;notice.className='camera-notice';notice.hidden=true;notice.setAttribute('role','status');image.parentElement.append(notice);
  const state={closed:false,sequence:-1,failures:0,url:null,times:[],error:'',revision:0,suspended:!previewVisible(image)};cameraSessions.set(cam,state);
  state.timer=setInterval(()=>{if(!document.hidden)paintCameraStatus();},1000);
  const poll=async()=>{
   while(!state.closed&&image.isConnected){
-   if(overlay&&(!S.ppe.enabled||S.ppe.camera!==cam)){cameraOpen(cam);return;}
+   if(Boolean(overlay)!==Boolean(hasOverlay())){cameraOpen(cam);return;}
    if(!previewVisible(image)||cameraUnavailableReason(cam)){await new Promise(r=>setTimeout(r,250));continue;}
    state.suspended=false;
    const revision=state.revision;

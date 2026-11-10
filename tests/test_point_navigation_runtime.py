@@ -88,8 +88,8 @@ class PointNavigationRuntimeTests(unittest.TestCase):
         class Stub:
             def __init__(self):self.calls=0
             def set_path(self,path):self.path=path
-            def command(self,scan,yaw_rate,goal_yaw,allowed_pose):
-                assert allowed_pose(*scan['pose'])
+            def command(self,scan,yaw_rate,goal_yaw,allowed_pose=None,*,fixed_heading=False):
+                if not fixed_heading:assert allowed_pose(*scan['pose'])
                 row=sequence[min(self.calls,len(sequence)-1)];self.calls+=1
                 return dict(state=row[0],axes=row[1],reason='offline trajectory choice')
         return Stub

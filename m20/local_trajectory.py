@@ -175,7 +175,7 @@ class TrajectoryFollower:
                 self.gain[i]=.85*self.gain[i]+.15*ratio
         return feedback
 
-    def command(self,scan,yaw_rate=0.,goal_yaw=None,allowed_pose=None):
+    def command(self,scan,yaw_rate=0.,goal_yaw=None,allowed_pose=None,*,fixed_heading=False):
         started=time.perf_counter();pose=np.asarray(scan['pose'],dtype=float)
         self.last.update(zero_reason=None,terminal_path=self.terminal,needs_continuation=False,policy='sampled_trajectory')
         if len(pose)!=3 or not np.isfinite(pose).all():raise ValueError('位姿无效')
@@ -225,6 +225,8 @@ class TrajectoryFollower:
                 self.last['zero_reason']='terminal_brake_latch' if self.terminal else 'viewpoint_brake_latch'
                 return self._result([0,0,0],'braking','正在制动，等待实际速度下降后再接近终点',[],started)
             self.goal_braking=False
+        if fixed_heading and not at_goal and angular_speed>=.12:
+            return self._result([0,0,0],'braking','等待转向停稳后保持朝向平移',[],started)
         if speed>=.08 and (at_goal or remaining_path<=stopping+.10):
             self.goal_braking=True
             self.last['zero_reason']='terminal_stopping_distance' if self.terminal else 'viewpoint_stopping_distance'
@@ -241,6 +243,7 @@ class TrajectoryFollower:
         look=max(.65,min(1.4,.65+speed*.8))
         target=local[min(len(local)-1,int(np.searchsorted(arc,look)))]
         desired=wrap(goal_yaw-pose[2]) if at_goal and goal_yaw is not None else math.atan2(target[1],target[0])
+        if fixed_heading and not at_goal:desired=0.
         surface=LocalSurface.cached(scan)
         f=self.forward_limit;t=self.yaw_limit
         terminal=remaining_path<.9
@@ -264,9 +267,10 @@ class TrajectoryFollower:
         slow_f=max(min(.20,self.forward_limit),.7*f) if terminal else .7*f
         candidates=[(0.,0.,0.)]
         if not at_goal:
+            yaw_candidates=(0.,) if fixed_heading else (0.,t,-t)
             for vx in list(dict.fromkeys([f,slow_f,0.,-reverse])):
                 for vy in [0.,side,-side]:
-                    for wz in [0.,t,-t]:
+                    for wz in yaw_candidates:
                         if vx==0 and vy==0 and wz==0:continue
                         candidates.append((vx,vy,wz))
         else:candidates.extend([(0,0,t),(0,0,-t)])

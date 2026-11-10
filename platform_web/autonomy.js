@@ -101,6 +101,7 @@ function autonomyPage(){
  <section class="card card-pad auto-controls"><div class="range-label"><span class="eyebrow">当前任务</span><span class="pill" id="auto-state">待开始</span></div>
  <div class="auto-message" role="status" id="auto-message">${esc(autoTab==='explore'&&(autoStartIntent?.message||autoStartNotice)||a.message||'等待开始')}</div>
  ${autoTab==='explore'?autoExplorePanel(mapKind):autoFollowPanel()}
+ ${autoTab==='explore'&&live?`<div class="button-row section-gap">${btn('临时观测管理','auto-temp-observations','small','file')}</div>`:''}
  
  ${live?'':'<p class="help">当前显示模拟图像与运动。</p>'}</section></div>`;
 }
@@ -122,6 +123,7 @@ function autoMapObservation(m,a=S?.autonomy||{}){
   o.live===true?'观测已过期，显示最后观测位置':o.message||'采集已停止，显示最后观测（非当前位置）';
  return {state:live?'live':'history',live,drawPose:true,age,message,stateAge};
 }
+function autoSessionFinished(a){return ['completed','discarded'].includes(a?.state)&&!a.active&&!a.can_resume&&!a.cleanup_pending;}
 function autoPaintMapObservation(m,a=S?.autonomy||{}){
  const status=autoMapObservation(m,a);text('auto-observation-status',status.message+(status.live&&status.age!==null?' · '+fmt(status.age,1)+' 秒前':''));
  const svg=$('#auto-view'),marker=svg?.querySelector('#auto-robot-marker');
@@ -137,6 +139,7 @@ function autoPaintMapObservation(m,a=S?.autonomy||{}){
 }
 function autoDrawMap(m,a=S?.autonomy||{}){
  const svg=$('#auto-view');if(!svg)return;
+ if(autoSessionFinished(a))m=null;
  const status=autoPaintMapObservation(m,a);
  if(!m?.floor?.length||!Number.isFinite(m.resolution)||m.resolution<=0){svg.innerHTML='';$('#auto-empty').hidden=false;return;}
  $('#auto-empty').hidden=true;
@@ -177,15 +180,48 @@ function autoDrawVision(v){
 }
 const autoOriginalUpdate=update;
 update=function(){autoOriginalUpdate();if(page!=='autonomy'||!S?.autonomy)return;const a=S.autonomy;
+ const finished=autoTab==='explore'&&autoSessionFinished(a);
  if(autoStartIntent&&!autoStartCurrent(autoStartIntent))invalidateAutoStart('连接或设置已变化，已取消本次自动开始');
- text('auto-state',autoStartIntent?(autoStartIntent.phase==='localizing'?'恢复定位中':'准备中'):({idle:'待开始',preparing:'准备中',exploring:'正在探索',following:'正在跟随',paused:'已暂停',saving:'保存中',discarding:'放弃中',discarded:'已放弃',completed:'已完成',failed:'需处理'})[a.state]||a.state);
- text('auto-message',autoTab==='explore'&&(autoStartIntent?.message||autoStartNotice)||a.message);text('auto-area',autoTab==='explore'?fmt(a.map?.area):fmt(a.vision?.age,2));text('auto-distance',autoTab==='explore'?fmt(a.map?.distance):a.vision?.detections?.length||0);text('auto-time',a.elapsed||0);
+ text('auto-state',autoStartIntent?(autoStartIntent.phase==='localizing'?'恢复定位中':'准备中'):finished?'待开始':({idle:'待开始',preparing:'准备中',exploring:'正在探索',following:'正在跟随',paused:'已暂停',saving:'保存中',discarding:'放弃中',discarded:'已放弃',completed:'已完成',failed:'需处理'})[a.state]||a.state);
+ text('auto-message',autoTab==='explore'&&(autoStartIntent?.message||autoStartNotice)||(finished?'请选择下一轮作业':a.message));
+ text('auto-area',finished?'—':autoTab==='explore'?fmt(a.map?.area):fmt(a.vision?.age,2));
+ text('auto-distance',finished?'—':autoTab==='explore'?fmt(a.map?.distance):a.vision?.detections?.length||0);text('auto-time',finished?'—':a.elapsed||0);
  if(autoTab==='explore'&&a.active&&a.map?.frontier_metrics?.path_length_m!=null&&!autoStartIntent){
   const f=a.map.frontier_metrics;const value=a.map.target_kind==='expand'?'扩展未扫描区域':a.map.target_kind==='refine'?'补充旧区域观察角度':'探索可见边界';
   text('auto-message',`${value} · 目标路程 ${f.path_length_m} 米 · 预计新增可见区域 ${f.information_gain_m2||0} ㎡ · ${a.message}`);
  }
  paintAutoMapOptions();
  if(autoTab==='explore')autoDrawMap(a.map);
+};
+ui['auto-temp-observations']=async()=>{
+ const key=()=>JSON.stringify([S?.server_instance,S?.connection_generation,S?.ip]);
+ const connection=key();
+ const status=await api('/api/maps/build/status');
+ if(connection!==key()||page!=='autonomy')return;
+ const row=status.phase==='discarded'&&status.observation_ownership==='unique'&&
+  status.temporary_observations?.find(item=>item.ownership_verified);
+ const capture=status.stop_mapping?.expected_start_request_id;
+ if(!row||!capture){modal('临时观测管理','<p>最近一轮暂无可核对的临时采集文件。</p>');return;}
+ const trash=await api('/api/maps/library/trash');
+ if(connection!==key()||page!=='autonomy')return;
+ if(trash.maps?.some(item=>item.name===row.name)){
+  modal('临时观测管理',`<p>${esc(row.name)} 已移入地图库回收站。</p>`);return;
+ }
+ modal('临时观测管理',`<p><strong>${esc(row.name)}</strong></p><p>这是机器人为本轮保存的原始采集文件。放弃任务后，它保留在临时采集目录。</p><p>移入回收站后，可在「建图与地图 → 回收站」中继续管理。</p>`,
+  [{label:'移入回收站',ui:'auto-trash-observation-confirm',style:'danger'}]);
+ const dialog=mapDialogGeneration;
+ ui['auto-trash-observation-confirm']=async()=>{
+  if(connection!==key()||page!=='autonomy'||dialog!==mapDialogGeneration||!$('#modal')?.open)
+   throw Error('连接或确认窗口已变化，请重新核对临时观测');
+  const button=$('[data-ui="auto-trash-observation-confirm"]');button.disabled=true;
+  try{
+   await job('/api/maps/library/delete',{name:row.name,observation_capture:capture},'移入回收站',()=>connection===key());
+   if(connection===key()){
+    if(dialog===mapDialogGeneration&&$('#modal')?.open)$('#modal').close();
+    toast('本轮临时观测已移入回收站');
+   }
+  }finally{if(button.isConnected)button.disabled=false;}
+ };
 };
 const autoPreviousRender=render;
 render=function(...args){if(page!=='autonomy')invalidateAutoStart('已离开自主作业，已取消本次自动开始');return autoPreviousRender.apply(this,args);};
@@ -253,7 +289,7 @@ document.addEventListener('click',e=>{if(e.target.closest('[data-action="stop"],
 document.addEventListener('keydown',e=>{if(e.code==='Space'&&!e.target.matches('input,textarea,select')){invalidateAutoStart();cancelAutoResumeRequest();}});
 window.addEventListener?.('hashchange',()=>{if(location.hash!=='#autonomy'){invalidateAutoStart('已离开自主作业，已取消本次自动开始');cancelAutoResumeRequest();}});
 document.addEventListener('keydown',e=>{if(['Enter',' '].includes(e.key)&&e.target.matches('.auto-person')){e.preventDefault();autoChoose(e.target);}});
-setInterval(()=>{if(!document.hidden){autoFetchVision();if(page==='autonomy'&&autoTab==='explore')autoPaintMapObservation(S?.autonomy?.map,S?.autonomy);}},400);
+setInterval(()=>{if(!document.hidden){autoFetchVision();if(page==='autonomy'&&autoTab==='explore')autoPaintMapObservation(autoSessionFinished(S?.autonomy)?null:S?.autonomy?.map,S?.autonomy);}},400);
 // Entry points stay next to the work the operator is already doing.
 for(const name of ['motion','mapsPage','navPage']){
  const old=window[name];window[name]=function(){return old()+`<div class="auto-entry card"><div><strong>自主建图与人员跟随</strong><p class="help">自动探索、更新地图或跟随人员。</p></div><button class="btn" data-page="autonomy">打开自主作业 ${icon('arrow')}</button></div>`;};

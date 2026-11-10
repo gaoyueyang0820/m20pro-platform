@@ -9,7 +9,7 @@ from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from m20.ppe_runtime import HelmetAlerts,SharedPPEDetector
+from m20.ppe_runtime import HelmetAlerts,SharedPPEDetector,PPESources
 from m20.vision_models import ModelChecks,catalog,default_path
 import m20.m20_console as original
 
@@ -55,21 +55,23 @@ class PPEStreamTests(unittest.TestCase):
             web.APP=web.Platform(Store(Path(directory)/'workspace.json'));web.APP.demo=False
             web.TOKEN=None;web.ACCESS=None
             calls=[]
-            def frame(after,timeout):calls.append(after);return 8,b'\xff\xd8frame',.04
-            original.PPE=NS(enabled=True,frame=frame)
+            def detector(camera):
+                def frame(after,timeout):calls.append((camera,after));return 8,b'\xff\xd8frame',.04
+                return NS(enabled=True,frame=frame)
+            original.PPE=NS(enabled=True,detector=detector)
             server=web.ThreadingHTTPServer(('127.0.0.1',0),web.Handler)
             thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
             try:
-                with urlopen('http://127.0.0.1:%s/api/ppe/frame?after=7'%server.server_address[1]) as response:
+                with urlopen('http://127.0.0.1:%s/api/ppe/frame?camera=rear&after=7'%server.server_address[1]) as response:
                     self.assertEqual(response.headers['Content-Type'],'image/jpeg')
                     self.assertEqual(response.headers['X-Frame-Sequence'],'8')
                     self.assertEqual(float(response.headers['X-Frame-Age']),.04)
                     self.assertEqual(response.read(),b'\xff\xd8frame')
-                self.assertEqual(calls,[7])
+                self.assertEqual(calls,[('rear',7)])
             finally:
                 server.shutdown();server.server_close();thread.join(1);web.APP=old;original.PPE=old_ppe
 
-    def test_detector_uses_shared_feed_and_stops_without_opening_another_rtsp(self):
+    def test_dual_detectors_reuse_camera_feeds_and_share_one_model(self):
         import cv2,numpy as np
         class Feed:
             def __init__(self):
@@ -81,16 +83,37 @@ class PPEStreamTests(unittest.TestCase):
                 if after!=1:return 1,self.jpeg
                 time.sleep(.02);return None
             def status(self):return dict(error=None)
-        feed=Feed();requested=[]
-        def get(camera):requested.append(camera);return feed
-        detector=SharedPPEDetector(NS(cameras=NS(get=get)))
-        detector.model=NS(names={0:'Hardhat',2:'NO-Hardhat',5:'Person'})
-        with patch.object(original,'PPE_MODEL_PATH',str(default_path('ppe'))),patch.object(detector,'_load_model',return_value=True),patch('m20.ppe_runtime.detections',return_value=[detection()]),patch.object(original.cv2,'VideoCapture',side_effect=AssertionError('duplicate RTSP')):
-            ok,_=detector.start('front');self.assertTrue(ok)
-            packet=detector.frame(-1,2);self.assertIsNotNone(packet);self.assertTrue(packet[1].startswith(b'\xff\xd8'))
-            self.assertTrue(detector.status()['fresh']);self.assertEqual(requested,['front'])
-            detector.stop();detector._thread.join(1)
-            self.assertEqual(feed.users,0);self.assertIsNone(detector.frame(-1,.01))
+        feeds={key:Feed() for key in ('front','rear')};requested=[];loads=[]
+        def get(camera):requested.append(camera);return feeds[camera]
+        detectors=PPESources(NS(cameras=NS(get=get)))
+        model=NS(names={0:'Hardhat',2:'NO-Hardhat',5:'Person'})
+        def load(worker):loads.append(worker.cam);worker.model=model;return True
+        with patch.object(original,'PPE_MODEL_PATH',str(default_path('ppe'))),patch.object(SharedPPEDetector,'_load_model',load),patch('m20.ppe_runtime.detections',return_value=[detection()]),patch.object(original.cv2,'VideoCapture',side_effect=AssertionError('duplicate RTSP')):
+            ok,_=detectors.start('both');self.assertTrue(ok)
+            for key in feeds:
+                packet=detectors.detector(key).frame(-1,2)
+                self.assertIsNotNone(packet);self.assertTrue(packet[1].startswith(b'\xff\xd8'))
+            self.assertEqual(detectors.status()['camera'],'both')
+            self.assertCountEqual(requested,['front','rear']);self.assertEqual(len(loads),1)
+            detectors.stop()
+            for key,feed in feeds.items():
+                worker=detectors.detector(key);worker._thread.join(1)
+                self.assertEqual(feed.users,0);self.assertIsNone(worker.frame(-1,.01))
+
+    def test_restart_waits_for_a_new_annotation(self):
+        worker=SharedPPEDetector(NS(cameras=NS(get=lambda _camera:None)))
+        worker.sequence=4
+        worker.last_frame_time=time.time()
+        worker._annotated=b'previous frame'
+        worker.last_dets=[detection()]
+        with patch.object(original,'PPE_MODEL_PATH',str(default_path('ppe'))),patch.object(worker,'_run',side_effect=lambda _feed:worker.halt.wait(1)):
+            self.assertTrue(worker.start('rear')[0])
+            try:
+                status=worker.status()
+                self.assertFalse(status['fresh']);self.assertEqual(status['det_count'],0)
+                self.assertIsNone(worker.frame(-1,.01));self.assertEqual(worker.sequence,4)
+            finally:
+                worker.stop();worker._thread.join(1)
 
 
 class TrainedWeightsTests(unittest.TestCase):

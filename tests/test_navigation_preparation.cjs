@@ -69,16 +69,16 @@ test('saved patrol passes its configured native engine and return policy',async(
  const request=f.calls.find(call=>call.path==='/api/nav/start').data;
  assert.equal(request.engine,'native');assert.equal(request.disconnect_policy,'return');assert.equal(request.explicit_execution,true);
 });
-test('edited route start binds the original user intent before any asynchronous save',async()=>{
+test('edited route starts as a temporary patrol without saving it',async()=>{
  const f=fixture();f.ctx.navIntent='route';await f.ctx.ui['start-nav']();
- assert.deepEqual(paths(f),['/api/platform','/api/maps/localize-auto','/api/operations?id=recover','/api/platform','/api/nav/plan','/api/route/save','/api/nav/start']);
- assert.equal(f.calls.at(-1).data.id,'saved-route');assert.equal(f.ctx.routeId,'saved-route');
+ assert.deepEqual(paths(f),['/api/platform','/api/maps/localize-auto','/api/operations?id=recover','/api/platform','/api/nav/plan','/api/nav/start']);
+ assert.equal(f.calls.at(-1).data.route.points[0].x,2);assert.equal(f.ctx.routeId,null);
 });
-test('late edited-route save after cancellation cannot create a new start intent',async()=>{
+test('late temporary route preview after cancellation cannot create a start intent',async()=>{
  const f=fixture(),gate=deferred();f.ctx.navIntent='route';f.ctx.S.pose.Location=0;
- f.setResponder((path,data,options,previous)=>path==='/api/route/save'?gate.promise:previous(path));
+ f.setResponder((path,data,options,previous)=>path==='/api/nav/plan'?gate.promise:previous(path));
  const work=f.ctx.ui['start-nav']();await tick();await f.ctx.ui['cancel-nav']();
- gate.resolve({route:{id:'late-save'}});await work;assert.equal(started(f),false);assert.equal(f.ctx.routeId,null);
+ gate.resolve({plan_id:'late-plan'});await work;assert.equal(started(f),false);assert.equal(f.ctx.routeId,null);
 });
 test('failed or unconfirmed localization never plans or starts',async()=>{
  for(const job of [{status:'failed',error:'环境仍不能唯一匹配'},{status:'completed',result:{localized:false}}]){
