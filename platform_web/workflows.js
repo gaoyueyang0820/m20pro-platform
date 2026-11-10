@@ -8,8 +8,9 @@ Object.assign(pages,{
  navigation:['导航与巡检','NAVIGATION','单点导航任务与多航点巡检路线的规划与执行。']
 });
 overview=function(){
- const demo=S.mode==='demo';
  const entry=(key,title,tip)=>`<button type="button" data-page="${key}"><span class="q-icon">${icon(key)}</span><span><strong>${title}</strong><small>${tip}</small></span><span class="arrow">›</span></button>`;
+ const entries=[['motion','手动驾驶','相机、遥控与步态模式'],['navigation','导航与巡检','单点导航与多航点巡检'],['maps','建图与地图','建图采集、地图库与点云'],['autonomy','自主作业','自主探索与人员跟随'],['vision','视觉识别','相机预览、人员与 PPE 检测'],['diagnostics','故障与日志','错误码与原始回包排查']];
+ const entryColumn=list=>`<div class="quick-entry">${list.map(([key,title,tip])=>entry(key,title,tip)).join('')}</div>`;
  return heading(btn('导出状态','export','','download')+btn('连接机器人','connect-modal','primary','link'))+
  `<div class="kpi-grid">
    <div class="card kpi"><div class="kpi-label">${icon('link')}设备连接</div><div class="kpi-value" id="kpi-online">在线<small>DEMO</small></div><div class="kpi-note"><span class="dot"></span><span id="kpi-ip">本地演示环境</span></div></div>
@@ -17,17 +18,15 @@ overview=function(){
    <div class="card kpi"><div class="kpi-label">${icon('joints')}关节状态</div><div class="kpi-value" id="kpi-joints">—</div><div class="kpi-note">16 个电机 · 四条腿</div></div>
    <div class="card kpi"><div class="kpi-label">${icon('temp')}最高关节温度</div><div class="kpi-value" id="kpi-temp">—</div><div class="kpi-note" id="kpi-temp-note">反馈温度 · 持续更新</div></div>
   </div>
-  <div class="overview-main">
-   ${card('机器人数字视图',stage()+`<div class="source-note" id="overview-source">演示数据 · 三维姿态随模拟关节变化。</div>`,'joints','<span class="pill" id="model-pill">模拟反馈</span>')}
-   <aside class="overview-side">
-    ${card('运行状态',`<div class="card-pad"><div class="health-list">${kv('运动状态','—','health-motion')}${kv('使用模式','—','health-mode')}${kv('当前步态','—','health-gait')}${kv('地图定位','—','health-loc')}${kv('硬急停','—','health-hes')}${kv('充电状态','—','health-charge')}</div><div class="quick-actions">${cmd('站立','stand')}${cmd('趴下','lie')}${btn('前往驾驶','goto-motion','','motion')}${cmd('停止运动','stop','danger')}</div></div>`,'sensors','<span class="dot"></span>')}
-    ${card('作业入口',`<div class="quick-entry">${entry('motion','手动驾驶','相机、遥控与步态模式')}${entry('navigation','导航与巡检','单点导航与多航点巡检')}${entry('maps','建图与地图','建图采集、地图库与点云')}${entry('autonomy','自主作业','自主探索与人员跟随')}${entry('vision','视觉识别','相机预览、人员与 PPE 检测')}${entry('diagnostics','故障与日志','错误码与原始回包排查')}</div>`,'navigation')}
-   </aside>
+  <div class="section-gap">${card('作业入口',`<div class="equal-split">${entryColumn(entries.slice(0,3))}${entryColumn(entries.slice(3))}</div>`,'navigation')}</div>
+  <div class="split section-gap">
+   ${card('运行状态',`<div class="card-pad"><div class="health-list">${kv('运动状态','—','health-motion')}${kv('使用模式','—','health-mode')}${kv('当前步态','—','health-gait')}${kv('地图定位','—','health-loc')}${kv('硬急停','—','health-hes')}${kv('充电状态','—','health-charge')}</div><div class="quick-actions">${cmd('站立','stand')}${cmd('趴下','lie')}${btn('前往驾驶','goto-motion','','motion')}${cmd('停止运动','stop','danger')}</div></div>`,'sensors','<span class="dot"></span>')}
+   ${card('当前任务','<div id="overview-task"></div>','tasks',btn('任务中心','goto-tasks','small ghost','arrow'))}
   </div>
-  <div class="overview-bottom">
-   ${card('计算单元温度',`<canvas id="temp-chart" class="mini-chart"></canvas><div class="chart-legend"><span>最近 60 秒</span><span><span class="dot"></span>最高主机温度 / °C</span></div>`,'cpu')}
-   ${card('当前任务',`<div id="overview-task"></div>`,'tasks',btn('任务中心','goto-tasks','small ghost','arrow'))}
-   ${card('最近动态',`<div class="log-scroll" id="overview-logs"></div>`,'clock')}
+  <div class="section-gap">${card('机器人数字视图',stage()+`<div class="source-note" id="overview-source">演示数据 · 三维姿态随模拟关节变化。</div>`,'joints','<span class="pill" id="model-pill">模拟反馈</span>')}</div>
+  <div class="equal-split section-gap">
+   ${card('最近动态','<div class="log-scroll" id="overview-logs"></div>','clock')}
+   ${card('计算单元温度',`<canvas id="temp-chart" class="mini-chart" style="width:100%;height:120px;display:block"></canvas><div class="chart-legend"><span>最近 60 秒</span><span><span class="dot"></span>最高主机温度 / °C</span></div>`,'cpu')}
   </div>`;
 };
 ui['work-sensors']=()=>navigate('sensors');ui['work-diagnostics']=()=>navigate('diagnostics');
@@ -47,21 +46,43 @@ connectionCenter=function(){
  fullConnectionCenter();if(!connections)return;
  const content=$('#connection-content'),form=$('#connections-profile-form');if(!content||!form)return;
  const share=$('#sharing-panel');
- const advanced=document.createElement('details');advanced.className='connection-advanced card';advanced.id='connection-advanced';
- advanced.innerHTML='<summary>高级管理：账号、服务与网络设置</summary>';advanced.append(form);
- const quick=document.createElement('section');quick.className='card card-pad quick-connect';
- quick.innerHTML=`<div><h2>连接机器人</h2><p class="help">电脑与机器人接入同一 Wi-Fi。换网后可自动查找已配对的机器人。</p></div><div class="quick-connect-form">${field('机器人地址','quick-aos-ip',connections.aos_ip)}${btn('自动查找','discover-robot','','refresh')}${btn('连接机器人','hub-connect','primary','link')}${btn('离线体验','hub-demo')}</div><div class="quick-hosts">${[['aos','AOS','运动控制'],['nos','NOS','建图导航'],['gos','GOS','扩展功能']].map(([role,title,description])=>`<div><strong>${title}<small>${description}</small></strong><span id="quick-host-${role}">等待读取</span>${role==='aos'||connections.targets[role].deployed?'':`<button class="text-button" data-quick-setup="${role}">完成首次连接</button>`}</div>`).join('')}</div><p class="help">首次安装可能需要设备密码；之后直接连接，平台会自动处理内部主机连接。</p>`;
+ const hostCard=(role,title,description)=>{
+  const target=connections.targets?.[role];
+  let actions='';
+  if(role==='aos')actions='<button type="button" class="text-button" data-pair-role="aos">重新配对</button>';
+  else if(target&&!target.enabled)actions='<button type="button" class="text-button" data-ui="open-connection-advanced">在高级管理中启用</button>';
+  else if(target&&!target.deployed)actions=`<button type="button" class="text-button" data-quick-setup="${role}">完成首次连接</button>`;
+  else if(target)actions=`<div class="button-row"><button type="button" class="text-button" data-connection-role="${role}" data-connection-operation="connect">连接</button><button type="button" class="text-button" data-connection-role="${role}" data-connection-operation="disconnect">断开</button><button type="button" class="text-button" data-service-role="${role}" data-service-operation="status">服务状态</button></div>`;
+  return `<div><strong>${title}<small>${description}</small></strong><span id="quick-host-${role}">等待读取</span>${actions}</div>`;
+ };
+ const quick=document.createElement('section');quick.className='card quick-connect';
+ quick.innerHTML=`<div class="card-pad"><h2>连接机器人 <span class="pill gray" id="connection-state-pill">读取连接状态</span></h2><div class="connection-state" id="connection-summary" hidden></div><div class="quick-connect-form">${field('机器人地址','quick-aos-ip',connections.aos_ip)}${btn('自动查找','discover-robot','','refresh')}${btn('连接机器人','hub-connect','primary','link')}${btn('离线体验','hub-demo')}<button type="button" class="btn small ghost" data-ui="hub-disconnect" id="connection-disconnect" hidden>断开</button></div><p class="help">电脑与机器人接入同一 Wi-Fi。连接后平台自动维护已启用的主机通道；首次安装需要设备密码，密码只用于本次安装。</p></div>`;
+ const hosts=document.createElement('section');hosts.className='card section-gap';
+ hosts.innerHTML=`<div class="card-header"><h2 class="card-title">主机状态</h2><span class="help">按已启用的通道维护后台连接</span></div><div class="card-pad"><div class="quick-hosts">${hostCard('aos','AOS','运动控制 · UDP 直连')}${hostCard('nos','NOS','建图、定位与导航')}${hostCard('gos','GOS','用户扩展程序')}</div><p class="help">AOS 由 UDP 直连，无需后台通道；NOS / GOS 完成首次安装后可单独连接，服务需单独启动。</p></div>`;
+ const advanced=document.createElement('details');advanced.className='connection-advanced optional-services';advanced.id='connection-advanced';
+ advanced.innerHTML='<summary>高级管理：账号、服务与网络设置</summary><p class="help card-pad">机器人地址与连接方式见页面上方。这里保存主机账号、运行环境脚本与端口，修改后下次连接生效。</p>';advanced.append(form);
+ if(typeof form.querySelectorAll==='function'){
+  for(const duplicate of form.querySelectorAll('[data-ui="hub-connect"],[data-ui="hub-demo"]'))duplicate.remove();
+  for(const primary of form.querySelectorAll('.btn.primary'))primary.classList.remove('primary');
+ }
  content.replaceChildren(quick);
  if(share){const sharing=document.createElement('details');sharing.className='sharing-fold card';sharing.innerHTML='<summary>同一 Wi-Fi 的其他电脑如何使用</summary>';sharing.append(share);content.append(sharing);}
- content.append(advanced);
+ content.append(hosts);content.append(advanced);
  $('#quick-aos-ip').addEventListener('input',event=>{$('#hub-aos-ip').value=event.target.value;});
  paintQuickConnections();
 };
+ui['open-connection-advanced']=()=>{const advanced=$('#connection-advanced');if(!advanced)return;advanced.open=true;advanced.scrollIntoView({behavior:'smooth',block:'start'});};
 function paintQuickConnections(){
  if(page!=='settings')return;
  const discover=$('[data-ui="discover-robot"]');if(discover)discover.disabled=typeof connectionDiscoveryBusy!=='undefined'&&connectionDiscoveryBusy;
- text('quick-host-aos',S.mode==='demo'?'离线演示':S.online?'已连接':'等待回包');
- for(const role of ['nos','gos'])text('quick-host-'+role,S.mode==='demo'?'未连接实机':connectionNames[connections?.targets[role]?.state.status]||'尚未连接');
+ const demo=S.mode==='demo',online=!!S.online,ip=S.ip||connections?.aos_ip||'机器人地址待配置';
+ text('quick-host-aos',demo?'离线演示':online?'已连接':'等待回包');
+ for(const role of ['nos','gos'])text('quick-host-'+role,demo?'未连接实机':connectionNames[connections?.targets?.[role]?.state?.status]||'尚未连接');
+ const summary=$('#connection-summary');
+ if(summary){summary.hidden=false;summary.textContent=demo?'离线演示 · 未连接实机，遥测与地图均为模拟数据。':online?('已连接 '+ip+' · UDP 状态正常；运动控制需在驾驶页重新开启。'):('等待回包 · '+ip+'：请检查电脑与机器人是否在同一网络。');}
+ const pill=$('#connection-state-pill');
+ if(pill){pill.textContent=demo?'离线演示':online?'已连接':'等待回包';pill.className='pill '+(demo?'amber':online?'green':'gray');}
+ const disconnect=$('#connection-disconnect');if(disconnect)disconnect.hidden=demo;
  const panel=$('#sharing-panel');if(panel&&!panel.closest('.sharing-fold')){
   const fold=document.createElement('details');fold.className='sharing-fold card';fold.innerHTML='<summary>同一 Wi-Fi 的其他电脑如何使用</summary>';panel.before(fold);fold.append(panel);
  }
@@ -82,10 +103,10 @@ mapsPage=function(){
   <div class="mapping-layout">
    <aside class="mapping-sidebar">
     ${card('我的地图','<div class="map-library-toolbar"><input id="map-library-search" type="search" placeholder="搜索地图名称或编号" aria-label="搜索地图"><div><span id="map-library-count" class="help"></span><button class="text-button" data-ui="map-library-trash">回收站</button></div></div><div id="map-batch-bar" class="map-batch-bar" hidden></div><div id="remote-map-list" class="compact-map-library"></div><p id="map-disk" class="help card-pad"></p>','maps',`<div class="button-row"><span id="map-library-source" class="pill ${S.mode==='demo'?'amber':'gray'}">${S.mode==='demo'?'演示 NOS':'NOS'}</span>${btn('编辑地图','map-library-edit','small')}</div>`)}
-    <section class="card card-pad selected-map-work"><div><strong id="selected-map-info">请选择一张地图</strong><p class="help">选择地图后可用于导航、导出或继续补扫。</p></div>${select('栅格','remote-grid-id',[[0,'栅格 0']])}<div class="button-row">${btn('用于导航','map-use-navigation','primary','navigation')}${btn('导出地图包','export-selected-map','','download')}${btn('查看二维地图','sync-selected-map','small')}${btn('补扫与版本','map-project','small')}${btn('刷新地图','map-library-refresh','small')}</div></section>
+    <section class="card card-pad selected-map-work"><div><strong id="selected-map-info">请选择一张地图</strong><p class="help">选择地图后可用于导航、导出或继续补扫。</p></div>${select('栅格','remote-grid-id',[[0,'栅格 0']])}<div class="button-row">${btn('用于导航','map-use-navigation','primary','navigation')}${btn('导出地图包','export-selected-map','','download')}</div><details class="route-map-tools"><summary>更多地图操作</summary><div class="button-row section-gap">${btn('查看二维地图','sync-selected-map','small')}${btn('补扫与版本','map-project','small')}${btn('刷新地图','map-library-refresh','small')}</div></details></section>
    </aside>
    <div class="mapping-visuals">
-    <section class="card build-controls-card"><div class="card-header"><h2 class="card-title">${icon('maps')}建图采集</h2><span class="pill gray">低速遥控</span></div><div class="build-controls"><div>${field('新地图名称','hub-map-name','m20-map')}<div class="button-row section-gap">${btn('开始建图','hub-mapping-start','primary','play')}${btn('停止并保存','hub-mapping-stop','danger','stop')}</div><p class="help">开始后按住方向键；完成后点击“停止并保存”。</p></div><div>${dpad}</div><div><div class="range-label"><span>遥控幅度</span><b id="speed-label">0.10</b></div><input id="motion-speed" class="range" type="range" min="0.05" max="0.25" step="0.05" value="0.1"><p class="help">松开只停走。可多圈补扫、回到旧区域形成回环。</p></div></div></section>
+    <section class="card build-controls-card"><div class="card-header"><h2 class="card-title">${icon('maps')}建图采集</h2><span class="pill gray">低速遥控</span></div><div class="build-controls"><div>${field('新地图名称','hub-map-name','m20-map')}<div class="button-row section-gap">${btn('开始建图','hub-mapping-start','primary','play')}${btn('停止并保存','hub-mapping-stop','danger','stop')}</div><p class="help">开始后按住方向键；完成后点击“停止并保存”。</p></div><div>${dpad}</div><div><div class="range-label"><span>遥控幅度</span><b id="speed-label">0.50</b></div><input id="motion-speed" class="range" type="range" min="0.05" max="0.7" step="0.05" value="0.5"><p class="help">松开只停走。可多圈补扫、回到旧区域形成回环。</p></div></div></section>
     <div class="mapping-view-toolbar"><div class="segmented"><button class="active" data-scan-view="cloud">三维点云</button><button data-scan-view="scan">俯视扫描</button><button data-scan-view="both">对照查看</button></div><span id="scan-receive-state">选择已保存地图，或在建图时接收实时点云</span></div>
     <div id="mapping-views" class="mapping-views show-cloud"><div class="mapping-cloud">${cloud}</div><section class="card mapping-scan" id="map-scan-section"><div class="card-header"><h2 class="card-title">${icon('sensors')}雷达俯视扫描</h2><span id="scan-frame" class="pill gray">等待数据</span></div><div class="scan-canvas-wrap"><canvas id="mapping-scan"></canvas><p id="scan-empty">开始接收点云后显示 XY 俯视投影</p></div><p class="help card-pad">这是雷达扫描投影，不替代用于导航的正式栅格地图。</p></section></div>
    </div>
@@ -168,7 +189,7 @@ function routeEditorPage(){
     <div class="route-action-bar" id="nav-action-bar">${btn('撤销一点','undo-waypoint','small ghost')}${btn('保存路线','save-route','','file')}${runButton}${btn('暂停','pause-nav')}${btn('继续','resume-nav')}${btn('结束任务','cancel-nav','danger')}</div>
     ${card('地图选点，自动规划路径',mapStage(),'maps','<span class="pill blue" id="nav-status">待命</span>')}
     <div id="nav-feedback" class="card nav-feedback-empty"></div>
-    <details class="navigation-drive"><summary>临时手动驾驶与前视画面</summary><div class="navigation-drive-body"><div><p class="help">暂停任务后切换手动。返回路线时点击继续。</p>${btn('切换手动驾驶','nav-takeover')}${compactDrive()}<input id="motion-speed" aria-label="手动驾驶幅度" type="range" min="0.05" max="0.25" step="0.05" value="0.1"><small id="motion-readiness"></small></div><div class="camera-feed"><img id="camera-front" alt="前置相机" hidden><div id="placeholder-front" class="camera-placeholder">${icon('vision')}<strong>${S.mode==='demo'?'演示模式没有实机画面':'正在连接前置相机'}</strong></div><div class="camera-hud"><span>前视</span><span id="cam-front-tag">等待画面</span></div></div></div></details>
+    <details class="navigation-drive"><summary>临时手动驾驶与前视画面</summary><div class="navigation-drive-body"><div><p class="help">暂停任务后切换手动。返回路线时点击继续。</p>${btn('切换手动驾驶','nav-takeover')}${compactDrive()}<input id="motion-speed" aria-label="遥控幅度" type="range" min="0.05" max="0.7" step="0.05" value="0.5"><small id="motion-readiness"></small></div><div class="camera-feed"><img id="camera-front" alt="前置相机" hidden><div id="placeholder-front" class="camera-placeholder">${icon('vision')}<strong>${S.mode==='demo'?'演示模式没有实机画面':'正在连接前置相机'}</strong></div><div class="camera-hud"><span>前视</span><span id="cam-front-tag">等待画面</span></div></div></div></details>
    </div>
    <aside class="route-editor card card-pad">
     ${mapSelect().replace('当前编辑地图','导航地图')}

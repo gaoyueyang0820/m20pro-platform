@@ -67,23 +67,40 @@ function paintAutoMapOptions(){
   if(el)el.disabled=busy||((a.can_start===false||a.preparation_unresolved)&&['auto-start','auto-relocalize'].includes(id))||(!!autoStartIntent&&['auto-start','auto-relocalize'].includes(id))||(id==='auto-scope'&&!updating)||(id==='auto-radius'&&mapScope);
  }
  const closing=a.state==='saving'||a.state==='discarding'||!!a.cleanup_pending||!!a.preparation_unresolved||!!autoLifecyclePending;
- const save=document.querySelector('[data-ui="auto-save"]');if(save)save.disabled=!S.mapping||closing;
+ const start=document.querySelector('[data-ui="auto-start"]');if(start)start.hidden=busy||!!a.can_resume;
+ const save=document.querySelector('[data-ui="auto-save"]');if(save){save.hidden=!S.mapping;save.disabled=!S.mapping||closing;}
  const resume=document.querySelector('[data-ui="auto-resume"]');if(resume){resume.hidden=!a.can_resume;resume.disabled=busy||!a.can_resume;}
  const discard=document.querySelector('[data-ui="auto-discard"]');if(discard){discard.hidden=!a.discard_supported;discard.disabled=closing||a.state==='preparing'||!a.can_discard;}
  if(a.can_resume)for(const id of ['auto-map-kind','auto-scope','auto-radius','auto-forward','auto-yaw']){const el=$('#'+id);if(el)el.disabled=true;}
  text('auto-map-help',autoMapHelp(kind,scope?.value));
 }
+function autoExplorePanel(mapKind){
+ return `<span class="eyebrow">EXPLORE & MAP</span><h2>设定探索与建图任务</h2><p class="help">按“建图方式 → 探索范围 → 探索参数”完成配置，核对执行方式预览后开始探索。任务运行中可暂停或手动接管；暂停后可继续，结束后保存或放弃本轮采集。</p>
+ <div class="auto-config"><label class="field">建图方式<select id="auto-map-kind"><option value="new" ${mapKind==='new'?'selected':''}>新建地图</option><option value="extend" ${mapKind==='extend'?'selected':''}>更新当前地图（补扫＋优化）</option><option value="continue" ${mapKind==='continue'?'selected':''}>继续正在采集的地图</option></select></label>
+ <p class="help">新建地图从当前位置向外探索并保存为独立地图；更新当前地图在活动地图上补扫并融合新版本；继续采集续接正在进行的采集。</p>
+ <label class="field" id="auto-scope-field" ${mapKind==='extend'?'':'hidden'}>探索范围<select id="auto-scope"><option value="map">按地图范围</option><option value="radius">指定半径</option></select></label>
+ <p class="help">探索范围只用于“更新当前地图”：按地图范围沿活动地图向外扩展，指定半径则在设定距离内探索；新建与继续采集按指定半径执行。</p>
+ <div class="section-gap"><h4 class="field-heading">探索参数</h4><div class="form-grid">${field('探索半径 / 米','auto-radius',6,'number')}${field('本轮时长 / 分钟','auto-minutes',5,'number')}${field('前进幅度 / %','auto-forward',35,'number')}${field('转向幅度 / %','auto-yaw',70,'number')}</div><p class="help">探索半径限定本次探索距离；本轮时长到时停止采集；前进与转向幅度限制单步运动量。</p></div>
+ <div class="section-gap"><h4 class="field-heading">执行方式预览</h4><p class="help" id="auto-map-help">${autoMapHelp(mapKind,mapKind==='extend'?'map':'radius')}</p></div></div>
+ <div class="auto-actions">${btn('开始探索','auto-start','primary','play')}${btn('自动恢复定位','auto-relocalize','small','refresh')}</div>
+ <p class="help">实机定位未恢复时，先执行自动恢复定位；开始后本轮采集在电脑后台运行，切换页面不会结束任务。</p>
+ <div class="section-gap"><h4 class="field-heading">本轮采集</h4><p class="help">任务运行中可在页面上方暂停移动或手动接管。暂停后继续本轮采集；结束并保存生成本轮地图结果，结束并放弃不保留本轮更新。</p><div class="auto-actions"><button type="button" class="btn primary small" data-ui="auto-resume" hidden>继续探索</button>${btn('结束并保存','auto-save','small','check')}<button type="button" class="btn small danger" data-ui="auto-discard" hidden>结束并放弃</button></div><p class="help">保存完成后到地图库核对并启用新版本；放弃本轮不会删除原地图。</p></div>`;
+}
+function autoFollowPanel(){
+ return `<span class="eyebrow">PERSON FOLLOWING</span><h2>人员识别与跟随</h2><p class="help">开启人员识别后，在画面中选择跟随目标。人员需全身进入画面，在期望间距站定后再选择；目标丢失或多人交叉时自动停车。</p>
+ <div class="auto-config"><h4 class="field-heading">人员识别与目标选择</h4><div class="auto-actions">${btn('开启人员识别','auto-vision-start','primary','vision')}${btn('关闭识别','auto-vision-stop','small')}</div><div id="auto-people" class="auto-people"></div><p id="auto-vision-error" class="help"></p><p class="help">检测到人物后点选目标即开始跟随；已锁定目标显示为绿色框。切换目标前先暂停当前跟随。</p></div>
+ <details class="compatibility-tools"><summary>人员检测模型设置</summary><div class="section-gap"><div class="field"><label for="auto-model">本机人员检测模型路径</label><input id="auto-model" placeholder="默认已配好 YOLO11n，可留空"></div><p class="help">留空使用默认人员模型，也可选择自定义模型；修改后需重新开启识别。</p></div></details>`;
+}
 function autonomyPage(){
  const live=S.mode==='live',a=S.autonomy||{},mapKind=autoDefaultMapKind();
  return heading(btn('手动接管','auto-manual','','motion')+btn('暂停移动','auto-stop','danger','stop'))+
  `<div class="auto-tabs"><button class="btn ${autoTab==='explore'?'primary':''}" data-ui="auto-explore-tab">自主建图</button><button class="btn ${autoTab==='follow'?'primary':''}" data-ui="auto-follow-tab">跟随人员</button><span class="pill ${live?'amber':'gray'}">${live?'实机模式':'演示模式'}</span></div>
- <div class="auto-layout"><section class="card auto-stage"><div class="card-header"><h2 class="card-title">${icon(autoTab==='explore'?'maps':'vision')}${autoTab==='explore'?'探索中的空间':'选择要跟随的人'}</h2><span class="pill" id="auto-state">待开始</span></div>
+ <div class="auto-layout"><section class="card auto-stage"><div class="card-header"><h2 class="card-title">${icon(autoTab==='explore'?'maps':'vision')}${autoTab==='explore'?'探索中的空间':'选择要跟随的人'}</h2><span class="pill gray">${autoTab==='explore'?'实时地图':'实时画面'}</span></div>
  <div class="auto-canvas"><svg id="auto-view" viewBox="0 0 680 460" role="img" aria-label="自主作业实时视图"></svg><div id="auto-empty" class="auto-empty">${autoTab==='explore'?'开始后显示实时地图、障碍与行进路径':live?'开启人员识别后，点击画面中的人物框':'开启识别后选择跟随目标'}</div></div>
  <div class="auto-legend">${autoTab==='explore'?'<span><i class="floor"></i>已观测地面</span><span><i class="obstacle"></i>障碍</span><span><i class="path"></i>规划路径</span>':'<span>点选人物即开始跟随 · 绿色框为锁定目标</span>'}</div><div class="auto-metrics"><div><strong id="auto-area">—</strong><small>${autoTab==='explore'?'已观测面积 / m²':'画面延迟 / 秒'}</small></div><div><strong id="auto-distance">—</strong><small>${autoTab==='explore'?'本轮行走 / m':'检测到的人物'}</small></div><div><strong id="auto-time">—</strong><small>运行 / 秒</small></div></div><div class="auto-legend" id="auto-observation-status" role="status">等待本轮探索观测</div><div class="auto-legend" id="auto-navigation-status" hidden></div></section>
- <section class="card card-pad auto-controls"><span class="eyebrow">${autoTab==='explore'?'EXPLORE & MAP':'PERSON FOLLOWING'}</span><h2>${autoTab==='explore'?'开始一次自主探索':'点选你要跟随的人'}</h2><p class="help">${autoTab==='explore'?'自动探索未覆盖区域并更新地图，支持暂停、继续、保存或放弃本轮。':'在期望间距站定，全身进入画面后点选自己。失去目标或多人交叉时停车。'}</p>
+ <section class="card card-pad auto-controls"><div class="range-label"><span class="eyebrow">当前任务</span><span class="pill" id="auto-state">待开始</span></div>
  <div class="auto-message" role="status" id="auto-message">${esc(autoTab==='explore'&&(autoStartIntent?.message||autoStartNotice)||a.message||'等待开始')}</div>
- ${autoTab==='explore'?`<label class="field">建图方式<select id="auto-map-kind"><option value="new" ${mapKind==='new'?'selected':''}>新建地图</option><option value="extend" ${mapKind==='extend'?'selected':''}>更新当前地图（补扫＋优化）</option><option value="continue" ${mapKind==='continue'?'selected':''}>继续正在采集的地图</option></select></label><label class="field" id="auto-scope-field" ${mapKind==='extend'?'':'hidden'}>探索范围<select id="auto-scope"><option value="map">按地图范围</option><option value="radius">指定半径</option></select></label><p class="help" id="auto-map-help">${autoMapHelp(mapKind,mapKind==='extend'?'map':'radius')}</p><div class="auto-actions">${btn('开始探索','auto-start','primary small','play')}<button class="btn primary small" data-ui="auto-resume" hidden>继续探索</button>${btn('结束并保存','auto-save','small','check')}<button class="btn small" data-ui="auto-discard" hidden>结束并放弃</button>${btn('自动恢复定位','auto-relocalize','small','refresh')}</div><div class="section-gap"><h4 class="field-heading">探索参数</h4><div class="form-grid">${field('探索半径 / 米','auto-radius',6,'number')}${field('本轮时长 / 分钟','auto-minutes',5,'number')}${field('前进幅度 / %','auto-forward',35,'number')}${field('转向幅度 / %','auto-yaw',70,'number')}</div></div>`:
- `<div class="auto-actions">${btn('开启人员识别','auto-vision-start','primary','vision')}${btn('关闭识别','auto-vision-stop')}</div><div id="auto-people" class="auto-people"></div><p id="auto-vision-error" class="help"></p><div class="section-gap"><h4 class="field-heading">YOLO 模型设置</h4><div class="field"><label for="auto-model">本机人员检测模型路径</label><input id="auto-model" placeholder="默认已配好 YOLO11n，可留空"></div><p class="help">留空使用默认人员模型，也可选择自定义模型。</p></div>`}
+ ${autoTab==='explore'?autoExplorePanel(mapKind):autoFollowPanel()}
  
  ${live?'':'<p class="help">当前显示模拟图像与运动。</p>'}</section></div>`;
 }
