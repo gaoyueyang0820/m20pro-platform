@@ -29,12 +29,15 @@ function setOperation(label,progress,message,status){
 }
 async function waitJob(start,label,isCurrent=()=>true,quiet=false){
  if(!start.job_id)return isCurrent()?start:null;
+ const waitingSince=Date.now();
  for(;;){
   if(!isCurrent())return null;
   const response=await api('/api/operations?id='+encodeURIComponent(start.job_id),undefined,quiet);
   if(!isCurrent())return null;
   const job=response.jobs;
-  setOperation(label,job.progress,job.error||job.message,job.status);
+  let message=job.error||job.message;
+  if(job.status==='running'&&job.kind?.startsWith('deploy-'))message+=` · 已等待 ${Math.floor((Date.now()-waitingSince)/1000)} 秒`;
+  setOperation(label,job.progress,message,job.status);
   if(job.status==='failed')throw Error(job.error||'后台操作失败');
   if(job.status==='completed')return job.result;
   await new Promise(resolve=>setTimeout(resolve,500));
@@ -67,7 +70,8 @@ ui['hub-connect']=async()=>{if($('#connections-profile-form'))await api('/api/co
 ui['hub-demo']=async()=>{await api('/api/connections/connect',{mode:'demo'});session=null;await fetchState();toast('已切换演示环境');};
 let setupInstallIntent=null,setupDeployBusy=false;
 function setupConnectionScope(role){const t=connections?.targets?.[role];return JSON.stringify([S?.server_instance,S?.connection_generation,connections?.aos_ip,t?.host,t?.ssh_port]);}
-function setupInstallCurrent(token){return setupInstallIntent===token&&setupGeneration===token.generation&&setupConnectionScope(token.role)===token.scope&&page===token.page&&$('#modal')?.open!==false&&(token.dialog===null||typeof mapDialogGeneration==='undefined'||mapDialogGeneration===token.dialog);}
+function setupDeviceCurrent(token){return page===token.page&&setupConnectionScope(token.role)===token.scope;}
+function setupInstallCurrent(token){return setupInstallIntent===token&&setupGeneration===token.generation&&setupDeviceCurrent(token)&&$('#modal')?.open!==false&&(token.dialog===null||typeof mapDialogGeneration==='undefined'||mapDialogGeneration===token.dialog);}
 async function setupWizard(role,{reinstall=false}={}){
  if($('#connections-profile-form')){await api('/api/connections/save',readConnections());await loadConnections();}
  const t=connections.targets[role];if(!t?.host)throw Error('尚未找到设备地址，请先自动查找机器人');
@@ -79,7 +83,8 @@ async function setupWizard(role,{reinstall=false}={}){
 }
 ui['setup-deploy']=async()=>{
  const token=setupInstallIntent;if(!token||!setupInstallCurrent(token))throw Error('连接设置已变化，请重新打开首次连接');if(setupDeployBusy)return;
- const req={role:token.role,password:$('#setup-password').value,admin_password:$('#setup-admin-password').value,confirmed:true};
+ const password=$('#setup-password'),adminPassword=$('#setup-admin-password');
+ const req={role:token.role,password:password.value,admin_password:adminPassword.value,confirmed:true};
  const button=$('[data-ui="setup-deploy"]');setupDeployBusy=true;if(button)button.disabled=true;
  text('setup-message','');
  try{
@@ -88,10 +93,13 @@ ui['setup-deploy']=async()=>{
   if(!setupInstallCurrent(token))return;
   if($('#setup-calibration')?.files[0])req.calibration=JSON.parse(await $('#setup-calibration').files[0].text());
   if(!setupInstallCurrent(token))return;
-  const result=await job('/api/connections/deploy',req,token.reinstall?'更新连接服务':'安装并连接设备',()=>setupInstallCurrent(token));
-  if(!result||!setupInstallCurrent(token))return;
-  $('#setup-password').value='';$('#setup-admin-password').value='';$('#modal').close();setupInstallIntent=null;
-  await loadConnections(true);toast(result.message||'连接服务已就绪');
+  const result=await job('/api/connections/deploy',req,token.reinstall?'更新连接服务':'安装并连接设备',()=>setupDeviceCurrent(token));
+  if(!result||!setupDeviceCurrent(token))return;
+  const dialogOpen=setupInstallCurrent(token);
+  password.value='';adminPassword.value='';
+  if(dialogOpen)$('#modal').close();
+  if(setupInstallIntent===token)setupInstallIntent=null;
+  await loadConnections(dialogOpen);toast(result.message||'连接服务已就绪');
  }catch(error){
   if(setupInstallCurrent(token))text('setup-message',error.message);
   throw error;

@@ -43,6 +43,21 @@ test('automatic relay recovery on the same device keeps its update form valid',a
  await f.c.setupWizard('gos',{reinstall:true});f.c.connections.targets.gos.via_aos=true;
  await f.c.ui['setup-deploy']();assert.ok(f.calls.some(r=>r[1]==='/api/connections/deploy'&&r[2].role==='gos'));
 });
+test('a submitted service update keeps reporting status after the credentials dialog closes',async()=>{
+ const f=fixture(true);let finish,isCurrent;
+ f.c.job=async(path,body,label,current)=>{isCurrent=current;return new Promise(resolve=>finish=resolve);};
+ await f.c.setupWizard('gos',{reinstall:true});
+ f.nodes['#setup-admin-password'].value='synthetic';
+ const updating=f.c.ui['setup-deploy']();await tick();
+ f.nodes['#modal'].close();
+ assert.equal(isCurrent(),true);
+ f.c.S.connection_generation++;
+ assert.equal(isCurrent(),false);
+ f.c.S.connection_generation--;
+ finish({ok:true});await updating;
+ assert.equal(f.nodes['#setup-admin-password'].value,'');
+ assert.ok(f.calls.some(r=>r[0]==='toast'&&r[1]==='连接服务已就绪'));
+});
 test('discovery only runs on click, ignores duplicate clicks and never connects or installs',async()=>{
  const f=fixture();assert.equal(f.calls.length,0);let done;
  f.c.job=async(...args)=>{f.calls.push(['job',...args]);return new Promise(resolve=>done=resolve);};
