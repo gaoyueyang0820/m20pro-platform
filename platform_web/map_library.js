@@ -79,18 +79,30 @@ paintMapLibrary=function(){
  const activate=$('[data-ui="apply-selected-map"]');if(activate){activate.disabled=blocked||!selectedRemote;activate.title=reason;}
  for(const entry of document.querySelectorAll?.('[data-map-restore],[data-map-purge]')||[]){const row=mapTrashRows.find(m=>m.id===(entry.dataset.mapRestore||entry.dataset.mapPurge));if(row){entry.disabled=blocked||!(entry.dataset.mapRestore?trashRestorable(row):trashPurgeable(row));entry.title=reason;}}
  const list=$('#remote-map-list');if(!list)return;
+ for(const name of mapSelection)if(!mapLibrary.maps.some(m=>m.name===name&&!m.active&&m.name!==mapLibrary.active))mapSelection.delete(name);
+ const focused=document.activeElement?.dataset;
  const rows=visibleLibraryMaps();
- const markup=rows.map(m=>`<div class="map-library-entry ${editing?'has-pick':''} ${m.name===selectedRemote?'selected':''}">
-  ${editing?`<label class="map-pick" title="选择 ${esc(mapLabel(m))}"><input type="checkbox" data-map-pick="${esc(m.name)}" ${mapSelection.has(m.name)?'checked':''} ${m.active||m.name===mapLibrary.active?'disabled':''}></label>`:''}
-  <button class="map-library-item" data-remote-map="${esc(m.name)}" title="${esc(m.name)}"><span class="map-thumb">${icon('maps')}</span><span class="map-entry-label"><strong>${esc(mapLabel(m))}</strong><small>${m.grids.length} 份栅格 · ${sizeLabel(m.cloud_bytes)}</small>${m.display_name&&m.display_name!==m.name?`<small class="map-identity">${esc(m.name)}</small>`:''}</span><span class="map-active-label">${m.active?'使用中':''}</span></button>
-  ${editing?`<div class="map-row-edit"><button class="btn small" data-map-rename="${esc(m.name)}" ${mapEditBusy?'disabled':''}>重命名</button><button class="btn small danger" data-map-delete="${esc(m.name)}" ${m.active||m.name===mapLibrary.active||blocked?'disabled':''} title="${esc(reason||(m.active||m.name===mapLibrary.active?'当前活动地图不可删除':'移入回收站，可恢复'))}">删除</button></div>`:''}</div>`).join('')||empty(mapListError?'地图服务未连接':mapSearch?'没有匹配的地图':'还没有地图',mapListError?esc(mapListError):mapSearch?'换个名称或编号搜索。':'可以开始建图或导入地图包。','maps');
- if(list._editorMarkup!==markup){list.innerHTML=markup;list._editorMarkup=markup;}
+ const markup=rows.map(map=>{
+  const name=esc(map.name),label=esc(mapLabel(map)),active=map.active||map.name===mapLibrary.active;
+  const details=`<span class="map-thumb">${icon('maps')}</span><span class="map-entry-label"><strong>${label}</strong><small>${map.grids.length} 份栅格 · ${sizeLabel(map.cloud_bytes)}</small>${map.display_name&&map.display_name!==map.name?`<small class="map-identity">${name}</small>`:''}</span><span class="map-active-label">${active?'使用中':''}</span>`;
+  const item=editing
+   ? `<label class="map-library-item map-selection-row" title="${active?'当前活动地图受保护':'选择 '+label}"><input type="checkbox" data-map-pick="${name}" ${mapSelection.has(map.name)&&!active?'checked':''} ${active||blocked?'disabled':''}>${details}</label><div class="map-row-edit"><button class="btn small" data-map-rename="${name}" ${mapEditBusy?'disabled':''}>重命名</button></div>`
+   : `<button class="map-library-item" data-remote-map="${name}" title="${name}">${details}</button>`;
+  return `<div class="map-library-entry ${map.name===selectedRemote?'selected':''}">${item}</div>`;
+ }).join('')||empty(mapListError?'地图服务未连接':mapSearch?'没有匹配的地图':'还没有地图',mapListError?esc(mapListError):mapSearch?'换个名称或编号搜索。':'可以开始建图或导入地图包。','maps');
+ if(list._editorMarkup!==markup){
+  list.innerHTML=markup;list._editorMarkup=markup;
+  if(focused?.mapPick!==undefined)[...list.querySelectorAll('input[data-map-pick]:enabled')].find(input=>input.dataset.mapPick===focused.mapPick)?.focus({preventScroll:true});
+ }
  const batchBar=$('#map-batch-bar');
  if(batchBar){
   const deletable=rows.filter(m=>!m.active&&m.name!==mapLibrary.active),allPicked=deletable.length>0&&deletable.every(m=>mapSelection.has(m.name));
   batchBar.hidden=!editing;
-  const batchMarkup=`<label class="map-pick-all"><input type="checkbox" data-map-pick-all ${allPicked?'checked':''}>全选可删除地图</label><span class="help">已选 ${mapSelection.size} 张</span><button class="btn small danger" data-map-batch-delete ${mapSelection.size&&!blocked?'':'disabled'}>批量删除</button>`;
-  if(editing&&batchBar._markup!==batchMarkup){batchBar.innerHTML=batchMarkup;batchBar._markup=batchMarkup;}
+  const batchMarkup=`<label class="map-pick-all" title="选择搜索结果中可删除的地图"><input type="checkbox" data-map-pick-all ${allPicked?'checked':''} ${blocked||!deletable.length?'disabled':''}>全选</label><span class="help">已选 ${mapSelection.size} 张</span><button class="btn small danger" data-map-batch-delete ${mapSelection.size&&!blocked?'':'disabled'}>删除所选</button>`;
+  if(editing&&batchBar._markup!==batchMarkup){
+   batchBar.innerHTML=batchMarkup;batchBar._markup=batchMarkup;
+   if(focused?.mapPickAll!==undefined)batchBar.querySelector('input[data-map-pick-all]:enabled')?.focus({preventScroll:true});
+  }
  }
  text('map-disk',mapLibrary.disk?'存储可用 '+sizeLabel(mapLibrary.disk.free):'—');
  text('map-library-count',`${rows.length} / ${mapLibrary.maps.length} 张地图`);
@@ -102,6 +114,7 @@ paintMapLibrary=function(){
   const previous=grid._mapName===selectedRemote?grid.value:'0';grid.innerHTML=options;grid._gridMarkup=options;grid._mapName=selectedRemote;
   if([...grid.options].some(o=>o.value===previous))grid.value=previous;
  }
+ if(typeof paintMappingGrid==='function')paintMappingGrid();
 };
 
 ui['map-library-edit']=()=>{if(mapEditBusy||mapMutationReason('rename'))return;mapEditMode=!mapEditMode;if(!mapEditMode)mapSelection.clear();paintMapLibrary();};
@@ -215,6 +228,9 @@ document.addEventListener('click',e=>{if(e.target.closest('[data-ui="hub-connect
 
 
 /* ---------- 批量管理：多选删除与回收站一键清理 ---------- */
+document.addEventListener('keydown',e=>{
+ if(e.code==='Space'&&e.target.matches?.('input[data-map-pick],input[data-map-pick-all],input[data-trash-pick],input[data-trash-pick-all]'))e.stopPropagation();
+},true);
 function paintTrashSelection(){
  const n=mapTrashSelection.size;
  const count=document.getElementById('trash-picked-count');if(count)count.textContent='已选 '+n+' 张';

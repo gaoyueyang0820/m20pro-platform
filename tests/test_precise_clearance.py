@@ -7,6 +7,7 @@ from unittest.mock import patch,Mock
 from m20.autonomy_core import Explorer,clearance,disk,cell
 from m20.autonomy_runtime import Autonomy
 from m20.local_trajectory import LocalSurface
+from m20.robot_geometry import CLEARANCE_HALF_LENGTH, CLEARANCE_HALF_WIDTH
 import test_platform as platform_cases
 
 
@@ -79,6 +80,21 @@ class PreciseClearanceTests(unittest.TestCase):
         with patch('m20.autonomy_runtime.time.sleep'):a._check_observation()
         self.assertEqual(a.scan_timing['preflight_direction'],'left')
 
+
+    def test_preflight_accepts_oblique_only_passage(self):
+        hx, hy = CLEARANCE_HALF_LENGTH, CLEARANCE_HALF_WIDTH
+        points = [(hx+.38,0.),(-hx-.175,0.),(0.,hy+.175),(0.,-hy-.175)]
+        first, second = scene(points, stamp=1.), scene(points, stamp=2.)
+        for f, side, yaw in [(.1,0.,0.),(-.1,0.,0.),(0.,.1,0.),(0.,-.1,0.),(0.,0.,.1),(0.,0.,-.1)]:
+            self.assertFalse(clearance(first,f,yaw,side=side)[0])
+        a = Autonomy.__new__(Autonomy)
+        a.app = Obj(demo=False, mapping=False)
+        a.scan_timing = {}
+        a.scan_now = Mock(side_effect=[first, second])
+        with patch('m20.autonomy_runtime.time.sleep'):
+            a._check_observation()
+        self.assertEqual(a.scan_timing['preflight_direction'], 'diagonal')
+        self.assertEqual(a.scan_now.call_count, 2)
 
 
 class AutonomyDirectionPreflightTests(unittest.TestCase):

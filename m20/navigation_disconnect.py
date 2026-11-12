@@ -41,22 +41,27 @@ def specification(request):
     if not isinstance(policy,str) or policy not in POLICIES:raise ValueError('未知断联策略')
     points=request.get('points')
     if not isinstance(points,list) or not 1<=len(points)<=200:raise ValueError('路线需要1到200个点')
-    map_=request.get('map',{})
+    map_=mission_map(request.get('map',{}))
+    timeout=finite(request.get('disconnect_timeout_s',5))
+    duration=finite(request.get('max_duration_s',1800))
+    if not 3<=timeout<=30 or not 30<=duration<=3600:raise ValueError('断联等待或任务时限超出范围')
+    return dict(id=identity(request.get('id')),owner=identity(request.get('owner')),
+                disconnect_policy=policy,disconnect_timeout_s=timeout,max_duration_s=duration,
+                map=map_,points=[point(p) for p in points])
+
+
+def mission_map(map_):
     if not isinstance(map_,dict):raise ValueError('地图身份格式无效')
     if (not isinstance(map_.get('name'),str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}',map_['name'])
             or type(map_.get('grid_id')) is not int or not 0<=map_['grid_id']<=999
             or any(not re.fullmatch('[a-f0-9]{64}',str(map_.get(k,''))) for k in ('sha256','yaml_sha256'))):
         raise ValueError('需要已核对的活动地图、栅格和指纹')
-    timeout=finite(request.get('disconnect_timeout_s',5))
-    duration=finite(request.get('max_duration_s',1800))
-    if not 3<=timeout<=30 or not 30<=duration<=3600:raise ValueError('断联等待或任务时限超出范围')
     resolution=finite(map_.get('resolution'));origin=map_.get('origin')
     if not 0<resolution<=1 or not isinstance(origin,list) or len(origin)!=3:raise ValueError('地图分辨率或原点无效')
     origin=[finite(v) for v in origin]
     if abs(origin[2])>1e-6:raise ValueError('暂不支持带原点旋转的地图')
-    return dict(id=identity(request.get('id')),owner=identity(request.get('owner')),
-                disconnect_policy=policy,disconnect_timeout_s=timeout,max_duration_s=duration,
-                map=dict(name=map_['name'],grid_id=map_['grid_id'],sha256=map_['sha256'],yaml_sha256=map_['yaml_sha256'],resolution=resolution,origin=origin),points=[point(p) for p in points])
+    return dict(name=map_['name'],grid_id=map_['grid_id'],sha256=map_['sha256'],
+                yaml_sha256=map_['yaml_sha256'],resolution=resolution,origin=origin)
 
 
 class MeasuredTrace:

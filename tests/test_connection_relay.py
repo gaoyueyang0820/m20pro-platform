@@ -46,4 +46,14 @@ class RelayTests(unittest.TestCase):
     def test_sdk_and_training_do_not_accidentally_relay(self):
         for role in ['sdk','train']:
             with self.assertRaises(ValueError):target_config(role,dict(host='robot',via_aos=True))
+    def test_nos_resident_address_is_explicit_and_remains_independent_from_wifi(self):
+        self.assertNotIn('resident_aos_ip',self.c.public()['targets']['nos'])
+        self.c.save(dict(targets=dict(nos=dict(resident_aos_ip='10.21.31.103'))))
+        self.c.save(dict(aos_ip='172.20.10.9'))
+        self.assertEqual(self.c.public()['targets']['nos']['resident_aos_ip'],'10.21.31.103')
+        for value in ['127.0.0.1','0.0.0.0','8.8.8.8','robot']:
+            with self.assertRaisesRegex(ValueError,'NOS 驻机导航'):
+                self.c.save(dict(targets=dict(nos=dict(resident_aos_ip=value))))
+        self.c.save(dict(targets=dict(nos=dict(resident_aos_ip=''))))
+        self.assertNotIn('resident_aos_ip',self.c.public()['targets']['nos'])
 if __name__=='__main__':unittest.main()

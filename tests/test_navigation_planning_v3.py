@@ -4,6 +4,7 @@ These are planar simulations; no robot sockets or locomotion physics.
 """
 import math,sys,unittest
 from pathlib import Path
+from unittest.mock import patch
 import numpy as np
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from m20.navigation_planner import GridPlanner
@@ -38,6 +39,16 @@ def validate_sampled_body(p,result):
 
 
 class GlobalPlanningV3Tests(unittest.TestCase):
+    def test_straight_certificate_reuses_clear_map_until_obstacle_changes_it(self):
+        p=planner(image_room())
+        with patch.object(p,'_rectangle_free',wraps=p._rectangle_free) as checked:
+            self.assertTrue(p.straight_clearance([2.,4.,0.],.6,.02))
+            self.assertTrue(p.straight_clearance([2.1,4.,0.],.6,.02))
+            self.assertEqual(checked.call_count,1)
+            p.update_obstacles([(2.7,4.)])
+            self.assertFalse(p.straight_clearance([2.1,4.,0.],.6,.02))
+            self.assertGreater(checked.call_count,1)
+
     def test_open_space_uses_arbitrary_angle_and_exact_endpoints(self):
         p=planner(image_room());start=[2.01,2.02,.1];goal=[9.73,6.81]
         r=p.plan(start,goal)
@@ -92,7 +103,7 @@ class GlobalPlanningV3Tests(unittest.TestCase):
         reroute=p.plan(start,goal,budget=5)
         self.assertGreater(reroute['length_m'],direct['length_m']);self.assertTrue(validate_sampled_body(p,reroute))
         same=p.update_obstacles(block);self.assertEqual(same['changed_cells'],0)
-        self.assertTrue(p._potential_cache)
+        self.assertEqual(same['grid_revision'],change['grid_revision'])
         p.update_obstacles([]);r=p.plan(start,goal)
         self.assertEqual(r['diagnostics']['method'],'continuous_direct')
         self.assertFalse(p.free[0,0])

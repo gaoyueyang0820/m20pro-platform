@@ -12,7 +12,9 @@ function fixture(){
 test('unchanged polling preserves editor DOM and button focus',()=>{
  const f=fixture();f.c.paintMapLibrary();f.c.ui['map-library-edit']();const count=f.writes;
  f.c.paintMapLibrary();f.c.paintMapLibrary();assert.equal(f.writes,count);
- assert.match(f.list.innerHTML,/data-map-delete="base" disabled/);
+ assert.match(f.list.innerHTML,/data-map-pick="base"\s+disabled/);
+ assert.match(f.list.innerHTML,/data-map-pick="candidate"/);
+ assert.doesNotMatch(f.list.innerHTML,/data-map-delete/);
 });
 test('active map comes first and search matches labels or stable identities',()=>{
  const f=fixture();assert.equal(f.c.visibleLibraryMaps()[0].name,'base');

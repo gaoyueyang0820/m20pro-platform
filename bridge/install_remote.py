@@ -15,7 +15,7 @@ import sys
 import zipfile
 
 ROOT_SETUP = r'''
-import base64,io,json,os,pwd,re,shlex,subprocess,sys,zipfile
+import base64,io,ipaddress,json,os,pwd,re,shlex,subprocess,sys,zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path,PurePosixPath
 r=json.load(sys.stdin)
@@ -46,7 +46,14 @@ for role,target in r['targets'].items():
  if role not in ['nos','gos','sdk','train']:raise ValueError('Invalid role')
  token=target['token']
  if not re.fullmatch(r'[A-Za-z0-9_-]{20,100}',token):raise ValueError('Invalid token')
- envfile=envdir/(role+'.env');envfile.write_text('M20_BRIDGE_TOKEN='+token+'\nM20_DATA_DIR=/var/lib/m20-platform\n');envfile.chmod(0o600)
+ env='M20_BRIDGE_TOKEN='+token+'\nM20_DATA_DIR=/var/lib/m20-platform\n'
+ onboard={'gos':('gos_aos_ip','M20_GOS'),'nos':('resident_aos_ip','M20_RESIDENT')}.get(role)
+ if onboard and target.get(onboard[0]):
+  address=ipaddress.IPv4Address(target[onboard[0]])
+  if not address.is_private or address.is_loopback or address.is_unspecified:raise ValueError('Invalid onboard AOS address')
+  prefix=onboard[1]
+  env+=prefix+'_NAVIGATION=1\n'+prefix+'_AOS_IP='+str(address)+'\n'
+ envfile=envdir/(role+'.env');envfile.write_text(env);envfile.chmod(0o600)
  py=target['python'];setups=list(target.get('ros_setup',[]))
  if role=='sdk' and target.get('sdk_workspace'):
   overlay=target['sdk_workspace'].rstrip('/')+'/install/setup.bash'
@@ -91,6 +98,9 @@ for role,target in r['targets'].items():
   Path('/etc/systemd/system/'+reader).write_text(reader_unit)
   # The host agent now needs no ROS environment and never edits vendor DDS XML.
   sources=[]
+ vision_python=root/'vision-runtime/python'
+ if role=='gos' and (vision_python/'onnxruntime/__init__.py').is_file():
+  sources.append('export PYTHONPATH='+shlex.quote(str(vision_python)))
  command='; '.join(sources+['export ROS_DOMAIN_ID='+str(target.get('domain_id',0)),'exec '+shlex.join(argv)])
  # % is a systemd specifier, including inside shell quotes.
  shell=('/bin/bash -lc '+shlex.quote(command)).replace('%','%%')

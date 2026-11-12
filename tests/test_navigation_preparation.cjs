@@ -24,6 +24,7 @@ function fixture(){
  for(const name of ['pause-nav','cancel-nav','nav-takeover','clear-points','nav-goal-mode','nav-route-mode','goal-replan','hub-connect','hub-demo'])ctx.ui[name]=async()=>{calls.push({path:'handler:'+name});};
  let responder=path=>{
   if(path==='/api/platform')return structuredClone(ctx.S);
+  if(path==='/api/nav/resident/capabilities')return {available:true,policies:['stop','finish','return','finish_return']};
   if(path==='/api/maps/localize-auto')return {job_id:'recover'};
   if(path.startsWith('/api/operations')){ctx.S.pose.Location=0;return {jobs:{status:'completed',result:{localized:true}}};}
   if(path==='/api/nav/plan')return {plan_id:'NEW',path:[],goal:{yaw:0},points:[],length_m:2};
@@ -49,7 +50,7 @@ test('painting, polling and selection do not initialize localization or start na
 test('explicit goal start recovers then uses a newly planned id, never the old preview',async()=>{
  const f=fixture();await f.ctx.ui['go-goal']();
  assert.deepEqual(paths(f),['/api/platform','/api/maps/localize-auto','/api/operations?id=recover','/api/platform','/api/nav/plan','/api/nav/goal']);
- assert.equal(f.calls.at(-1).data.plan_id,'NEW');assert.equal(f.calls.at(-1).data.engine,'platform');
+ assert.equal(f.calls.at(-1).data.plan_id,'NEW');assert.equal(f.calls.at(-1).data.engine,'gos');
  assert.equal(f.ctx.window.M20NavigationPreparation.state,null);assert.equal(f.ctx.goalSubmitting,false);
 });
 test('ready or demo navigation still replans but does not start a localization operation',async()=>{
@@ -61,16 +62,34 @@ test('saved patrol start from tasks recovers before submitting the unchanged rou
  assert.deepEqual(paths(f),['/api/platform','/api/maps/localize-auto','/api/operations?id=recover','/api/platform','/api/nav/plan','/api/nav/start']);
  assert.equal(f.calls.at(-1).data.id,'route');assert.equal(f.calls.at(-1).data.nav_mode,1);assert.equal(f.calls.at(-1).data.speed,1);
 });
-test('edited route start binds the original user intent before any asynchronous save',async()=>{
- const f=fixture();f.ctx.navIntent='route';await f.ctx.ui['start-nav']();
- assert.deepEqual(paths(f),['/api/platform','/api/maps/localize-auto','/api/operations?id=recover','/api/platform','/api/nav/plan','/api/route/save','/api/nav/start']);
- assert.equal(f.calls.at(-1).data.id,'saved-route');assert.equal(f.ctx.routeId,'saved-route');
+test('saved patrol passes its configured native engine and return policy',async()=>{
+ const f=fixture(),route=f.ctx.S.routes[0];
+ route.options={...route.options,engine:'native',disconnect_policy:'return',explicit_execution:true};
+ await f.ctx.runRoute(route.id);
+ assert.equal(f.calls.find(call=>call.path==='/api/nav/plan').data.engine,'native');
+ const request=f.calls.find(call=>call.path==='/api/nav/start').data;
+ assert.equal(request.engine,'native');assert.equal(request.disconnect_policy,'return');assert.equal(request.explicit_execution,true);
 });
-test('late edited-route save after cancellation cannot create a new start intent',async()=>{
+test('unavailable native continuation leaves the draft or saved route intact before preparation',async()=>{
+ for(const draft of [false,true]){
+  const f=fixture(),options={nav_mode:1,speed:1,engine:'native',disconnect_policy:'return',explicit_execution:true};
+  f.ctx.S.routes[0].options=options;f.ctx.routeOptions=()=>options;f.ctx.navIntent='route';
+  f.setResponder((path,data,requestOptions,previous)=>path==='/api/nav/resident/capabilities'?{available:false}:previous(path));
+  await assert.rejects(draft?f.ctx.ui['start-nav']():f.ctx.runRoute('route'),/启用 NOS 驻机导航/);
+  assert.deepEqual(paths(f),['/api/platform','/api/nav/resident/capabilities']);
+  assert.equal(f.ctx.S.routes[0].options.disconnect_policy,'return');
+ }
+});
+test('edited route starts as a temporary patrol without saving it',async()=>{
+ const f=fixture();f.ctx.navIntent='route';await f.ctx.ui['start-nav']();
+ assert.deepEqual(paths(f),['/api/platform','/api/maps/localize-auto','/api/operations?id=recover','/api/platform','/api/nav/plan','/api/nav/start']);
+ assert.equal(f.calls.at(-1).data.route.points[0].x,2);assert.equal(f.ctx.routeId,null);
+});
+test('late temporary route preview after cancellation cannot create a start intent',async()=>{
  const f=fixture(),gate=deferred();f.ctx.navIntent='route';f.ctx.S.pose.Location=0;
- f.setResponder((path,data,options,previous)=>path==='/api/route/save'?gate.promise:previous(path));
+ f.setResponder((path,data,options,previous)=>path==='/api/nav/plan'?gate.promise:previous(path));
  const work=f.ctx.ui['start-nav']();await tick();await f.ctx.ui['cancel-nav']();
- gate.resolve({route:{id:'late-save'}});await work;assert.equal(started(f),false);assert.equal(f.ctx.routeId,null);
+ gate.resolve({plan_id:'late-plan'});await work;assert.equal(started(f),false);assert.equal(f.ctx.routeId,null);
 });
 test('failed or unconfirmed localization never plans or starts',async()=>{
  for(const job of [{status:'failed',error:'环境仍不能唯一匹配'},{status:'completed',result:{localized:false}}]){
@@ -239,18 +258,18 @@ test('automatic localization recovery cannot late-start after cancellation',asyn
  const work=f.ctx.ui['go-goal']();await tick();await f.ctx.ui['cancel-nav']();gate.resolve({jobs:{status:'completed',result:{localized:true}}});await work;
  assert.equal(plans,1);assert.equal(started(f),false);
 });
-test('ordinary patrol defaults to the platform executor and sends its reusable first plan',async()=>{
+test('ordinary patrol previews its first leg and executes on GOS',async()=>{
  const f=fixture();f.ctx.S.pose.Location=0;f.ctx.S.routes[0].points=[{x:2,y:1,yaw:1,type:0},{x:3,y:2,yaw:2,type:1}];
  await f.ctx.runRoute('route');const plan=f.calls.find(r=>r.path==='/api/nav/plan'),start=f.calls.find(r=>r.path==='/api/nav/start');
- assert.equal(plan.data.engine,'platform');assert.equal(plan.data.yaw,null);
- assert.equal(start.data.engine,'platform');assert.equal(start.data.plan_id,'NEW');
+ assert.equal(plan.data.engine,'gos');assert.equal(plan.data.yaw,null);
+ assert.equal(start.data.engine,'gos');assert.equal(start.data.plan_id,undefined);
 });
-test('explicit native and docking patrols do not pretend to execute a platform-cleaned preview',async()=>{
+test('a legacy native patrol uses GOS unless it contains a charging waypoint',async()=>{
  for(const docking of [false,true]){
   const f=fixture();f.ctx.S.pose.Location=0;f.ctx.S.routes[0].options.engine=docking?'platform':'native';
   if(docking)f.ctx.S.routes[0].points.push({x:3,y:2,type:3});
-  await f.ctx.runRoute('route');assert.equal(f.calls.some(r=>r.path==='/api/nav/plan'),false);
-  assert.equal(f.calls.at(-1).data.engine,'native');assert.equal(f.calls.at(-1).data.plan_id,undefined);
+  await f.ctx.runRoute('route');assert.equal(f.calls.some(r=>r.path==='/api/nav/plan'),!docking);
+  assert.equal(f.calls.at(-1).data.engine,docking?'native':'gos');assert.equal(f.calls.at(-1).data.plan_id,undefined);
  }
 });
 test('stored patrol keeps its first waypoint while same-map sync canonicalizes the cache id',async()=>{
@@ -264,7 +283,7 @@ test('stored patrol keeps its first waypoint while same-map sync canonicalizes t
  await f.ctx.runRoute('route');const first=f.calls.find(r=>r.path==='/api/nav/plan');
  assert.equal(first.data.map_id,'canonical');assert.equal(first.data.x,2);assert.equal(first.data.y,1);
  assert.equal(f.calls.at(-1).path,'/api/nav/start');assert.equal(f.calls.at(-1).data.id,'route');
- assert.equal(f.calls.at(-1).data.engine,'platform');
+ assert.equal(f.calls.at(-1).data.engine,'gos');
 });
 test('cancel during same-map automatic sync cannot adopt a late map or start navigation',async()=>{
  const f=fixture();f.ctx.S.pose.Location=0;f.ctx.S.maps[0].verified_for_robot=false;f.ctx.navigationMapReady=()=>false;f.ctx.navigationMapCanPrepare=()=>true;let complete;
@@ -276,5 +295,5 @@ test('a recoverable patrol planning conflict is handled before the final route s
  const f=fixture();f.ctx.S.pose.Location=0;let planned=0;
  f.setResponder((path,data,options,previous)=>{if(path==='/api/nav/plan'&&planned++===0)throw Object.assign(Error('map overlap'),{navigation:{recommended_action:'relocalize_and_replan'}});return previous(path);});
  await f.ctx.runRoute('route');assert.equal(planned,2);assert.equal(f.calls.filter(r=>r.path==='/api/maps/localize-auto').length,1);
- assert.equal(f.calls.at(-1).path,'/api/nav/start');assert.equal(f.calls.at(-1).data.engine,'platform');
+ assert.equal(f.calls.at(-1).path,'/api/nav/start');assert.equal(f.calls.at(-1).data.engine,'gos');
 });

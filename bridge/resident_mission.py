@@ -14,7 +14,8 @@ import secrets
 import threading
 import time
 from contextlib import contextmanager
-from m20.navigation_disconnect import ResidentMission,specification,TERMINAL
+from m20.map_catalog import read_json
+from m20.navigation_disconnect import ResidentMission,identity,mission_map,specification,TERMINAL
 
 
 def atomic(path,value):
@@ -44,6 +45,71 @@ def activation_lock(maps):
         fcntl.flock(handle,fcntl.LOCK_EX)
         try:yield
         finally:fcntl.flock(handle,fcntl.LOCK_UN)
+
+
+MAP_LEASE_FILE = 'gos-navigation-map.json'
+MAP_LEASE_SECONDS = 20.
+
+
+def held_map_lease(data, now=None):
+    row = read_json(Path(data)/MAP_LEASE_FILE, {})
+    remaining = row.get('expires', 0) - (time.monotonic() if now is None else now)
+    return row if 0 < remaining <= MAP_LEASE_SECONDS else None
+
+
+def navigation_grid_identity(grid, raw):
+    return mission_map(dict(name=grid['robot_map_name'], grid_id=grid['grid_id'],
+                            resolution=grid['resolution'], origin=grid['origin'],
+                            sha256=hashlib.sha256(raw).hexdigest(), yaml_sha256=grid['yaml_sha256']))
+
+
+def grid_file_signature(maps, expected):
+    folder, pgm, yaml = maps.grid_files('active', expected['grid_id'])
+    if folder.name != expected['name']:
+        raise ValueError('NOS 活动地图已变化')
+    return [[stat.st_ino, stat.st_size, stat.st_mtime_ns] for stat in (pgm.stat(), yaml.stat())]
+
+
+def manage_map_lease(maps, request):
+    """Hold the NOS map while the GOS controls motion. Renewal checks files only."""
+    import base64
+    key = dict(id=identity(request.get('id')), owner=identity(request.get('owner')))
+    action = request.get('action')
+    path = maps.data/MAP_LEASE_FILE
+    with activation_lock(maps):
+        now = time.monotonic()
+        row = held_map_lease(maps.data, now)
+        owned = row is not None and all(row[k] == value for k, value in key.items())
+        if action == 'release':
+            if owned:
+                path.unlink(missing_ok=True)
+            return dict(ok=True, released=owned)
+        if action == 'pulse' or action == 'claim' and owned:
+            if not owned or row['files'] != grid_file_signature(maps, row['map']):
+                raise ValueError('GOS 任务的活动地图授权已变化')
+            if action == 'claim' and mission_map(request.get('map')) != row['map']:
+                raise ValueError('重复申请使用的地图已变化')
+            if row['expires'] - now < 12:
+                row['expires'] = now + MAP_LEASE_SECONDS
+                atomic(path, row)
+            return dict(ok=True)
+        if action != 'claim':
+            raise ValueError('未知地图使用操作')
+        if row:
+            raise ValueError('其他 GOS 任务正在使用活动地图')
+        resident = read_json(maps.data/'resident-mission.json', {})
+        if resident.get('job') and resident.get('phase') not in ('idle', 'completed', 'cancelled', 'failed'):
+            raise ValueError('NOS 驻机任务仍在运行或等待停车')
+        if maps.dispatch('/maps/build/status', {}).get('in_progress', True):
+            raise ValueError('请先结束建图并保存结果')
+        expected = mission_map(request.get('map'))
+        signature = grid_file_signature(maps, expected)
+        grid = maps.grid('active', expected['grid_id'])
+        raw = base64.b64decode(grid['pgm'], validate=True)
+        if navigation_grid_identity(grid, raw) != expected or signature != grid_file_signature(maps, expected):
+            raise ValueError('活动地图内容已变化，请重新同步')
+        atomic(path, dict(key, map=expected, files=signature, expires=time.monotonic()+MAP_LEASE_SECONDS))
+        return dict(ok=True)
 
 
 class NativeMissionDriver:
@@ -215,6 +281,7 @@ class ResidentMissionService:
         atomic(self.path,row)
     def dispatch(self,path,request=None):
         if path=='/missions/capabilities':return dict(ok=True,protocol=1,available=self.enabled,
+            map_lease_protocol=1,
             policies=['stop','finish','return','finish_return'],execution='onboard_native',
             message='驻机导航已配置' if self.enabled else '需要统一加载驻机导航并核对机内AOS连接')
         if path=='/missions/status':return dict(ok=True,mission=self.engine.public())
@@ -238,6 +305,8 @@ class ResidentMissionService:
                     return dict(ok=True,mission=self.engine.start(req,{},self.clock()))
                 if self.engine.phase not in TERMINAL:raise ValueError('驻机任务仍在执行或停止尚未确认')
             with activation_lock(self.maps):
+                if held_map_lease(self.path.parent):
+                    raise ValueError('GOS 任务仍在使用活动地图')
                 try:
                     self.driver.open(spec['map'])
                     frame=self.driver.frame()

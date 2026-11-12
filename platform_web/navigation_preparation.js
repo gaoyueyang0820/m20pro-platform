@@ -7,7 +7,12 @@
  const cancelled=()=>Object.assign(new Error('导航准备已取消'),{navigationPreparationCancelled:true});
  const connection=s=>JSON.stringify([s?.mode,s?.ip,s?.server_instance,s?.connection_generation]);
  const routeKey=id=>{const r=S.routes?.find(r=>r.id===id);return r?JSON.stringify([r.id,r.map_id,r.points,r.options]):'';};
- const currentOptions=id=>{const r=S.routes?.find(r=>r.id===id),options=$('#nav-mode')&&r?.id===routeId?routeOptions():r?.options||{nav_mode:1,speed:1,gait:'flat',manner:0,pause_at_point:false};return {...options,engine:r?.points?.some(p=>Number(p.type)===3)?'native':options.engine||'platform'};};
+ const routeExecutor=(rows,options)=>rows.some(p=>p.type===3)?'native':options.engine||'gos';
+ const currentOptions=id=>{
+  const route=S.routes?.find(r=>r.id===id);
+  const options=route?.options||{};
+  return options.explicit_execution===true?options:{...options,engine:'gos',disconnect_policy:'stop'};
+ };
  const routeSignature=id=>{const r=S.routes?.find(r=>r.id===id);return r?JSON.stringify([r.id,r.points,r.options]):'';};
  const selection=()=>JSON.stringify([mapId,routeId,typeof mapLibrary==='undefined'?null:mapLibrary.active]);
  const draftKey=()=>JSON.stringify([mapId,points,routeOptions(),$('#route-name')?.value||'新巡检路线']);
@@ -47,31 +52,16 @@
   if(d?.classification==='unsupported_floor')return '前方路况暂不清楚，请停稳等待';
   return fallback;
  }
- const previousRouteOptions=routeOptions;
- routeOptions=function(){const options=previousRouteOptions();return {...options,engine:points.some(p=>Number(p.type)===3)?'native':$('#route-navigation-engine')?.value||S.routes?.find(r=>r.id===routeId)?.options?.engine||'platform'};};
- function paintRouteEngine(){
-  if(page!=='navigation'||navIntent!=='route')return;
-  let select=$('#route-navigation-engine');const anchor=$('#nav-mode');
-  if(!select&&anchor){
-   const field=anchor.closest?.('.field')||anchor.parentNode;
-   const label=document.createElement('label');label.className='field';label.innerHTML='<span>寻路方式</span><select id="route-navigation-engine"><option value="platform">平台寻路 · 自动绕行</option><option value="native">原厂导航</option></select>';
-   field.parentNode.insertBefore(label,field);select=$('#route-navigation-engine');
-   if(select){select.value=S.routes?.find(r=>r.id===routeId)?.options?.engine||'platform';select.addEventListener('change',()=>{cancel('寻路方式已变化，请重新开始');paintRouteEngine();});}
-  }
-  if(select){
-   const docking=points.some(p=>Number(p.type)===3);
-   if(docking&&!select.dataset.chargeEngine){select.dataset.chargeEngine=select.value;select.value='native';}
-   else if(!docking&&select.dataset.chargeEngine){select.value=select.dataset.chargeEngine;delete select.dataset.chargeEngine;}
-   select.disabled=docking||!!pending||['running','cancelling'].includes(S.nav?.status);select.title=docking?'回充路线使用机器人内置导航':'';
-   for(const id of ['nav-mode','nav-speed','nav-gait','nav-manner']){const field=$('#'+id)?.closest?.('.field');if(field)field.hidden=select.value==='platform';}
-  }
+ function paintDockingOptions(){
+  const settings=$('#dock-route-settings');
+  if(settings)settings.hidden=!points.some(p=>p.type===3)&&$('#route-navigation-engine')?.value!=='native';
  }
  function paint(){
   const busy=!!pending,goal=page==='navigation'&&navIntent==='goal',needs=S?.mode==='live'&&S.pose?.Location!==0;
   const syncing=typeof navSyncBusy!=='undefined'&&navSyncBusy;
   const diagnostic=typeof goalPlanDiagnostics==='undefined'?null:goalPlanDiagnostics;
   const mapMismatch=diagnostic?.recommended_action==='sync_active_map'&&diagnostic.active_map&&diagnostic.selected_map!==diagnostic.active_map;
-  paintRouteEngine();
+  paintDockingOptions();
   const button=$('[data-ui="go-goal"]');
   if(button&&goal){
    if(!supported(S)){button.disabled=true;button.textContent='请先加载新版导航服务';button.title='后台尚不支持可撤销的导航准备，请加载新版平台后刷新';}
@@ -157,7 +147,7 @@
  function goalRequest(){
   if(!goalKey())throw Error('请先选择目标');
   const manual=$('#goal-yaw-mode')?.value==='manual',degrees=+($('#goal-yaw')?.value||0);
-  const goal={map_id:mapId,x:points[0].x,y:points[0].y,yaw:manual?(((degrees+180)%360+360)%360-180)*Math.PI/180:null,engine:pointNavigationEngine};
+  const goal={map_id:mapId,x:points[0].x,y:points[0].y,yaw:manual?(((degrees+180)%360+360)%360-180)*Math.PI/180:null,engine:S.mode==='demo'?'native':'gos'};
   if(![goal.x,goal.y].every(Number.isFinite)||goal.yaw!==null&&!Number.isFinite(goal.yaw))throw Error('目标坐标或朝向无效');
   return goal;
  }
@@ -256,38 +246,58 @@
    goalPlan={...plan,received:performance.now()};goalPlanKey=t.key;goalPlanError='';if(typeof goalPlanDiagnostics!=='undefined')goalPlanDiagnostics=null;paintGoalPlan();drawMap();
    status(t,'已重新规划，正在开始导航','submitting');guard(t);
    t.startDispatched=true;
-   const result=await request(t,'/api/nav/goal',{...t.clientRequest,map_id:goal.map_id,plan_id:plan.plan_id,engine:goal.engine},20000);
+   const result=await request(t,'/api/nav/goal',{...t.clientRequest,map_id:goal.map_id,plan_id:plan.plan_id,engine:goal.engine,disconnect_policy:'stop'},20000);
    notice='';toast(result.message||'导航已提交');await fetchState();return result;
   });
  };
+ async function checkFirstWaypoint(t,target,rows,engine){
+  if(rows.some(p=>p.type===3))return;
+  const first=rows[0],goal={map_id:target.map_id,x:first.x,y:first.y,yaw:rows.length>1?null:first.yaw??null,engine,explicit_execution:true};
+  const plan=await findRoute(t,goal);
+  if(!plan.plan_id)throw Error('暂时无法前往第一个航点');
+  target.map_id=goal.map_id;
+  return plan.plan_id;
+ }
+ async function checkDisconnectPolicy(t,engine,policy='stop'){
+  if(policy==='stop')return;
+  if(engine!=='native')throw Error('续行或返程需要原厂导航');
+  if(S.mode!=='live')throw Error('请连接已启用 NOS 驻机导航的机器人后执行此路线');
+  const capabilities=await request(t,'/api/nav/resident/capabilities');
+  if(capabilities.available!==true)throw Error('请在连接中心启用 NOS 驻机导航后执行此路线');
+  if(!capabilities.policies?.includes(policy))throw Error('当前 NOS 服务尚不支持所选断联策略');
+ }
  runRoute=async function(id){
   if(pending)return;
   const key=routeKey(id);if(!key)throw Error('路线不存在，请重新选择');
   const route=S.routes.find(r=>r.id===id),options={...currentOptions(id)},t=begin('route',{id,key,optionsKey:JSON.stringify(options),skipLocalization:true,mapAliases:[route.map_id],routeSignature:routeSignature(id)});if(!t)return;
   return finish(t,async()=>{
-   const map={map_id:route.map_id};await ensureNavigationMap(t,map);await localize(t);let plan=null;
-   if(options.engine==='platform'){const first=route.points[0];plan=await findRoute(t,{map_id:map.map_id,x:first.x,y:first.y,yaw:route.points.length>1?null:first.yaw??null,engine:'platform'});if(!plan.plan_id)throw Error('暂时无法前往第一个航点');}
+   const map={map_id:route.map_id},engine=routeExecutor(route.points,options);
+   await checkDisconnectPolicy(t,engine,options.disconnect_policy);
+   await ensureNavigationMap(t,map);await localize(t);const plan=await checkFirstWaypoint(t,map,route.points,engine);
    status(t,'正在开始巡检','submitting');guard(t);
    t.startDispatched=true;
-   const result=await request(t,'/api/nav/start',{...t.clientRequest,id,...options,...(plan?{plan_id:plan.plan_id}:{})},20000);
+   const result=await request(t,'/api/nav/start',{...t.clientRequest,id,...options,engine,
+    disconnect_policy:options.disconnect_policy||'stop',explicit_execution:true,...(engine==='platform'?{plan_id:plan}:{})},20000);
    notice='';toast(result.message||'路线已提交，等待导航反馈');await fetchState();return result;
   });
  };
  ui['start-nav']=async()=>{
   if(pending)return;
   if(page!=='navigation'||navIntent!=='route'||!points.length||!canPrepareMap())throw Error('请在当前地图设置巡检点位');
-  const options={...routeOptions()},draft={id:routeId,map_id:mapId,name:$('#route-name')?.value||'新巡检路线',points:JSON.parse(JSON.stringify(points)),options};
+  if(['#route-navigation-engine','#disconnect-policy'].some(id=>$(id)?.selectedOptions?.[0]?.disabled)){
+   throw Error($('#disconnect-policy-help')?.textContent||'请调整当前路线的寻路方式或断联策略');
+  }
+  const options={...routeOptions()},draft={map_id:mapId,name:$('#route-name')?.value||'临时巡检',points:JSON.parse(JSON.stringify(points)),options};
   const t=begin('draft',{key:draftKey(),skipLocalization:true});if(!t)return;
   return finish(t,async()=>{
-   await ensureNavigationMap(t,draft);await localize(t);let plan=null;
-   if(options.engine==='platform'){const first=draft.points[0],goal={map_id:draft.map_id,x:first.x,y:first.y,yaw:draft.points.length>1?null:first.yaw??null,engine:'platform'};plan=await findRoute(t,goal);draft.map_id=goal.map_id;if(!plan.plan_id)throw Error('暂时无法前往第一个航点');}
-   status(t,'正在保存巡检路线','saving');
-   const saved=await request(t,'/api/route/save',draft);
-   if(!saved.route?.id)throw Error('路线保存未返回有效编号');
+   const engine=routeExecutor(draft.points,options);
+   await checkDisconnectPolicy(t,engine,options.disconnect_policy);
+   await ensureNavigationMap(t,draft);await localize(t);const plan=await checkFirstWaypoint(t,draft,draft.points,engine);
    status(t,'正在开始巡检','submitting');guard(t);
    t.startDispatched=true;
-   const result=await request(t,'/api/nav/start',{...t.clientRequest,id:saved.route.id,...options,...(plan?{plan_id:plan.plan_id}:{})},20000);
-   routeId=saved.route.id;t.selection=selection();notice='';toast(result.message||'路线已提交，等待导航反馈');await fetchState();return result;
+   const result=await request(t,'/api/nav/start',{...t.clientRequest,route:draft,...options,engine,
+    disconnect_policy:options.disconnect_policy||'stop',explicit_execution:true,...(engine==='platform'?{plan_id:plan}:{})},20000);
+   notice='';toast(result.message||'临时巡检已提交，等待导航反馈');await fetchState();return result;
   });
  };
  const previousPaint=paintGoalPlan;paintGoalPlan=function(...args){previousPaint.apply(this,args);paint();};
@@ -296,7 +306,7 @@
  for(const key of ['pause-nav','cancel-nav','resume-nav','nav-takeover','motion-stop','clear-points','nav-goal-mode','nav-route-mode','goal-replan','hub-connect','hub-demo']){
   const previous=ui[key];if(previous)ui[key]=function(...args){cancel();return previous.apply(this,args);};
  }
- const changed=e=>{if(e.target.matches('#map-select,#goal-yaw,#goal-yaw-mode,#point-navigation-engine,#route-navigation-engine,#nav-mode,#nav-speed,#nav-gait,#nav-manner,#route-arrival,#route-name,[data-point]'))cancel('目标、地图或路线设置已变化，已取消后续自动开始');};
+ const changed=e=>{if(e.target.matches('#map-select,#goal-yaw,#goal-yaw-mode,#route-navigation-engine,#disconnect-policy,#nav-mode,#nav-speed,#nav-gait,#nav-manner,#route-arrival,#route-name,[data-point],[data-station-point],#task-collection-settings input,#task-collection-settings select')){cancel('目标、地图或路线设置已变化，已取消后续自动开始');paintDockingOptions();}};
  document.addEventListener('input',changed,true);document.addEventListener('change',changed,true);
  document.addEventListener('click',e=>{if(e.target.closest('[data-action],[data-route-load],[data-route-delete],[data-connection-role],[data-service-role]'))cancel();},true);
  document.addEventListener('pointerdown',e=>{if(e.target.closest('#nav-map,[data-velocity]'))cancel('已手动操作，已取消后续自动开始');},true);

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GOS host health and optional read-only ROS2 data; never starts a controller."""
+"""GOS health, perception and explicitly leased navigation."""
 import argparse
 import os
 from pathlib import Path
@@ -18,6 +18,7 @@ class GOSAgent:
         self.data=Path(data or os.environ.get('M20_DATA_DIR',Path.home()/'.local/share/m20-platform/data'))
         self.data.mkdir(parents=True,exist_ok=True)
         self.sensors=None;self.lock=threading.RLock()
+        self.navigation=None
 
     def ros(self):
         with self.lock:
@@ -30,6 +31,12 @@ class GOSAgent:
             return self.sensors
 
     def dispatch(self,path,req):
+        if path.startswith('/missions/'):
+            with self.lock:
+                if self.navigation is None:
+                    from bridge.gos_navigation import GOSNavigation
+                    self.navigation = GOSNavigation(self.data, self.ros)
+            return self.navigation.dispatch(path, req)
         if path=='/status':
             disk=shutil.disk_usage(self.data)
             try:load=list(os.getloadavg())
@@ -47,6 +54,7 @@ class GOSAgent:
         raise ValueError('GOS 只读代理不支持此操作')
 
     def close(self):
+        if self.navigation:self.navigation.close()
         if self.sensors:self.sensors.close()
 
 

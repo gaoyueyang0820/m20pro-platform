@@ -31,6 +31,59 @@ class PlatformRouteDispatchTests(unittest.TestCase):
         submitted=a.point_navigation.start.call_args.args[0]
         self.assertEqual(submitted['id'],route['id']);self.assertEqual(submitted['points'],route['points'])
         self.assertIsNone(self.planning[0]['yaw']);self.assertEqual(self.planning[0]['x'],-5.)
+    def test_operator_patrol_uses_gos_with_legacy_route_settings(self):
+        a,route=self.prepare();a.demo=False
+        route['options']=dict(engine='native',disconnect_policy='finish',pause_at_point=True)
+        a._start_gos_route=Mock(return_value={'executor':'gos'})
+        reply=a.navigation_request('start',dict(id=route['id'],engine='platform'))
+        self.assertEqual(reply['executor'],'gos')
+        self.assertEqual(a._start_gos_route.call_args.args[0]['disconnect_policy'],'stop')
+        self.assertEqual(a._start_gos_route.call_args.kwargs['route'],route)
+        a.plan_goal.assert_not_called()
+    def test_operator_dock_route_uses_charging_workflow(self):
+        a,route=self.prepare();a.demo=False;route['points'][-1]['type']=3
+        a._start_gos_route=Mock();a.start_route=Mock(return_value={'ok':True})
+        a.navigation_request('start',dict(id=route['id'],engine='gos'))
+        a._start_gos_route.assert_not_called()
+        self.assertEqual(a.start_route.call_args.kwargs['goal'],route)
+    def test_explicit_native_continuation_checks_service_before_dispatch(self):
+        a,route=self.prepare();a.demo=False
+        route['options']=dict(explicit_execution=True,engine='native',disconnect_policy='return',nav_mode=1)
+        a.start_route=Mock(return_value={'ok':True})
+        a.resident_navigation.capabilities=Mock(return_value={'available':False,'policies':['return']})
+        with self.assertRaisesRegex(ValueError,'NOS 驻机导航服务尚未就绪'):
+            a.navigation_request('start',dict(id=route['id']))
+        a.start_route.assert_not_called()
+        a.resident_navigation.capabilities.return_value={'available':True,'policies':['stop']}
+        with self.assertRaisesRegex(ValueError,'尚不支持所选断联策略'):
+            a.navigation_request('start',dict(id=route['id']))
+        a.start_route.assert_not_called()
+        a.resident_navigation.capabilities.return_value={'available':True,'policies':['return']}
+        a.navigation_request('start',dict(id=route['id']))
+        submitted=a.start_route.call_args.args[0]
+        self.assertEqual((submitted['engine'],submitted['disconnect_policy']),('native','return'))
+    def test_native_continuation_route_can_be_saved_offline(self):
+        a,route=self.prepare()
+        a.resident_navigation.capabilities=Mock(side_effect=AssertionError('save must not probe robot'))
+        options=dict(explicit_execution=True,engine='native',disconnect_policy='finish_return')
+        result=a.route_save(dict(route,options=options))['route']
+        self.assertEqual(result['options']['engine'],'native')
+        self.assertEqual(result['options']['disconnect_policy'],'finish_return')
+        self.assertEqual(a.store.value['routes'],[result])
+        a.resident_navigation.capabilities.assert_not_called()
+    def test_operator_patrol_honors_explicit_platform_engine(self):
+        a,route=self.prepare();a.demo=False
+        a._start_platform_route=Mock(return_value={'ok':True})
+        a.navigation_request('start',dict(id=route['id'],engine='platform',explicit_execution=True))
+        self.assertEqual(a._start_platform_route.call_args.kwargs['route'],route)
+    def test_draft_dispatch_leaves_saved_routes_untouched(self):
+        a,route=self.prepare()
+        a.start_route=Mock(return_value={'ok':True})
+        a.navigation_request('start',dict(route=dict(route,name='临时巡检')))
+        temporary=a.start_route.call_args.kwargs['goal']
+        self.assertTrue(temporary['temporary'])
+        self.assertNotEqual(temporary['id'],route['id'])
+        self.assertEqual(a.store.value['routes'],[route])
     def test_current_matching_preview_is_reused_but_wrong_preview_is_replanned(self):
         a,route=self.prepare();query=dict(map_id='demo',x=-5.,y=-3.,yaw=None,engine='platform');plan=a.plan_goal(query)
         a.start_route(dict(id=route['id'],engine='platform',plan_id=plan['plan_id']))

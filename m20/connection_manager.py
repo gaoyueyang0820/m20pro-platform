@@ -69,6 +69,16 @@ def target_config(role,value,old=None):
         follow=value.get('follows_aos',old.get('follows_aos'))
         if follow is not None and not isinstance(follow,bool):raise ValueError('SDK 地址跟随选项无效')
         result['follows_aos']=follow
+    if role in ('gos','nos'):
+        address_key='gos_aos_ip' if role=='gos' else 'resident_aos_ip'
+        address=str(value.get(address_key,old.get(address_key,''))).strip()
+        if address:
+            error='GOS 导航需要机内 AOS 地址' if role=='gos' else 'NOS 驻机导航需要机内 AOS IPv4 地址'
+            try:ip=ipaddress.IPv4Address(address)
+            except ipaddress.AddressValueError:raise ValueError(error) from None
+            if not ip.is_private or ip.is_loopback or ip.is_unspecified:
+                raise ValueError(error)
+            result[address_key]=str(ip)
     if (name,user,result['ssh_port'])!=(old.get('host'),old.get('user'),old.get('ssh_port')):result['deployed']=False
     return result
 
@@ -322,18 +332,32 @@ class Connections:
         return response
 
     @staticmethod
-    def bundle():
+    def bundle(include_patrol_model=False, *, vision_runtime=None):
         names=[p.relative_to(ROOT).as_posix() for p in sorted((ROOT/'m20').glob('*.py'))]
         names+=['native/sensing.cpp','tools/build_native_sensing.py',
                 'bridge/http_agent.py','bridge/sensor_agent.py','bridge/sensor_client.py',
-                'bridge/map_service.py','bridge/mapping_job.py','bridge/ros_sensors.py',
+                'bridge/map_service.py','bridge/mapping_job.py','bridge/ros_sensors.py','bridge/gos_navigation.py',
+                'bridge/task_collection.py',
                 'bridge/nos_agent.py','bridge/gos_agent.py','bridge/resident_mission.py',
                 'bridge/map_refinement_agent.py','bridge/sdk_bridge.py','bridge/sdk_agent.py',
                 'bridge/training_agent.py','bridge/root_actions.py',
                 'platform_web/assets/model/M20.urdf','reference/errors.md']
+        if include_patrol_model and vision_runtime is None:
+            model='models/yolo12n.pt'
+            if (ROOT/model).is_file():
+                names.append(model)
         buffer=io.BytesIO()
         with zipfile.ZipFile(buffer,'w',zipfile.ZIP_DEFLATED) as z:
             for name in names:z.write(ROOT/name,name)
+            if vision_runtime is not None:
+                assets=Path(vision_runtime)
+                packages=assets/'arm64-python'
+                if not (assets/'yolo12n.onnx').is_file() or not (packages/'onnxruntime/__init__.py').is_file():
+                    raise ValueError('GOS 离线识别运行包不完整')
+                z.write(assets/'yolo12n.onnx','models/yolo12n.onnx')
+                for path in sorted(packages.rglob('*')):
+                    if path.is_file() and not path.is_symlink() and '__pycache__' not in path.parts:
+                        z.write(path,'vision-runtime/python/'+path.relative_to(packages).as_posix())
         return base64.b64encode(buffer.getvalue()).decode()
 
     def deploy(self,req,progress):
@@ -360,7 +384,12 @@ class Connections:
         self.pair(role,progress)
         progress(.1,'正在安装连接服务')
         program=(ROOT/'bridge/install_remote.py').read_text()
-        payload=dict(role=role,target=target,user=target['user'],public_key=public,bundle=self.bundle(),
+        bundle_path=self.root/'gos-vision-runtime'
+        if role=='gos' and target.get('gos_aos_ip'):
+            bundle=self.bundle(include_patrol_model=True,vision_runtime=bundle_path if bundle_path.is_dir() else None)
+        else:
+            bundle=self.bundle()
+        payload=dict(role=role,target=target,user=target['user'],public_key=public,bundle=bundle,
                      authorize_key=True,administrative_setup=True,admin_password=req.get('admin_password') or req.get('password',''),calibration=req.get('calibration'))
         result=self.remote(role,program,payload,req.get('password'),timeout=240,expected=deployment)
         with self.lock:

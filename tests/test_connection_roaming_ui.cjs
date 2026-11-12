@@ -10,3 +10,21 @@ test('same-host SDK fields track the single AOS endpoint',()=>{
 test('independent SDK fields stay editable and retain their address',()=>{
  const {c,nodes}=setup();nodes['#sdk-follows-aos'].checked=false;c.paintSDKAddressFollow();assert.equal(nodes['#sdk-host'].value,'old');assert.equal(nodes['#sdk-host'].disabled,false);
 });
+
+test('saving an untouched form preserves the relay selected by background recovery',async()=>{
+ const relay={checked:false,defaultChecked:false};
+ const c=vm.createContext({
+  $:id=>id==='#gos-via-aos'?relay:id.endsWith('-via-aos')?undefined:{value:''},
+  connections:{targets:{gos:{via_aos:true}}},loadConnections:async()=>{},paintAOSChannel(){}
+ });
+ vm.runInContext(source.slice(source.indexOf('readConnections=function(){'),source.indexOf('function paintSDKAddressFollow()')),c);
+ vm.runInContext(source.slice(source.indexOf('const previousConnectionsLoad='),source.indexOf("ui['gos-status']=")),c);
+ assert.equal(Object.hasOwn(c.readConnections().targets.gos,'via_aos'),false);
+ await c.loadConnections();
+ assert.equal(relay.checked,true);
+ assert.equal(relay.defaultChecked,true);
+ relay.checked=false;
+ await c.loadConnections();
+ assert.equal(c.readConnections().targets.gos.via_aos,false);
+ assert.equal(relay.defaultChecked,true);
+});

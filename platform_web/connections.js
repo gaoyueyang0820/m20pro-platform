@@ -19,6 +19,8 @@ function hostTargetCard(role){
  let extra='';
  if(role==='nos'||role==='gos')extra=`<label class="check"><input id="${role}-via-aos" type="checkbox" ${t.via_aos?'checked':''}><span>经 AOS 中转连接（无需临时路由）</span></label><p class="help">默认地址：${role==='nos'?'10.21.31.106':'10.21.31.104'}，以本机配置为准。</p>`;
  if(role==='train')extra=field('rl_training 工程路径',role+'-train-root',t.train_root);
+ if(role==='gos')extra=field('机内 AOS 地址（GOS 导航）','gos-onboard-aos',t.gos_aos_ip||'');
+ if(role==='nos')extra+=`<details class="advanced" ${t.resident_aos_ip?'open':''}><summary>原厂导航断联策略（可选）</summary>${field('机内 AOS 地址','nos-resident-aos',t.resident_aos_ip||'')}<p class="help">填写已核对的机内地址，再更新 NOS 服务。留空并更新服务可关闭驻机续行与返程。</p></details>`;
  if(role==='sdk')extra=`<label class="check"><input id="sdk-follows-aos" type="checkbox" ${(t.follows_aos??!t.host)?'checked':''}><span>SDK 与 AOS 同机，地址和账号自动跟随</span></label><p class="help">换网只需修改 AOS 地址。SDK 在其他电脑运行时取消此选项。</p>`+field('厂商 SDK 工作区',role+'-workspace',t.sdk_workspace||'/home/'+t.user+'/M20_sdk_deploy')+`<label class="check"><input id="sdk-admin" type="checkbox" ${t.sdk_admin?'checked':''}><span>使用管理员权限运行 SDK 服务</span></label>`;
  const environment=`${field('ROS / DDS domain ID',role+'-domain',t.domain_id??0,'number')}<div class="field"><label for="${role}-setup">运行环境脚本 / 每行一个绝对路径</label><textarea id="${role}-setup" rows="3">${esc(t.ros_setup.join('\n')||defaults[role])}</textarea></div><details open class="advanced"><summary>高级连接参数</summary><div class="form-grid section-gap">${field('本地端口',role+'-local-port',t.local_port,'number')}${field('服务端口',role+'-remote-port',t.remote_port,'number')}</div></details>`;
  const controls=`<div class="connection-state" id="target-${role}-state">${esc(t.state.message)}</div><div class="button-row"><button type="button" class="btn primary small" data-setup-role="${role}" ${t.deployed?'data-setup-update="true"':''}>${t.deployed?'更新服务':'首次安装'}</button><button type="button" class="btn small" data-connection-role="${role}" data-connection-operation="connect">连接</button><button type="button" class="btn small" data-connection-role="${role}" data-connection-operation="disconnect">断开</button></div><div class="button-row section-gap">${['start','restart','stop','logs'].map((op,i)=>`<button type="button" class="btn small" data-service-role="${role}" data-service-operation="${op}">${['启动服务','重启服务','停止服务','查看日志'][i]}</button>`).join('')}${role==='gos'?btn('查询 GOS 主机','gos-status','small'):''}<button type="button" class="btn small" data-pair-role="${role}">重新配对</button></div>`;
@@ -38,10 +40,15 @@ connectionCenter=function(){
 readConnections=function(){
  const targets={};
  for(const role of ['nos','gos','sdk','train']){
-  targets[role]={via_aos:!!$('#'+role+'-via-aos')?.checked,host:$('#'+role+'-host').value.trim(),user:$('#'+role+'-user').value.trim(),enabled:$('#target-'+role+'-enabled').checked,
+  targets[role]={host:$('#'+role+'-host').value.trim(),user:$('#'+role+'-user').value.trim(),enabled:$('#target-'+role+'-enabled').checked,
    ssh_port:+$('#'+role+'-ssh-port').value,python:$('#'+role+'-python').value.trim(),local_port:+$('#'+role+'-local-port').value,remote_port:+$('#'+role+'-remote-port').value,
    ros_setup:$('#'+role+'-setup').value.split('\n').map(v=>v.trim()).filter(Boolean),train_root:$('#'+role+'-train-root')?.value||'',sdk_workspace:$('#'+role+'-workspace')?.value||'',
    sdk_admin:role==='sdk'&&$('#sdk-admin').checked,domain_id:+$('#'+role+'-domain').value};
+  // The backend can switch internal hosts to the relay while this form is open.
+  const relay=$('#'+role+'-via-aos');
+  if(relay&&relay.checked!==relay.defaultChecked)targets[role].via_aos=relay.checked;
+  if(role==='gos'&&$('#gos-onboard-aos'))targets[role].gos_aos_ip=$('#gos-onboard-aos').value.trim();
+  if(role==='nos'&&$('#nos-resident-aos'))targets[role].resident_aos_ip=$('#nos-resident-aos').value.trim();
  }
  targets.sdk.follows_aos=!!$('#sdk-follows-aos')?.checked;
  return {aos_ssh_user:$('#hub-aos-ssh-user').value.trim(),aos_ssh_port:+$('#hub-aos-ssh-port').value,aos_ip:$('#hub-aos-ip').value.trim(),aos_port:+$('#hub-aos-port').value,auto_connect:$('#hub-auto-connect').checked,sensor_source:$('#hub-sensor-source').value,targets};
@@ -59,7 +66,17 @@ document.addEventListener('input',e=>{if(['quick-aos-ip','hub-aos-ip','hub-aos-s
 
 function paintAOSChannel(){text('aos-channel-state',S?.mode==='demo'?'演示环境 / 未连接实机':S?.online?'收到有效 UDP 状态':'等待有效 UDP 状态');text('machine-aos-state',S?.mode==='demo'?'演示':S?.online?'协议在线':'等待回包');for(const role of ['nos','gos'])text('machine-'+role+'-state',connectionNames[connections?.targets[role]?.state.status]||'未连接');}
 const previousConnectionsLoad=loadConnections;
-loadConnections=async function(paint=false){await previousConnectionsLoad(paint);paintAOSChannel();};
+loadConnections=async function(paint=false){
+ await previousConnectionsLoad(paint);
+ for(const role of ['nos','gos']){
+  const relay=$('#'+role+'-via-aos'),saved=connections?.targets[role]?.via_aos;
+  if(relay&&typeof saved==='boolean'&&(relay.checked===relay.defaultChecked||relay.checked===saved)){
+   relay.defaultChecked=saved;
+   relay.checked=saved;
+  }
+ }
+ paintAOSChannel();
+};
 ui['gos-status']=async()=>{const r=await api('/api/gos/status');modal('GOS 主机状态',`<pre class="pre">${esc(JSON.stringify(r,null,2))}</pre>`);};
 let connectionDiscoveryBusy=false,connectionDiscoveryGeneration=0;
 ui['discover-robot']=async()=>{
