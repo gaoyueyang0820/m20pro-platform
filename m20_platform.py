@@ -292,10 +292,9 @@ class Platform:
             elif self.nav['status'] == 'running':
                 self._cancel_navigation('operator_stop','cancelled')
             elif self.nav['status']=='cancelling':
-                # Reuse the outstanding receipt; repeated Stop must not keep
-                # changing the sequence we wait for or restore a paused task.
                 self.nav['after_cancel']='cancelled'
-                if self.cancel_request is None:self._cancel_navigation('operator_stop','cancelled',retry=True)
+                if self.cancel_request is None or self.nav.get('phase') in ('cancel_unconfirmed','cancel_rejected'):
+                    self._cancel_navigation('operator_stop','cancelled',retry=True)
             else:
                 external=self._reported_active_navigation()
                 if external:
@@ -1092,22 +1091,18 @@ class Platform:
                 issue('wake_sent_at',lambda:self.link.command(1101,6,items,'导航准备唤醒'))
             return
         if prep['wake_sent_at'] is not None and not newer(rec,'wake_sent_at'):return
-        if age_of(loc)>2 or loc.get('items',{}).get('Location')!=0:
-            fail('定位未就绪，已取消导航准备');return
-        try:
-            for key in ['PosX','PosY','Yaw']:number(loc['items'].get(key))
-        except ValueError:
-            fail('定位坐标无效，已取消导航准备');return
+        if not self._native_location_ready(loc):
+            nav['message']='等待新鲜地图定位后下发航点';return
+        motion=self.link.record(1002,4);v=motion.get('items',{}).get('MotionStatus',{})
+        still=age_of(motion)<.5 and all(abs(v.get(k,999))<limit for k,limit in [('LinearX',.08),('LinearY',.08),('OmegaZ',.12)])
+        if not still:
+            nav['message']='等待机器人停稳后确认导航模式和步态';return
         if b.get('ControlUsageMode')!=1:
             nav['message']='正在切换导航模式，等待机器人确认'
             if prep['mode_sent_at'] is None:
                 issue('mode_sent_at',lambda:self.link.set_mode(1))
             return
         if prep['mode_sent_at'] is not None and not newer(rec,'mode_sent_at'):return
-        motion=self.link.record(1002,4);v=motion.get('items',{}).get('MotionStatus',{})
-        still=age_of(motion)<.5 and all(abs(v.get(k,999))<limit for k,limit in [('LinearX',.08),('LinearY',.08),('OmegaZ',.12)])
-        if not still:
-            nav['message']='等待机器人停稳后确认导航步态';return
         if b.get('Gait')!=nav['options']['Gait']:
             nav['message']='正在切换导航步态，等待机器人确认'
             if prep['gait_sent_at'] is None:
@@ -1234,6 +1229,8 @@ class Platform:
             self.nav.update(after_cancel='paused',stop_reason='waypoint_pause')
             if not self.link:self.nav['status']='paused'
             self.add_log('navigation','航点已完成，自动暂停；点击继续前往下一点')
+        elif self.link and self.basic.get('ControlUsageMode')!=1:
+            self._begin_navigation_preparation()
         else:
             self._send_point()
 
@@ -1302,12 +1299,57 @@ class Platform:
             self.link.set_velocity(0,0,0)
             self.cancel_request=None
             self.nav.update(status='cancelling',phase='stopping',execution_state='stopping',after_cancel=after,
-                            cancel_monotonic=time.monotonic(),stop_reason=reason)
+                            cancel_at=time.time(),cancel_monotonic=time.monotonic(),stop_reason=reason)
+            self.nav.pop('cancel_confirmed',None)
             try:self.cancel_request=self.link.command(1004,1,{},'停止导航：'+reason)
             except (ValueError,OSError):
                 message='停止请求发送失败，确认前不会启动新任务'
                 self.nav.update(phase='cancel_unconfirmed',execution_state='stop_unconfirmed',error=message,cancel_error=message)
         else:self.nav.update(status=after,phase=after,execution_state=after,stop_reason=reason)
+
+    def _tick_native_stop(self):
+        nav=self.nav
+        request=self.cancel_request
+        ack=self.link.record(1004,1)
+        matching_ack=(request and ack.get('seq')==request['seq'] and
+                      self._navigation_record_after(ack,request['sent_at'],request.get('sent_monotonic')))
+        native=self.link.record(1007,1);items=native.get('items',{})
+        motion=self.link.record(1002,4);values=motion.get('items',{}).get('MotionStatus',{})
+        cancel_at=nav.get('cancel_at',request['sent_at'] if request else time.time())
+        cancel_mono=nav.get('cancel_monotonic')
+        stopped=(age_of(native)<2 and items.get('Status') in (0,4)
+                 and items.get('Value') in (None,0,nav.get('value'))
+                 and self._navigation_record_after(native,cancel_at,cancel_mono)
+                 and age_of(motion)<.5 and self._navigation_record_after(motion,cancel_at,cancel_mono)
+                 and all(isinstance(values.get(k),(int,float)) and abs(values[k])<limit
+                         for k,limit in [('LinearX',.08),('LinearY',.08),('OmegaZ',.12)]))
+        if (matching_ack and ack['items'].get('ErrorCode')==0) or stopped:
+            status=nav.get('after_cancel','cancelled')
+            nav.update(status=status,phase=status,execution_state=status,cancel_confirmed=True)
+            self.cancel_request=None
+            cancel_error=nav.pop('cancel_error',None)
+            if cancel_error and nav.get('error')==cancel_error:nav.pop('error',None)
+            if nav.get('failure_error'):nav['error']=nav.pop('failure_error')
+            if stopped and not matching_ack:nav['message']='已核对原厂导航空闲和停稳反馈'
+            if nav.get('stop_reason')=='no_progress':
+                nav.update(message='持续无进展，停车已确认',warning='任务已暂停；可重新规划或手动调整位置')
+            if status=='completed':self._record_route_completion()
+        elif matching_ack:
+            message='机器人未接受停止请求，请重试或核对现场'
+            nav.update(phase='cancel_rejected',execution_state='stop_unconfirmed',error=message,cancel_error=message)
+        elif time.monotonic()-nav.get('cancel_monotonic',time.monotonic())>5:
+            message='停车状态待核对，可重试结束任务或手动接管'
+            nav.update(phase='cancel_unconfirmed',execution_state='stop_unconfirmed',error=message,cancel_error=message)
+
+    @staticmethod
+    def _native_location_ready(record):
+        pose=record.get('items',{})
+        if age_of(record)>2 or pose.get('Location')!=0:return False
+        try:
+            for key in ('PosX','PosY','Yaw'):number(pose.get(key))
+        except ValueError:
+            return False
+        return True
 
     def _tick_navigation_progress(self,pose,now):
         """A task ACK/Running bit is not evidence of actual motion."""
@@ -1434,72 +1476,80 @@ class Platform:
                     self.events.insert(0,dict(f, at=now))
             self.previous_faults=keys
             del self.events[200:]
-            if self.nav['status'] == 'cancelling' and self.nav.get('engine')!='platform' and self.cancel_request:
-                ack=self.link.record(1004,1)
-                if self._navigation_record_after(ack,self.cancel_request['sent_at'],self.cancel_request.get('sent_monotonic')) and ack.get('seq')==self.cancel_request['seq']:
-                    if ack['items'].get('ErrorCode')==0:
-                        self.nav['status']=self.nav.get('after_cancel','cancelled')
-                        self.nav.update(phase=self.nav['status'],execution_state=self.nav['status'],cancel_confirmed=True)
-                        cancel_error=self.nav.pop('cancel_error',None)
-                        if cancel_error and self.nav.get('error')==cancel_error:self.nav.pop('error',None)
-                        if self.nav.get('failure_error'):self.nav['error']=self.nav.pop('failure_error')
-                        if self.nav.get('stop_reason')=='no_progress':
-                            self.nav.update(message='持续无进展，停止请求已确认',warning='任务已暂停；核对停稳后可重新规划或手动调整位置')
-                        if self.nav['status']=='completed':self._record_route_completion()
-                    else:
-                        message='机器人未接受停止请求，请核对现场；新任务暂不可启动'
-                        self.nav.update(phase='cancel_rejected',execution_state='stop_unconfirmed',error=message,cancel_error=message)
-                elif time.monotonic()-self.nav.get('cancel_monotonic',time.monotonic())>5:
-                    message='停止请求未获确认，请核对现场；确认前不会启动新任务'
-                    self.nav.update(phase='cancel_unconfirmed',execution_state='stop_unconfirmed',error=message,cancel_error=message)
+            if self.nav['status']=='cancelling' and self.nav.get('engine')!='platform':
+                self._tick_native_stop()
             if self.nav['status']=='running' and self.nav.get('engine')!='platform' and self.nav.get('phase')=='preparing':
                 self._tick_navigation_preparation(now)
             if self.nav['status']=='running' and self.nav.get('phase')=='validating' and time.monotonic()>self.nav['validation_deadline']:
                 self.nav.update(status='failed',phase='validation_timeout',execution_state='failed',error='导航地图核对超时，未下发目标')
             if self.nav['status']=='running' and self.nav.get('engine')!='platform' and self.nav.get('phase','running')=='running':
-                loc=self.link.record(1007,2)
-                pose=loc.get('items',{})
-                native=self.link.record(1007,1);ni=native.get('items',{})
-                charging_goal=self.nav['route']['points'][self.nav['index']]['type']==3
-                docking=charging_goal and ni.get('Value')==self.nav['value'] and ni.get('Status') in [4,5] and age_of(native)<2
-                if time.monotonic()-self.nav.get('sent_monotonic',time.monotonic())>180 or age_of(loc)>3 or pose.get('Location')!=0:
-                    self.nav['error']='导航超时或定位状态过期/丢失，正在确认停止'
-                    self._cancel_navigation('localization_or_timeout','failed')
-                elif age_of(b)>2 or self.basic.get('HES')!=0 or not docking and (self.basic.get('MotionState')!=17 or self.basic.get('Sleep')):
-                    self.nav['warning']='机器人控制状态未就绪，正在确认停止导航'
-                    self._cancel_navigation('control_state_changed','paused')
-                elif self._navigation_record_after(native,self.nav['sent_at'],self.nav.get('sent_monotonic')) and ni.get('Value')==self.nav['value'] and ni.get('Status')==255:
-                    self.nav['warning']='机器人端已暂停导航，正在确认停止；不会自动下发下一点'
-                    self._cancel_navigation('robot_paused','paused')
-                elif self._navigation_record_after(native,self.nav['sent_at'],self.nav.get('sent_monotonic')) and ni.get('Value')==self.nav['value'] and ni.get('Status')==0 and ni.get('ErrorCode')==0x2302:
-                    self.nav.update(status='cancelled',phase='cancelled',execution_state='cancelled',stop_reason='robot_cancelled',message='机器人端已取消本次任务，不会继续下发下一点')
-                else:
-                    # Preserve short-lived terminal reports even if a later poll
-                    # has already overwritten the latest record for this message.
-                    records=[r for r in receipts if (r.get('type'),r.get('command')) in [(1003,1),(1007,1)]]
-                    records += [self.link.record(1003,1),self.link.record(1007,1)]
-                    for rec in sorted(records,key=lambda r:r.get('monotonic_at',r.get('at',0))):
-                        it=rec.get('items',{})
-                        if not self._navigation_record_after(rec,self.nav['sent_at'],self.nav.get('sent_monotonic')) or it.get('Value')!=self.nav['value']:
-                            continue
-                        code=it.get('ErrorCode',0);status=it.get('Status')
-                        # This firmware returns to idle after NavWorker finishes:
-                        # Status=0 + 0x2300 is a completed point, not just an ACK.
-                        completed=(code==0x2300 and status in [0,4]) or (status==4 and code==0)
-                        if completed:
-                            self.nav['last_completion']=dict(value=self.nav['value'],status=status,error_code=code,at=rec['at'])
-                            self.add_log('navigation','航点 %s/%s 已完成（Value=%s，Status=%s，0x%04X）'%(
-                                self.nav['index']+1,len(self.nav['route']['points']),self.nav['value'],status,code))
-                            self._advance()
-                            break
-                        elif code not in [0,12,0x2300]:
-                            self.nav.update(status='failed',phase='failed',execution_state='failed',error=explain_error(code)['title'])
-                            break
-                    if self.nav['status']=='running':
-                        if self.basic.get('ControlUsageMode')!=1:
-                            self.nav['warning']='已离开导航控制模式，正在确认停止'
-                            self._cancel_navigation('control_state_changed','paused')
-                        else:self._tick_navigation_progress(pose,now)
+                self._tick_native_patrol(b,receipts,now)
+
+    def _tick_native_patrol(self,basic_record,receipts,now):
+        nav=self.nav
+        value=nav['value']
+        loc=self.link.record(1007,2);pose=loc.get('items',{})
+        native=self.link.record(1007,1);reported=native.get('items',{})
+        matches=(age_of(native)<2 and reported.get('Value')==value
+                 and self._navigation_record_after(native,nav['sent_at'],nav.get('sent_monotonic')))
+        vendor_active=matches and reported.get('Status') in (1,2,3,4,5)
+        charging_goal=nav['route']['points'][nav['index']]['type']==3
+        docking=charging_goal and matches and reported.get('Status') in (4,5)
+        if age_of(basic_record)>2 or self.basic.get('HES')!=0 or not docking and (self.basic.get('MotionState')!=17 or self.basic.get('Sleep')):
+            nav['warning']='机器人控制状态未就绪，正在确认停止导航'
+            self._cancel_navigation('control_state_changed','paused')
+            return
+        if matches and reported.get('Status')==255:
+            nav['warning']='机器人端已暂停导航，正在确认停止'
+            self._cancel_navigation('robot_paused','paused')
+            return
+        if matches and reported.get('Status')==0 and reported.get('ErrorCode')==0x2302:
+            nav.update(status='cancelled',phase='cancelled',execution_state='cancelled',
+                       stop_reason='robot_cancelled',message='机器人端已取消本次任务')
+            return
+        # The original controller's matched terminal report decides arrival.
+        # Desktop localization is used for progress feedback while it is fresh.
+        records=[r for r in receipts if (r.get('type'),r.get('command')) in [(1003,1),(1007,1)]]
+        records += [self.link.record(1003,1),native]
+        for record in sorted(records,key=lambda r:r.get('monotonic_at',r.get('at',0))):
+            items=record.get('items',{})
+            if not self._navigation_record_after(record,nav['sent_at'],nav.get('sent_monotonic')) or items.get('Value')!=value:
+                continue
+            code=items.get('ErrorCode',0);status=items.get('Status')
+            if (code==0x2300 and status in (0,4)) or (status==4 and code==0):
+                nav['last_completion']=dict(value=value,status=status,error_code=code,at=record['at'])
+                self.add_log('navigation','航点 %s/%s 已完成（Value=%s，Status=%s，0x%04X）'%(
+                    nav['index']+1,len(nav['route']['points']),value,status,code))
+                self._advance()
+                return
+            if code not in (0,12,0x2300):
+                nav.update(status='failed',phase='failed',execution_state='failed',error=explain_error(code)['title'])
+                return
+        if self.basic.get('ControlUsageMode')!=1:
+            nav['warning']='已离开导航控制模式，正在确认停止'
+            self._cancel_navigation('control_state_changed','paused')
+            return
+        mono=time.monotonic()
+        if mono-nav.get('sent_monotonic',mono)>180 and not vendor_active:
+            nav['error']='未确认原厂导航仍在执行，正在确认停车'
+            self._cancel_navigation('navigation_timeout','paused')
+            return
+        if not self._native_location_ready(loc):
+            nav['desktop_localization_missing']=True
+            if vendor_active:
+                nav.pop('missing_execution_since',None)
+                nav.update(execution_state='vendor_running',message='原厂继续执行，等待电脑定位回报')
+            elif mono-nav.setdefault('missing_execution_since',mono)>=3:
+                nav['warning']='暂未收到定位或当前原厂任务状态，正在确认停车'
+                self._cancel_navigation('navigation_feedback_unavailable','paused')
+            else:
+                nav.update(execution_state='waiting_feedback',message='等待当前原厂任务和定位回报')
+            return
+        nav.pop('missing_execution_since',None)
+        if nav.pop('desktop_localization_missing',False):
+            nav.update(progress_position=None,progress_heading_error=None,progress_monotonic=mono,
+                       execution_state='awaiting_progress',message='电脑定位回报已恢复')
+        self._tick_navigation_progress(pose,now)
 
     def bridge_poll(self):
         while not self.done:
