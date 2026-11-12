@@ -46,6 +46,23 @@ class PlatformRouteDispatchTests(unittest.TestCase):
         a.navigation_request('start',dict(id=route['id'],engine='gos'))
         a._start_gos_route.assert_not_called()
         self.assertEqual(a.start_route.call_args.kwargs['goal'],route)
+    def test_explicit_native_continuation_checks_service_before_dispatch(self):
+        a,route=self.prepare();a.demo=False
+        route['options']=dict(explicit_execution=True,engine='native',disconnect_policy='return',nav_mode=1)
+        a.start_route=Mock(return_value={'ok':True})
+        a.resident_navigation.capabilities=Mock(return_value={'available':False,'policies':['return']})
+        with self.assertRaisesRegex(ValueError,'NOS 驻机导航服务尚未就绪'):
+            a.navigation_request('start',dict(id=route['id']))
+        a.start_route.assert_not_called()
+        a.resident_navigation.capabilities.return_value={'available':True,'policies':['return']}
+        a.navigation_request('start',dict(id=route['id']))
+        submitted=a.start_route.call_args.args[0]
+        self.assertEqual((submitted['engine'],submitted['disconnect_policy']),('native','return'))
+    def test_operator_patrol_honors_explicit_platform_engine(self):
+        a,route=self.prepare();a.demo=False
+        a._start_platform_route=Mock(return_value={'ok':True})
+        a.navigation_request('start',dict(id=route['id'],engine='platform',explicit_execution=True))
+        self.assertEqual(a._start_platform_route.call_args.kwargs['route'],route)
     def test_current_matching_preview_is_reused_but_wrong_preview_is_replanned(self):
         a,route=self.prepare();query=dict(map_id='demo',x=-5.,y=-3.,yaw=None,engine='platform');plan=a.plan_goal(query)
         a.start_route(dict(id=route['id'],engine='platform',plan_id=plan['plan_id']))

@@ -61,6 +61,14 @@ test('saved patrol start from tasks recovers before submitting the unchanged rou
  assert.deepEqual(paths(f),['/api/platform','/api/maps/localize-auto','/api/operations?id=recover','/api/platform','/api/nav/plan','/api/nav/start']);
  assert.equal(f.calls.at(-1).data.id,'route');assert.equal(f.calls.at(-1).data.nav_mode,1);assert.equal(f.calls.at(-1).data.speed,1);
 });
+test('saved patrol passes its configured native engine and return policy',async()=>{
+ const f=fixture(),route=f.ctx.S.routes[0];
+ route.options={...route.options,engine:'native',disconnect_policy:'return',explicit_execution:true};
+ await f.ctx.runRoute(route.id);
+ assert.equal(f.calls.find(call=>call.path==='/api/nav/plan').data.engine,'native');
+ const request=f.calls.find(call=>call.path==='/api/nav/start').data;
+ assert.equal(request.engine,'native');assert.equal(request.disconnect_policy,'return');assert.equal(request.explicit_execution,true);
+});
 test('edited route start binds the original user intent before any asynchronous save',async()=>{
  const f=fixture();f.ctx.navIntent='route';await f.ctx.ui['start-nav']();
  assert.deepEqual(paths(f),['/api/platform','/api/maps/localize-auto','/api/operations?id=recover','/api/platform','/api/nav/plan','/api/route/save','/api/nav/start']);
