@@ -5,6 +5,8 @@ const iotScope=()=>[S?.server_instance,S?.connection_generation,S?.mode].join('|
 const iotName=id=>iotNames.get(String(id))||'设备 '+id;
 const iotSummary=ids=>ids.length?ids.map(iotName).join('、'):'尚未选择设备';
 const iotSelected=input=>JSON.parse(input.value);
+const iotError=error=>error.message==='GOS 只读代理不支持此操作'
+ ?'当前 GOS 服务未包含物联网功能，请在连接中心更新 GOS 服务。':error.message;
 
 function iotAccessCard(title,primaryAction){
  const hint=S?.mode==='demo'
@@ -67,7 +69,7 @@ function openIoTDevices(picker=null){
    root.querySelector('[data-iot-page="-1"]').disabled=page<=1;
    root.querySelector('[data-iot-page="1"]').disabled=!result.has_more;
    status.textContent=result.devices.length?`第 ${page} 页${picker?' · 已选 '+selection.size+' 台设备':''}`:'没有符合条件的设备';
-  }catch(error){if(active()&&turn===generation)status.textContent=error.message;}
+  }catch(error){if(active()&&turn===generation)status.textContent=iotError(error);}
  }
  root.addEventListener('change',event=>{
   const id=event.target.dataset.iotDevice;if(!id)return;
@@ -123,7 +125,7 @@ ui['iot-settings']=async()=>{
   status.textContent=saved.configured?'已配置，原凭据可留空沿用。':'填写平台地址和账号或令牌，验证通过后保存。';
   form.querySelector('fieldset').disabled=false;
  }catch(error){
-  if(active())status.textContent=error.message;
+  if(active())status.textContent=iotError(error);
   return;
  }
  let challenge=null;

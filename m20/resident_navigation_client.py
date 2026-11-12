@@ -74,7 +74,7 @@ class ResidentNavigationClient:
         source=app.store.path.parent/'maps'/(map_['id']+'.pgm')
         fingerprint=hashlib.sha256(source.read_bytes()).hexdigest()
         self.nav=nav;nav.update(engine='resident',executor=executor,phase='resident_starting',execution_state='preparing',
-                               message='正在向 GOS 提交导航任务' if executor=='gos' else '正在向机器人提交完整任务与断联策略')
+                               message='正在检查 GOS 定位与地图' if executor=='gos' else '正在向机器人提交完整任务与断联策略')
         self.ref=dict(id=uuid.uuid4().hex,owner=uuid.uuid4().hex,robot_identity=identity,
                       policy=policy,map=map_,fingerprint=fingerprint,
                       submitted=False,cancel=False,terminal=False,last={},executor=executor,
@@ -125,6 +125,14 @@ class ResidentNavigationClient:
         if caps.get('protocol')!=1 or caps.get('available') is not True:raise ValueError('驻机执行服务尚未配置，未启动任务')
         if ref['policy']!='stop' and ref['policy'] not in caps.get('policies', []):
             raise ValueError('当前 NOS 服务尚不支持所选断联策略')
+        if ref.get('executor')=='gos':
+            sensors=self._request('/sensors/status')
+            if 'odom' in sensors and sensors['odom'] is None:
+                self.wake.wait(.4)
+                if ref['cancel'] or self.done.is_set():return
+                sensors=self._request('/sensors/status')
+                if 'odom' in sensors and sensors['odom'] is None:
+                    raise ValueError('GOS 未收到 /ODOM 地图定位，请检查 NOS 到 GOS 的定位数据连接')
         grid=self._request('/maps/grid',dict(name=map_['robot_map_name'],grid_id=map_.get('grid_id',0)))
         raw=base64.b64decode(grid['pgm'],validate=True)
         if (grid.get('robot_map_name')!=map_['robot_map_name'] or hashlib.sha256(raw).hexdigest()!=ref['fingerprint']
@@ -162,6 +170,7 @@ class ResidentNavigationClient:
                 context=nav.get('client_intent_context',[])
                 self.app.navigation_intents.check(tuple(context+[token]),self.app.instance_id,self.app._plan_generation)
             if ref['cancel'] or self.done.is_set():return
+            if ref.get('executor')=='gos':nav['message']='正在向 GOS 提交导航任务'
             # Persist before transmission: after an uncertain response/restart,
             # reconcile the identity, never automatically repeat this POST.
             ref['submitted']=True;self._save()
@@ -214,6 +223,9 @@ class ResidentNavigationClient:
             identity=self.robot_identity()
             if run is None:
                 raise ValueError('采集任务记录不存在')
+            if run.get('local') is True:
+                from bridge.task_collection import collection_page
+                return collection_page(self.app.store.path.parent,run_id,offset)
             if self.app.demo or not identity or run['robot']!=hashlib.sha256(identity.encode()).hexdigest():
                 raise ValueError('请连接执行该任务的机器人以读取采集记录')
             base,token=self._endpoint('gos')
@@ -240,11 +252,12 @@ class ResidentNavigationClient:
                         return
                 elif not self.ref['submitted']:
                     try:self._submit()
-                    except Exception:
+                    except Exception as error:
                         if not self.ref['submitted']:
                             if gos:self._release_map()
                             with self.app.lock:
-                                self.ref['terminal']=True;self.nav.update(status='failed',phase='failed',message='驻机任务未提交，请检查执行服务与地图')
+                                message=str(error) if isinstance(error,ValueError) and str(error) else '驻机任务未提交，请检查执行服务与地图'
+                                self.ref['terminal']=True;self.nav.update(status='failed',phase='failed',message=message)
                                 self._save()
                         raise
                 if not self.ref['submitted'] and not self.ref['cancel']:continue

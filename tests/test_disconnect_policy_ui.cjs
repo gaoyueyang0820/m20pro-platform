@@ -13,7 +13,7 @@ function setup(gos,nos={},online=true){
 }
 test('navigation separates GOS status from its disconnect policy',async()=>{
  const f=setup({available:true});f.context.render();await new Promise(setImmediate);
- assert.equal(f.messages['navigation-executor-status'],'GOS 机载寻路已就绪');
+ assert.equal(f.messages['navigation-executor-status'],'GOS 寻路服务已连接');
  assert.match(f.messages['disconnect-policy-help'],/5 秒后请求停车.*原厂导航/);
  assert.deepEqual(f.calls,['/api/nav/resident/capabilities']);
 });
@@ -23,6 +23,20 @@ test('station action automatically selects GOS with stop on disconnect',()=>{
  assert.equal(f.engine.value,'gos');assert.equal(f.policy.value,'stop');
  assert.equal(f.engine.disabled,true);
  f.context.points=[];f.context.update();assert.equal(f.engine.value,'native');assert.equal(f.policy.value,'finish');
+});
+test('front or rear people counts preserve native navigation and its disconnect policy',()=>{
+ const f=setup({available:true},{available:true,policies:['return']});
+ f.engine.value='native';f.policy.value='return';
+ const collector={kind:'people_count',camera:'front'};
+ f.context.taskCollectorOptions=()=>[collector];
+ f.context.render();
+ assert.equal(f.engine.disabled,false);
+ assert.equal(f.policy.value,'return');
+ assert.match(f.messages['disconnect-policy-help'],/人数由电脑采集/);
+ collector.camera='ball';f.context.update();
+ assert.equal(f.engine.value,'gos');assert.equal(f.policy.value,'stop');
+ collector.camera='rear';f.context.update();
+ assert.equal(f.engine.value,'native');assert.equal(f.policy.value,'return');
 });
 test('unavailable GOS reports the service status',async()=>{
  const f=setup({available:false,message:'请连接 GOS'});f.context.render();await new Promise(setImmediate);

@@ -39,7 +39,8 @@ from m20.map_learning_runtime import MapLearning
 from m20.people_counting import PeopleCounter
 from m20.patrol_actions import station_spec
 from m20.point_navigation import PointNavigator, navigation_observation, stationary_feedback
-from m20.task_collectors import collector_catalog, collector_specs
+from m20.task_collectors import collector_catalog, collector_specs, requires_gos_collection
+from m20.desktop_patrol_counts import DesktopPatrolCounts
 
 if not os.environ.get('M20_PPE_MODEL'):
     original.PPE_MODEL_PATH=str(default_path('ppe'))
@@ -167,6 +168,7 @@ class Platform:
         from m20.resident_navigation_client import ResidentNavigationClient
         self.resident_navigation=ResidentNavigationClient(self)
         self.people=PeopleCounter(self)
+        self.desktop_patrol_counts=DesktopPatrolCounts(self)
         from m20.localization_runtime import AutomaticLocalizer
         self.localizer=AutomaticLocalizer(self)
 
@@ -186,6 +188,7 @@ class Platform:
             self.autonomy.vision.stop()
             self.people.stop()
             self.people.control(dict(action='reset'))
+            self.desktop_patrol_counts.finish()
             self.cameras.close()
             preserve_resident=self.resident_navigation.preserve()
             stopped=dict(warnings=[]) if preserve_resident else self.stop()
@@ -579,9 +582,10 @@ class Platform:
             if collectors:
                 if any(p['type']==3 for p in clean):
                     raise ValueError('沿途采集与进桩请分别配置任务')
-                if options.get('engine','gos')!='gos' or value['options']['disconnect_policy']!='stop':
-                    raise ValueError('沿途采集请使用 GOS 自主寻路与断联停车')
-                value['options'].update(engine='gos',collectors=collectors)
+                engine=options.get('engine','gos')
+                if requires_gos_collection(collectors) and (engine!='gos' or value['options']['disconnect_policy']!='stop'):
+                    raise ValueError('外接球机和物联网采集请使用 GOS 自主寻路与断联停车')
+                value['options'].update(engine=engine,collectors=collectors)
             if options.get('explicit_execution') is True:
                 engine, policy = self._patrol_execution(value, value['options'])
                 value['options'].update(engine=engine, disconnect_policy=policy, explicit_execution=True)
@@ -881,15 +885,16 @@ class Platform:
         if engine not in ('gos', 'native', 'platform') or policy not in POLICIES:
             raise ValueError('巡检寻路方式或断联策略无效')
         docking = any(point.get('type') == 3 for point in route['points'])
-        actions = route.get('options', {}).get('collectors') or any(point.get('station_action') for point in route['points'])
+        collectors = route.get('options', {}).get('collectors', [])
+        station_actions = any(point.get('station_action') for point in route['points'])
         if docking:
-            if actions:
+            if station_actions or collectors:
                 raise ValueError('巡检采集与进桩请分别配置任务')
             if policy != 'stop':
                 raise ValueError('含充电航点的路线使用断联停车')
             engine = 'native'
-        if actions and engine != 'gos':
-            raise ValueError('到点任务和沿途采集需要 GOS 机载寻路')
+        if engine != 'gos' and (station_actions or requires_gos_collection(collectors)):
+            raise ValueError('到点任务、外接球机和物联网采集需要 GOS 机载寻路')
         if policy != 'stop':
             if engine != 'native':
                 raise ValueError('断联后继续或返程需要原厂导航')
@@ -943,7 +948,7 @@ class Platform:
                 req=dict(req,engine=stored['options']['engine'])
             if req.get('engine')=='gos':
                 return self._start_gos_route(req,client_intent)
-            if stored and (stored.get('options',{}).get('collectors') or any(p.get('station_action') for p in stored['points'])):
+            if stored and (requires_gos_collection(stored.get('options',{}).get('collectors', [])) or any(p.get('station_action') for p in stored['points'])):
                 raise ValueError('带采集作业的巡检路线请选择 GOS 自主寻路')
         if goal is None and req.get('engine')=='platform':
             with self.lock:stored=next((r for r in self.store.value['routes'] if r['id']==req.get('id')),None)
@@ -1235,6 +1240,7 @@ class Platform:
     def _record_route_completion(self, nav=None):
         nav=self.nav if nav is None else nav
         if nav.get('history_saved'):return
+        self.desktop_patrol_counts.finish(nav)
         nav['history_saved']=True;nav['ended']=time.time()
         self.add_log('navigation','路线已结束，停止请求已确认')
         self.store.value['history'].append(copy.deepcopy(nav))
@@ -1342,6 +1348,7 @@ class Platform:
     def tick(self, dt):
         with self.lock:
             now = time.time()
+            self.desktop_patrol_counts.tick()
             if self.velocity_deadline is not None and time.monotonic()>=self.velocity_deadline:
                 self.velocity=[0.,0.,0.];self.velocity_deadline=None
                 if self.link:self.link.set_velocity(0,0,0)
@@ -2034,6 +2041,7 @@ def main():
         APP.autonomy.vision.stop()
         APP.map_learning.close()
         APP.people.stop()
+        APP.desktop_patrol_counts.finish()
         APP.cameras.close()
         if APP.link: APP.link.close(stop=not preserve_resident)
         if original.PPE: original.PPE.stop()

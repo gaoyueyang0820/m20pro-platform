@@ -56,6 +56,17 @@ class ResidentClientTests(unittest.TestCase):
             if path=='/missions/capabilities':return dict(protocol=1,available=True,policies=['finish'])
             self.c.cancel();return self.grid()
         self.c._request=rpc;self.c._submit();self.assertNotIn('/missions/start',calls)
+    def test_gos_without_map_odometry_reports_reason_before_submitting(self):
+        self.c.ref.update(executor='gos',policy='stop')
+        def rpc(path,body=None):
+            if path=='/missions/capabilities':
+                return dict(protocol=1,available=True,executor='gos')
+            if path=='/sensors/status':return dict(odom=None,lidar_publishers=2)
+            self.fail('unexpected request: '+path)
+        self.c._request=rpc;self.c._run()
+        self.assertEqual(self.nav['status'],'failed')
+        self.assertIn('/ODOM',self.nav['message'])
+        self.assertFalse(self.c.ref['submitted'])
     def test_restart_reconciles_only_and_never_replays_an_uncertain_start(self):
         self.c.ref['submitted']=False;self.c._save()
         restored=ResidentNavigationClient(self.app);restored.wake=Mock();calls=[]

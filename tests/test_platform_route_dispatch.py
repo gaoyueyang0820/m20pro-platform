@@ -2,8 +2,9 @@
 import copy
 import hashlib
 import time
+from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 import test_platform as cases
 
 
@@ -65,12 +66,39 @@ class PlatformRouteDispatchTests(unittest.TestCase):
     def test_native_continuation_route_can_be_saved_offline(self):
         a,route=self.prepare()
         a.resident_navigation.capabilities=Mock(side_effect=AssertionError('save must not probe robot'))
-        options=dict(explicit_execution=True,engine='native',disconnect_policy='finish_return')
+        options=dict(explicit_execution=True,engine='native',disconnect_policy='finish_return',
+                     collectors=[dict(kind='people_count',camera='front',interval_s=2)])
         result=a.route_save(dict(route,options=options))['route']
         self.assertEqual(result['options']['engine'],'native')
         self.assertEqual(result['options']['disconnect_policy'],'finish_return')
+        self.assertEqual(result['options']['collectors'],options['collectors'])
         self.assertEqual(a.store.value['routes'],[result])
         a.resident_navigation.capabilities.assert_not_called()
+    def test_native_patrol_records_people_without_gos_or_motion(self):
+        a,route=self.prepare()
+        route['options']=dict(collectors=[dict(kind='people_count',camera='rear',interval_s=2)])
+        a.demo=False
+        a.link=SimpleNamespace(ip='192.0.2.1',record=lambda *_:dict(monotonic_at=time.monotonic()))
+        a.nav=dict(status='running',phase='running',execution_state='moving',index=1,route=route)
+        sampler=Mock()
+        sampler.sample.return_value=dict(sampled_at=time.time(),values=dict(people=2))
+        with patch('m20.desktop_patrol_counts.SharedPeopleSampler',return_value=sampler):
+            try:
+                a.desktop_patrol_counts.tick()
+                run_id=a.nav['collection_run']['id']
+                deadline=time.monotonic()+2
+                rows=[]
+                while not rows and time.monotonic()<deadline:
+                    rows=a.resident_navigation.collection_page(run_id,0)['rows']
+                    time.sleep(.01)
+                self.assertEqual([(r['waypoint_index'],r['values']['people']) for r in rows],[(1,2)])
+                a.nav['status']='paused'
+                self.assertIsNone(a.desktop_patrol_counts._context(run_id))
+                a.nav['status']='completed'
+                a._record_route_completion()
+                self.assertEqual(a.store.value['history'][-1]['collection'][0]['state'],'ended')
+            finally:
+                a.desktop_patrol_counts.finish()
     def test_operator_patrol_honors_explicit_platform_engine(self):
         a,route=self.prepare();a.demo=False
         a._start_platform_route=Mock(return_value={'ok':True})

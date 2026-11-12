@@ -354,6 +354,27 @@ class HubTests(unittest.TestCase):
         self.assertEqual(second['id'],first['id'])
         self.assertEqual(len([m for m in self.app.maps() if m.get('robot_map_name')=='demo-yard']),1)
         self.assertEqual(next(r for r in self.app.store.value['routes'] if r['id']==route['id'])['map_id'],first['id'])
+    def test_navigation_sync_reuses_exact_grid_across_robot_addresses(self):
+        hub=self.app.hub
+        grid=hub.remote_maps('/maps/grid',dict(name='demo-yard',grid_id=0))
+        source=hub.sync_map(dict(name='demo-yard',grid_id=0))['map']
+        source.update(demo=False,robot_ip='192.0.2.1')
+        route=self.app.route_save(dict(name='keep route',map_id=source['id'],points=[dict(x=0,y=0)]))['route']
+        self.app.demo=False
+        self.app.link=SimpleNamespace(ip='192.0.2.2')
+        request=dict(name='demo-yard',grid_id=0,source_map_id=source['id'])
+        with patch.object(hub,'remote_maps',return_value=grid) as remote:
+            synced=hub.sync_map(request)
+        self.assertNotIn('source_map_id',remote.call_args.args[1])
+        self.assertEqual(synced['matched_source_map_id'],source['id'])
+        self.assertEqual(synced['map']['id'],route['map_id'])
+        self.assertEqual(synced['map']['robot_ip'],'192.0.2.2')
+        raw=base64.b64decode(grid['pgm'])
+        changed=dict(grid,pgm=base64.b64encode(raw[:-1]+bytes([raw[-1]^1])).decode())
+        with patch.object(hub,'remote_maps',return_value=changed):
+            with self.assertRaisesRegex(ValueError,'重新选点'):hub.sync_map(request)
+        cached=Path(self.tmp.name)/'maps'/(source['id']+'.pgm')
+        self.assertEqual(cached.read_bytes(),raw)
     def test_apply_also_synchronizes_navigation_and_reuses_map_id(self):
         hub=self.app.hub
         first=await_job(self.app,hub.post('/api/maps/library/apply',dict(name='demo-yard',grid_id=0)))
