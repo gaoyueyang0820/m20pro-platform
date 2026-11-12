@@ -222,12 +222,20 @@ def pack_map(folder,output):
         if len(planned)>=99999:raise ValueError('地图文件数超限')
     walk(folder,'',set())
     temp=output.with_name('.'+output.name+'.'+uuid.uuid4().hex+'.tmp')
+    def entry(name,directory=False):
+        info=zipfile.ZipInfo(name)
+        info.create_system=3
+        info.compress_type=zipfile.ZIP_DEFLATED
+        info._compresslevel=1
+        mode=(stat.S_IFDIR|0o755) if directory else (stat.S_IFREG|0o644)
+        info.external_attr=(mode<<16)|(0x10 if directory else 0)
+        return info
     root_fd=os.open(folder,os.O_RDONLY|os.O_DIRECTORY)
     try:
         with zipfile.ZipFile(temp,'w',zipfile.ZIP_DEFLATED,compresslevel=1,allowZip64=True) as z:
             for relative,resolved,info,is_dir in planned:
                 arc=folder.name+'/'+relative
-                if is_dir:z.writestr(arc+'/',b'');continue
+                if is_dir:z.writestr(entry(arc+'/',True),b'');continue
                 # Open canonical components below the map root without following
                 # links again if a file/directory is replaced during packing.
                 descriptors=[];parent=root_fd
@@ -240,10 +248,10 @@ def pack_map(folder,output):
                         current=os.fstat(source.fileno())
                         if not stat.S_ISREG(current.st_mode) or (current.st_dev,current.st_ino,current.st_size,current.st_mtime_ns)!=(info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns):
                             raise ValueError('地图文件在打包时发生变化，请结束建图后重试：'+relative)
-                        with z.open(arc,'w',force_zip64=True) as target:shutil.copyfileobj(source,target,1024**2)
+                        with z.open(entry(arc),'w',force_zip64=True) as target:shutil.copyfileobj(source,target,1024**2)
                 finally:
                     for descriptor in reversed(descriptors):os.close(descriptor)
-            z.writestr(folder.name+'/.m20-platform-manifest.json',json.dumps(dict(format='m20-platform-map-v1',name=folder.name,
+            z.writestr(entry(folder.name+'/.m20-platform-manifest.json'),json.dumps(dict(format='m20-platform-map-v1',name=folder.name,
                 files=[row[0] for row in planned if not row[3]],materialized_links=links,created=time.time())))
         inspect_package(temp)
         temp.replace(output)

@@ -132,6 +132,7 @@ class MapFilesTests(unittest.TestCase):
         with zipfile.ZipFile(archive) as z:
             self.assertEqual(z.read('warehouse/.nav_maps/active/navigation.bin'),b'vendor navigation payload')
             self.assertEqual(z.read('warehouse/cloud-copy.pcd'),(folder/'full_cloud.pcd').read_bytes())
+            self.assertEqual(stat.S_IMODE(z.getinfo('warehouse/full_cloud.pcd').external_attr>>16),0o644)
             self.assertFalse(any(stat.S_ISLNK(i.external_attr>>16) for i in z.infolist()))
         unpack_package(archive,self.root/'imported','copy')
         self.assertFalse((self.root/'imported/copy/.nav_maps/active').is_symlink())

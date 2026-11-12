@@ -6,10 +6,22 @@ from unittest.mock import patch
 
 import numpy as np
 from bridge.mapping_job import retry_context, worker
+from bridge.root_actions import _map_readable
 from m20.map_fusion import voxel
 
 
 class FusionRetryTests(unittest.TestCase):
+    def test_root_import_makes_regular_files_readable_without_following_links(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder=Path(temp)/'candidate';folder.mkdir(mode=0o700)
+            cloud=folder/'full_cloud.pcd';cloud.touch(mode=0o600)
+            private=Path(temp)/'outside';private.touch(mode=0o600)
+            (folder/'link').symlink_to(private)
+            _map_readable(folder)
+            self.assertEqual(folder.stat().st_mode&0o777,0o755)
+            self.assertEqual(cloud.stat().st_mode&0o777,0o644)
+            self.assertEqual(private.stat().st_mode&0o777,0o600)
+
     def test_nos_numpy_does_not_receive_an_empty_axis_unique(self):
         points=np.empty((0,4),np.float32)
         with patch('numpy.unique',side_effect=ValueError('cannot reshape array of size 0 into shape (0,newaxis)')):

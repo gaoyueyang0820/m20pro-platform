@@ -2,6 +2,7 @@
 """Root-owned fixed map operations. Installed outside the writable data directory."""
 import json
 import os
+import stat
 import subprocess
 import sys
 import zipfile
@@ -19,6 +20,17 @@ def run(argv):
     p=subprocess.run(argv,capture_output=True,text=True,timeout=150)
     if p.returncode:raise ValueError((p.stderr or p.stdout or '系统操作失败')[-3000:])
     return p.stdout[-12000:]
+
+
+def _map_readable(folder):
+    # drmap unpacks as root and retains modes from the ZIP. Normalize the
+    # new map to vendor map permissions for the unprivileged NOS agent.
+    for directory,children,files in os.walk(folder,followlinks=False):
+        path=Path(directory)
+        path.chmod(stat.S_IMODE(path.stat().st_mode)|0o055)
+        for name in files:
+            file=path/name;mode=file.lstat().st_mode
+            if stat.S_ISREG(mode):file.chmod(stat.S_IMODE(mode)|0o044)
 
 
 def _execute(req,maps,data):
@@ -88,7 +100,8 @@ def _execute(req,maps,data):
                     raise ValueError('地图包包含目标地图之外的文件，已拒绝导入，避免覆盖其他地图')
             if (maps/name).exists() or (maps/name).is_symlink():raise ValueError('目标地图已存在，已拒绝覆盖')
             output=run(['drmap','unpack','-n',str(target)])
-            if not (maps/name).is_dir():raise ValueError('drmap 已结束，但未发现预期地图目录，请查看日志核对结果')
+            if (maps/name).is_symlink() or not (maps/name).is_dir():raise ValueError('drmap 已结束，但未发现预期地图目录，请查看日志核对结果')
+            _map_readable(maps/name)
             return dict(ok=True,name=name,output=output,activated=False)
     if action=='apply':
         import hashlib,time
