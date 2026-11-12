@@ -57,7 +57,8 @@ class ActivationFrameEvidenceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'活动地图'):root_actions.execute(dict(action='apply',name='candidate',expected_active='other'),self.maps,Path(self.temp.name)/'data')
             run.assert_not_called()
             result=root_actions.execute(dict(action='apply',name='candidate',expected_active='base',expected_project_sha256=proof['project_sha256']),self.maps,Path(self.temp.name)/'data')
-            self.assertEqual(run.call_count,2);self.assertGreater(result['localization_restart_completed_at'],0)
+            self.assertEqual(sum(args.args[0][1]=='restart' for args in run.call_args_list),1)
+            self.assertGreater(result['localization_restart_completed_at'],0)
 
 
 class ActivationLocalizationTests(unittest.TestCase):

@@ -21,6 +21,16 @@ def run(argv):
     return p.stdout[-12000:]
 
 
+def localization_started_since(monotonic_us):
+    try:
+        response=run(['systemctl','show','localization.service','--property=ActiveState,ExecMainStartTimestampMonotonic'])
+        values=dict(line.split('=',1) for line in response.splitlines() if '=' in line)
+        return (values.get('ActiveState') in ('active','activating')
+                and int(values.get('ExecMainStartTimestampMonotonic',0))>=monotonic_us)
+    except (ValueError,OSError):
+        return False
+
+
 def _execute(req,maps,data):
     action=req.get('action')
     if action in ['apply','mapping','extend_mapping','localize_auto']:
@@ -99,7 +109,10 @@ def _execute(req,maps,data):
         if 'expected_active' in req and req['expected_active']!=previous:raise ValueError('活动地图已变化，未继续切换')
         meta=p/'.m20-project.json';raw=meta.read_bytes() if meta.is_file() else b''
         if req.get('expected_project_sha256') and hashlib.sha256(raw).hexdigest()!=req['expected_project_sha256']:raise ValueError('地图版本已变化，未继续切换')
-        output=run(['drmap','apply',str(p)])+run(['systemctl','restart','localization.service'])
+        began=time.monotonic_ns()//1000
+        output=run(['drmap','apply',str(p)])
+        if not localization_started_since(began):
+            output+=run(['systemctl','restart','localization.service'])
         return dict(ok=True,name=name,output=output,localization_restart_completed_at=time.time(),
                     message='地图已切换，正在恢复定位')
     if action=='extend_mapping':
