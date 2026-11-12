@@ -6,6 +6,9 @@
 .mapping-sidebar>.card:first-child .card-header .pill{font-size:10px;padding:4px 6px}
 .mapping-sidebar>.card:first-child .card-header .btn{font-size:11px;padding:6px 8px}
 .map-library-toolbar>div{display:flex;align-items:center;justify-content:space-between;margin-top:8px;gap:8px}
+.mapping-view-actions{display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-inline-start:auto;min-width:0}
+.mapping-view-actions #scan-receive-state{font-size:9.5px;color:var(--muted);overflow-wrap:anywhere}
+.mapping-view-actions .btn{flex:none}
 .mapping-sidebar .compact-map-library{max-height:440px;max-height:clamp(260px,45vh,520px)}
 .map-library-entry{border-bottom:1px solid var(--line)}
 .map-library-entry.selected{background:var(--accent-soft,#edf7f4)}

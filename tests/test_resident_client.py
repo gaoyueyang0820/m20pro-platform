@@ -31,7 +31,7 @@ class ResidentClientTests(unittest.TestCase):
         calls=[]
         def rpc(path,body=None):
             calls.append((path,body))
-            if path=='/missions/capabilities':return dict(protocol=1,available=True)
+            if path=='/missions/capabilities':return dict(protocol=1,available=True,policies=['finish'])
             if path=='/maps/grid':return self.grid()
             return dict(ok=True)
         self.c._request=rpc;self.c._submit()
@@ -39,11 +39,12 @@ class ResidentClientTests(unittest.TestCase):
         self.assertEqual(calls[-1][1]['points'],self.nav['route']['points'])
         self.assertEqual(calls[-1][1]['disconnect_policy'],'finish')
     def test_capability_missing_or_changed_map_never_uploads_task(self):
-        for kind in ['unavailable','map']:
+        for kind in ['unavailable','policy','map']:
             self.c.ref['submitted']=False;calls=[]
             def rpc(path,body=None):
                 calls.append(path)
-                if path=='/missions/capabilities':return dict(protocol=1,available=kind!='unavailable')
+                if path=='/missions/capabilities':
+                    return dict(protocol=1,available=kind!='unavailable',policies=['stop'] if kind=='policy' else ['finish'])
                 return dict(self.grid(),origin=[1,1,0])
             self.c._request=rpc
             with self.assertRaises(ValueError):self.c._submit()
@@ -52,7 +53,7 @@ class ResidentClientTests(unittest.TestCase):
         calls=[]
         def rpc(path,body=None):
             calls.append(path)
-            if path=='/missions/capabilities':return dict(protocol=1,available=True)
+            if path=='/missions/capabilities':return dict(protocol=1,available=True,policies=['finish'])
             self.c.cancel();return self.grid()
         self.c._request=rpc;self.c._submit();self.assertNotIn('/missions/start',calls)
     def test_restart_reconciles_only_and_never_replays_an_uncertain_start(self):

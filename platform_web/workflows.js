@@ -23,7 +23,7 @@ overview=function(){
    ${card('运行状态',`<div class="card-pad"><div class="health-list">${kv('运动状态','—','health-motion')}${kv('使用模式','—','health-mode')}${kv('当前步态','—','health-gait')}${kv('地图定位','—','health-loc')}${kv('硬急停','—','health-hes')}${kv('充电状态','—','health-charge')}</div><div class="quick-actions">${cmd('站立','stand')}${cmd('趴下','lie')}${btn('前往驾驶','goto-motion','','motion')}${cmd('停止运动','stop','danger')}</div></div>`,'sensors','<span class="dot"></span>')}
    ${card('当前任务','<div id="overview-task"></div>','tasks',btn('任务中心','goto-tasks','small ghost','arrow'))}
   </div>
-  <div class="section-gap">${card('机器人数字视图',stage()+`<div class="source-note" id="overview-source">演示数据 · 三维姿态随模拟关节变化。</div>`,'joints','<span class="pill" id="model-pill">模拟反馈</span>')}</div>
+  <div class="section-gap">${card('机器人数字视图',stage()+`<div class="source-note" id="overview-source"></div>`,'joints','<span class="pill gray" id="model-pill">等待机身回报</span>')}</div>
   <div class="equal-split section-gap">
    ${card('最近动态','<div class="log-scroll" id="overview-logs"></div>','clock')}
    ${card('计算单元温度',`<canvas id="temp-chart" class="mini-chart" style="width:100%;height:120px;display:block"></canvas><div class="chart-legend"><span>最近 60 秒</span><span><span class="dot"></span>最高主机温度 / °C</span></div>`,'cpu')}
@@ -106,11 +106,17 @@ mapsPage=function(){
   <div class="mapping-layout">
    <aside class="mapping-sidebar">
     ${card('我的地图','<div class="map-library-toolbar"><input id="map-library-search" type="search" placeholder="搜索地图名称或编号" aria-label="搜索地图"><div><span id="map-library-count" class="help"></span><button class="text-button" data-ui="map-library-trash">回收站</button></div></div><div id="map-batch-bar" class="map-batch-bar" hidden></div><div id="remote-map-list" class="compact-map-library"></div><p id="map-disk" class="help card-pad"></p>','maps',`<div class="button-row"><span id="map-library-source" class="pill ${S.mode==='demo'?'amber':'gray'}">${S.mode==='demo'?'演示 NOS':'NOS'}</span>${btn('编辑地图','map-library-edit','small')}</div>`)}
-    <section class="card card-pad selected-map-work"><div><strong id="selected-map-info">请选择一张地图</strong><p class="help">选择地图后可用于导航、导出或继续补扫。</p></div>${select('栅格','remote-grid-id',[[0,'栅格 0']])}<div class="button-row">${btn('用于导航','map-use-navigation','primary','navigation')}</div><h4 class="field-heading">导出与维护</h4><div class="button-row">${btn('导出地图包','export-selected-map','')}${btn('补扫与版本','map-project','')}${btn('刷新地图','map-library-refresh','')}</div></section>
+    <section class="card card-pad selected-map-work"><div><strong id="selected-map-info">请选择一张地图</strong><p class="help">选择地图后可用于导航、导出或继续补扫。</p></div>${select('栅格','remote-grid-id',[[0,'栅格 0']])}<div class="button-row">${btn('用于导航','map-use-navigation','primary','navigation')}</div><h4 class="field-heading">导出与维护</h4><div class="button-row">${btn('导出地图包','export-selected-map','')}${btn('补扫与版本','map-project','')}</div></section>
    </aside>
    <div class="mapping-visuals">
     <section class="card build-controls-card"><div class="card-header"><h2 class="card-title">${icon('maps')}建图采集</h2><span class="pill gray">低速遥控</span></div><div class="build-controls"><div>${field('新地图名称','hub-map-name','m20-map')}<div class="button-row section-gap">${btn('开始建图','hub-mapping-start','primary','play')}${btn('停止并保存','hub-mapping-stop','danger','stop')}</div><p class="help">开始后按住方向键；完成后点击“停止并保存”。</p></div><div>${dpad}</div><div><div class="range-label"><span>遥控幅度</span><b id="speed-label">0.50</b></div><input id="motion-speed" class="range" type="range" min="0.05" max="0.7" step="0.05" value="0.5"><p class="help">松开只停走。可多圈补扫、回到旧区域形成回环。</p></div></div></section>
-    <div class="mapping-view-toolbar"><div class="segmented">${[['cloud','三维点云'],['grid','二维地图'],['scan','俯视扫描'],['both','对照查看']].map(([key,label])=>`<button class="${mappingView===key?'active':''}" data-scan-view="${key}" aria-pressed="${mappingView===key}">${label}</button>`).join('')}</div><span id="scan-receive-state">选择已保存地图，或在建图时接收实时点云</span></div>
+    <div class="mapping-view-toolbar">
+     <div class="segmented">${[['cloud','三维点云'],['grid','二维地图'],['scan','俯视扫描'],['both','对照查看']].map(([key,label])=>`<button class="${mappingView===key?'active':''}" data-scan-view="${key}" aria-pressed="${mappingView===key}">${label}</button>`).join('')}</div>
+     <div class="mapping-view-actions">
+      <span id="scan-receive-state">选择已保存地图，或在建图时接收实时点云</span>
+      ${btn('刷新地图','map-library-refresh','small','refresh')}
+     </div>
+    </div>
     <div id="mapping-views" class="mapping-views show-${mappingView}"><div class="mapping-cloud">${cloud}</div><section class="card mapping-scan" id="map-scan-section"><div class="card-header"><h2 class="card-title">${icon('sensors')}雷达俯视扫描</h2><span id="scan-frame" class="pill gray">等待数据</span></div><div class="scan-canvas-wrap"><canvas id="mapping-scan"></canvas><p id="scan-empty">开始接收点云后显示 XY 俯视投影</p></div><p class="help card-pad">雷达扫描俯视投影</p></section><section class="card mapping-grid"><div class="card-header"><h2 class="card-title">${icon('maps')}二维栅格地图</h2><span id="map-grid-name" class="pill gray"></span></div><div class="map-grid-preview"><img id="map-grid-image" alt="选中地图的二维栅格" hidden><p id="map-grid-message" class="help" role="status">请从地图库选择地图</p></div></section></div>
    </div>
   </div>
@@ -199,7 +205,48 @@ renderRoutes=function(){
  const routes=S.routes.filter(r=>{const m=S.maps.find(m=>m.id===r.map_id);return m&&(page!=='navigation'||logicalMapKey(m)===key);});
  const markup=routes.map(r=>`<div class="route-row"><div><strong>${esc(r.name)}</strong><small>${r.points.length} 个航点 · ${r.options?.pause_at_point?'每点暂停':'自动接续'}${page==='tasks'?' · '+esc(S.maps.find(m=>m.id===r.map_id)?.name):''}</small></div><div><button class="btn small" data-route-load="${esc(r.id)}">编辑</button><button class="btn small primary" data-route-run="${esc(r.id)}">执行</button><button class="btn small ghost" data-route-delete="${esc(r.id)}" aria-label="删除路线">×</button></div></div>`).join('')||empty('常用巡检路线',page==='navigation'&&navIntent==='goal'?'单个目标无需保存；固定巡检任务可切换到多点巡检。':'点击地图添加航点，然后保存路线。','navigation');const list=$('#route-list');if(list&&list._routeMarkup!==markup){list.innerHTML=markup;list._routeMarkup=markup;}
 };
-function compactDrive(){return `<div class="mapping-dpad compact-dpad"><button data-velocity="0,0,1" aria-label="左转">↶</button><button data-velocity="1,0,0" aria-label="前进">↑</button><button data-velocity="0,0,-1" aria-label="右转">↷</button><button data-velocity="0,1,0" aria-label="左移">←</button><button class="center" data-action="stop">停止</button><button data-velocity="0,-1,0" aria-label="右移">→</button><span></span><button data-velocity="-1,0,0" aria-label="后退">↓</button><span></span></div>`;}
+function navigationDrivePanel(){
+ return `<details class="navigation-drive">
+  <summary><span class="navigation-drive-title">${icon('motion')}<strong>手动接管</strong></span><span id="nav-drive-state"></span></summary>
+  <div class="navigation-drive-body">
+   ${btn('接管驾驶','nav-takeover','small')}
+   <div class="mapping-dpad" role="group" aria-label="手动驾驶方向">
+    <button data-velocity="0,0,1" aria-label="左转">↶</button>
+    <button data-velocity="1,0,0" aria-label="前进">↑</button>
+    <button data-velocity="0,0,-1" aria-label="右转">↷</button>
+    <button data-velocity="0,1,0" aria-label="左移">←</button>
+    <button class="center" data-action="stop">停止</button>
+    <button data-velocity="0,-1,0" aria-label="右移">→</button>
+    <span></span><button data-velocity="-1,0,0" aria-label="后退">↓</button><span></span>
+   </div>
+   <div class="navigation-drive-speed">
+    <div class="range-label"><label for="motion-speed">遥控幅度</label><output for="motion-speed" id="speed-label">0.50</output></div>
+    <input id="motion-speed" class="range" type="range" min="0.05" max="0.7" step="0.05" value="0.5">
+   </div>
+   <small id="motion-readiness"></small>
+  </div>
+ </details>`;
+}
+function navigationMapCard(){
+ const placeholder=S.mode==='demo'?'演示模式没有实时画面':S.online?'正在连接前视相机…':'等待机器人连接';
+ const actions=`<div class="navigation-map-actions">
+  <button type="button" class="btn small" id="nav-camera-toggle" data-ui="nav-camera-toggle" aria-expanded="false" aria-controls="nav-camera-preview">${icon('vision')}前视</button>
+  <span class="pill blue" id="nav-status">待命</span>
+ </div>`;
+ const map=`<div class="navigation-map-stage">
+  ${mapStage()}
+  <section class="nav-camera-preview" id="nav-camera-preview" aria-label="前视相机" hidden>
+   <div class="nav-camera-header"><strong>前视</strong><span id="cam-front-tag"></span>
+    <button type="button" data-ui="nav-camera-toggle" aria-label="关闭前视">×</button>
+   </div>
+   <div class="camera-feed">
+    <img id="camera-front" alt="前视相机画面" hidden>
+    <div id="placeholder-front" class="camera-placeholder"><strong>${placeholder}</strong></div>
+   </div>
+  </section>
+ </div>`;
+ return card('路线地图',map,'maps',actions);
+}
 function taskCollectionSettings() {
  const saved=S.routes?.find(route=>route.id===routeId)?.options?.collectors||[];
  const types=S.task_collectors||[];
@@ -246,12 +293,11 @@ function routeEditorPage(){
  return heading(btn('任务中心','goto-tasks','','tasks'))+operationPanel()+
  `<div class="route-workspace">
    <div class="route-map-column">
-    <p class="nav-flow-hint">在地图上点选目标：只选一个点可以直接导航，继续点选会按顺序组成巡检路线。</p>
     <div class="route-action-bar" id="nav-action-bar">${navigationActions(single)}</div>
-    ${card('地图选点，自动规划路径',mapStage(),'maps','<span class="pill blue" id="nav-status">待命</span>')}
+    ${navigationMapCard()}
     <div id="nav-feedback" class="card nav-feedback-empty"></div>
+    ${navigationDrivePanel()}
     <div id="patrol-station-results"></div>
-    <details open class="navigation-drive"><summary>临时手动驾驶与前视画面</summary><div class="navigation-drive-body"><div><p class="help">暂停任务后切换手动。返回路线时点击继续。</p>${btn('切换手动驾驶','nav-takeover')}${compactDrive()}<input id="motion-speed" aria-label="遥控幅度" type="range" min="0.05" max="0.7" step="0.05" value="0.5"><small id="motion-readiness"></small></div><div class="camera-feed"><img id="camera-front" alt="前置相机" hidden><div id="placeholder-front" class="camera-placeholder">${icon('vision')}<strong>${S.mode==='demo'?'演示模式没有实机画面':'正在连接前置相机'}</strong></div><div class="camera-hud"><span>前视</span><span id="cam-front-tag">等待画面</span></div></div></div></details>
    </div>
    <aside class="route-editor card card-pad">
     ${mapSelect().replace('当前编辑地图','导航地图')}
@@ -278,7 +324,6 @@ function routeEditorPage(){
     <div class="divider"></div>
     <h3>已保存路线</h3>
     <div id="route-list"></div>
-    <div class="route-map-tools"><h4 class="field-heading">地图与建图工具</h4><div class="button-row">${btn('停稳并建图','start-map-here','small','maps')}${btn('原图续建 / 优化','extend-map','small','maps')}</div></div>
    </aside>
   </div>`;
 }
@@ -416,7 +461,7 @@ render=function(){
  delete document.body.dataset.page;document.body.dataset.currentPage=page;dayRender();
  if(page==='navigation'){
   const options=S.routes.find(r=>r.id===routeId)?.options||{nav_mode:1,speed:1,gait:'flat',manner:0,pause_at_point:false};
-  for(const [id,key] of [['nav-mode','nav_mode'],['nav-speed','speed'],['nav-gait','gait'],['nav-manner','manner']])if($('#'+id))$('#'+id).value=String(options[key]);
+  for(const [id,key,fallback] of [['nav-mode','nav_mode',1],['nav-speed','speed',1],['nav-gait','gait','flat'],['nav-manner','manner',0]])if($('#'+id))$('#'+id).value=String(options[key]??fallback);
   if($('#route-arrival'))$('#route-arrival').value=options.pause_at_point?'pause':'continue';
   const native=options.explicit_execution&&options.engine==='native';
   if($('#route-navigation-engine'))$('#route-navigation-engine').value=native?'native':'gos';
@@ -433,12 +478,19 @@ update=function(){
  else stopBanner?.remove();
  const ready=S?.mode==='demo'||S?.online&&S.basic.HES===0&&S.basic.MotionState===17&&[0,2].includes(S.basic.ControlUsageMode)&&!S.sdk.armed;
  const reason=S?.mode==='demo'?'离线演示 · 不连接机器人':!S?.online?'等待连接机器人':S.basic.HES!==0?'请检查实体急停':S.basic.MotionState!==17?'请先站立并等待就绪':![0,2].includes(S.basic.ControlUsageMode)?'请先切换手动模式':'可以遥控';
+ const navStatus=page==='navigation'?S.nav.status:null;
+ const running=navStatus==='running',stopping=navStatus==='cancelling';
  text('motion-readiness',ready&&S.mode!=='demo'?reason+' · '+({4097:'标准基础',4098:'兼容高台',4099:'标准楼梯',12290:'敏捷平地',12291:'敏捷楼梯'}[S.basic.Gait]||'步态待反馈')+(S.basic.ControlUsageMode===2?' · 避障'+(['未启动','空闲','未触发','正在介入'][S.basic.OOA]||'状态未知'):''):reason);
- for(const button of $$('[data-velocity]'))button.disabled=!ready;
+ for(const button of $$('[data-velocity]'))button.disabled=!ready||running||stopping;
  if(S?.nav.stop_reason==='route_complete'&&S.nav.status==='cancelling')text('nav-status','终点已到达 · 正在停止');
  if(S?.nav.stop_reason==='waypoint_pause'&&S.nav.status==='paused')text('nav-status','任务点已到达 · 等待继续');
  const navDisplay=typeof navigationFeedback==='function'?navigationFeedback(S?.nav):null;if(navDisplay){text('nav-status',navDisplay.label);html('nav-feedback',navDisplay.html);}
  if(page==='navigation'){
+  const offline=S.mode==='live'&&!S.online;
+  text('nav-drive-state',offline?'实机离线':stopping?'正在停车':running?'导航执行中':navStatus==='paused'?'导航已暂停':S.mode==='demo'?'演示模式':'');
+  if(!offline&&(running||stopping))text('motion-readiness',stopping?'等待停车确认':'接管后可手动驾驶');
+  const takeover=$('[data-ui="nav-takeover"]');
+  if(takeover)takeover.disabled=offline||stopping||Boolean(S.background_operation);
   const hasData=task=>task?.station_results?.length||task?.collection?.length;
   const latest=hasData(S.nav)?S.nav:[...(S.task_history||[])].reverse().find(hasData);
   html('patrol-station-results',patrolResults(latest));

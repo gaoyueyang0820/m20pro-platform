@@ -54,10 +54,23 @@ class PlatformRouteDispatchTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'NOS 驻机导航服务尚未就绪'):
             a.navigation_request('start',dict(id=route['id']))
         a.start_route.assert_not_called()
+        a.resident_navigation.capabilities.return_value={'available':True,'policies':['stop']}
+        with self.assertRaisesRegex(ValueError,'尚不支持所选断联策略'):
+            a.navigation_request('start',dict(id=route['id']))
+        a.start_route.assert_not_called()
         a.resident_navigation.capabilities.return_value={'available':True,'policies':['return']}
         a.navigation_request('start',dict(id=route['id']))
         submitted=a.start_route.call_args.args[0]
         self.assertEqual((submitted['engine'],submitted['disconnect_policy']),('native','return'))
+    def test_native_continuation_route_can_be_saved_offline(self):
+        a,route=self.prepare()
+        a.resident_navigation.capabilities=Mock(side_effect=AssertionError('save must not probe robot'))
+        options=dict(explicit_execution=True,engine='native',disconnect_policy='finish_return')
+        result=a.route_save(dict(route,options=options))['route']
+        self.assertEqual(result['options']['engine'],'native')
+        self.assertEqual(result['options']['disconnect_policy'],'finish_return')
+        self.assertEqual(a.store.value['routes'],[result])
+        a.resident_navigation.capabilities.assert_not_called()
     def test_operator_patrol_honors_explicit_platform_engine(self):
         a,route=self.prepare();a.demo=False
         a._start_platform_route=Mock(return_value={'ok':True})

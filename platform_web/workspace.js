@@ -97,6 +97,15 @@ cameraOpen=function(cam){
  poll();
 };
 for(const cam of ['front','rear'])ui['camera-close-'+cam]=()=>cameraClose(cam);
+ui['nav-camera-toggle']=()=>{
+ const preview=$('#nav-camera-preview'),toggle=$('#nav-camera-toggle');
+ if(!preview||!toggle)return;
+ const open=preview.hidden;
+ preview.hidden=!open;
+ toggle.setAttribute('aria-expanded',String(open));
+ if(open&&S.mode==='live')cameraOpen('front');
+ if(!open){cameraClose('front');toggle.focus({preventScroll:true});}
+};
 ui['drive-camera-retry']=async()=>{
  if(S.mode!=='live')return;
  for(const cam of activeDriveCameras()){if(cameraUnavailableReason(cam))continue;await api('/api/camera/reconnect',{camera:cam},true);cameraOpen(cam);}
@@ -190,9 +199,11 @@ ui['apply-selected-map']=()=>{
 };
 const workspaceRender=render,workspaceUpdate=update;
 render=function(){
+ const previewWasOpen=page==='navigation'&&$('#nav-camera-preview')?.hidden===false;
  for(const cam of ['front','rear'])cameraClose(cam);
  workspaceRender();
- if(S.mode==='live'){if(page==='motion')for(const cam of activeDriveCameras())cameraOpen(cam);if(page==='navigation'&&$('.navigation-drive')?.open)cameraOpen('front');}
+ if(page==='motion'&&S.mode==='live')for(const cam of activeDriveCameras())cameraOpen(cam);
+ if(previewWasOpen)ui['nav-camera-toggle']();
  if(page==='navigation'){
   const scope=navigationMapScope(),selectedBefore=mapId;
   loadMapLibrary().then(async()=>{
@@ -220,5 +231,3 @@ document.addEventListener('click',event=>{
  $$('[data-drive-view]').forEach(b=>b.classList.toggle('active',b.dataset.driveView===driveView));if(S.mode==='live')for(const cam of activeDriveCameras())cameraOpen(cam);
 });
 setInterval(()=>{if(!document.hidden&&['maps','navigation'].includes(page))loadMapLibrary().catch(()=>{});},5000);
-
-document.addEventListener('toggle',event=>{if(event.target.matches?.('.navigation-drive')){if(event.target.open&&S.mode==='live')cameraOpen('front');else cameraClose('front');}},true);

@@ -69,13 +69,16 @@ def target_config(role,value,old=None):
         follow=value.get('follows_aos',old.get('follows_aos'))
         if follow is not None and not isinstance(follow,bool):raise ValueError('SDK 地址跟随选项无效')
         result['follows_aos']=follow
-    if role=='gos':
-        address=str(value.get('gos_aos_ip',old.get('gos_aos_ip',''))).strip()
+    if role in ('gos','nos'):
+        address_key='gos_aos_ip' if role=='gos' else 'resident_aos_ip'
+        address=str(value.get(address_key,old.get(address_key,''))).strip()
         if address:
-            ip=ipaddress.IPv4Address(address)
+            error='GOS 导航需要机内 AOS 地址' if role=='gos' else 'NOS 驻机导航需要机内 AOS IPv4 地址'
+            try:ip=ipaddress.IPv4Address(address)
+            except ipaddress.AddressValueError:raise ValueError(error) from None
             if not ip.is_private or ip.is_loopback or ip.is_unspecified:
-                raise ValueError('GOS 导航需要机内 AOS 地址')
-            result['gos_aos_ip']=str(ip)
+                raise ValueError(error)
+            result[address_key]=str(ip)
     if (name,user,result['ssh_port'])!=(old.get('host'),old.get('user'),old.get('ssh_port')):result['deployed']=False
     return result
 

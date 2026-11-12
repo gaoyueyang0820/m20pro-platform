@@ -27,3 +27,31 @@ test('general pages omit project provenance and experimental product labels',()=
   const source=fs.readFileSync('platform_web/'+file,'utf8');assert.doesNotMatch(source,/已补齐原参考项目|使用你提供的|待实机验收|演示遥测用于验证交互|当前实现是|nav-tag[^>]*>LAB/);
  }
 });
+test('overview renders ordinary pose feedback and clears it when the platform connection drops',()=>{
+ const readout={},calls=[];
+ const sample={
+  mode:'live',online:true,sdk:{connected:false,fresh:false},
+  body_attitude:{roll:.1,pitch:-.2,yaw:.3},body_posture:{height:.22,motion_state:4},
+  joints:[{name:'fl_hipy_joint',index:1,position:null,fresh:false}]
+ };
+ const c=vm.createContext({
+  S:sample,page:'overview',stateUnavailable:false,$:()=>null,text:(id,value)=>readout[id]=value,
+  fmt:(v,n)=>v.toFixed(n),viewer:{update:(...args)=>calls.push(args)}
+ });
+ vm.runInContext(app.slice(app.indexOf('function paintRobotAttitude('),app.indexOf('function setupViewer(')),c);
+ c.paintRobotAttitude();
+ assert.equal(readout['model-pill'],'已趴下');
+ assert.match(readout['overview-source'],/0\.22 m · 横滚 5\.7° · 俯仰 -11\.5°.*腿部关节示意/);
+ assert.equal(calls.at(-1)[3],sample.body_posture);
+ sample.sdk={connected:true,fresh:true};
+ sample.joints[0]={name:'fl_hipy_joint',index:1,position:-.4,fresh:true};
+ c.paintRobotAttitude();
+ assert.match(readout['overview-source'],/SDK 实测/);
+ assert.equal(calls.at(-1)[0][0].position,-.4);
+ c.stateUnavailable=true;
+ c.paintRobotAttitude();
+ assert.equal(readout['model-pill'],'平台连接中断');
+ assert.equal(calls.at(-1)[2],null);
+ assert.equal(calls.at(-1)[3],null);
+ assert.equal(calls.at(-1)[0][0].position,undefined);
+});

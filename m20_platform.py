@@ -928,8 +928,10 @@ class Platform:
         if operation=='goal':return self.start_goal(request)
         if policy != 'stop':
             capabilities = self.resident_navigation.capabilities()
-            if capabilities.get('available') is not True or policy not in capabilities.get('policies', []):
-                raise ValueError('NOS 驻机导航服务尚未就绪，请选择断联停车')
+            if capabilities.get('available') is not True:
+                raise ValueError('NOS 驻机导航服务尚未就绪，请在连接中心启用后重试')
+            if policy not in capabilities.get('policies', []):
+                raise ValueError('当前 NOS 服务尚不支持所选断联策略')
         if request['engine']=='gos':return self._start_gos_route(request,route=route)
         if request['engine']=='platform':return self._start_platform_route(request,route=route)
         return self.start_route(request,goal=route)
@@ -1509,14 +1511,16 @@ class Platform:
     def snapshot(self):
         with self.lock:
             now=time.time()
-            online=self.demo or (self.link and age_of(self.link.record(1002,6))<2)
+            basic_record=self.link.record(1002,6) if self.link else {}
+            online=self.demo or age_of(basic_record)<2
             if self.demo:
                 t=now%300
                 dev=dict(BatteryList=[dict(BatteryLevel=86,Voltage=76.2,battery_temperature=31),dict(BatteryLevel=84,Voltage=76.0,battery_temperature=32)],
                          CPU={host:dict(Temperature=42+i*3+math.sin(t/4),FrequencyApp=18+i*6) for i,host in enumerate(['AOS','NOS','GOS'])},
                          GPS=dict(FixQuality=4,NumSatellites=24,Latitude=30.2741,Longitude=120.1551,HDOP=.8),
                          DevEnable=dict(Lidar=dict(Front=1,Back=1),Video=dict(Front=1,Back=1),GPS=1))
-                motion=dict(Roll=.01*math.sin(t),Pitch=.008*math.cos(t),Yaw=self.pose['Yaw'],LinearX=self.velocity[0],LinearY=self.velocity[1],OmegaZ=self.velocity[2],Height=.56)
+                height=.19 if self.basic.get('MotionState')==4 else .56
+                motion=dict(Roll=.01*math.sin(t),Pitch=.008*math.cos(t),Yaw=self.pose['Yaw'],LinearX=self.velocity[0],LinearY=self.velocity[1],OmegaZ=self.velocity[2],Height=height)
                 motion_age=0.
                 # 演示模式的打招呼：用合成姿态变化让界面可预览，不含任何实机指令。
                 demo_greet=self._greet_demo
@@ -1553,6 +1557,14 @@ class Platform:
             angles = [motion.get(key) for key in ('Roll', 'Pitch', 'Yaw')]
             attitude = dict(zip(('roll', 'pitch', 'yaw'), angles)) if motion_age < 2 and all(
                 type(angle) in (int, float) and math.isfinite(angle) for angle in angles) else None
+            height=motion.get('Height') if motion_age<2 else None
+            if type(height) not in (int,float) or not math.isfinite(height) or height<=0:
+                height=None
+            basic_feedback=self.basic if self.demo else basic_record.get('items',{}).get('BasicStatus',{})
+            motion_state=basic_feedback.get('MotionState') if online else None
+            if type(motion_state) is not int:
+                motion_state=None
+            body_posture=dict(height=height,motion_state=motion_state) if height is not None or motion_state is not None else None
             pose_view=self.pose_monitor.update(self.pose,self.velocity,motion,
                 pose_age=0. if self.demo else age_of(self.link.record(1007,2)) if self.link else float('inf'),
                 motion_age=motion_age,
@@ -1561,7 +1573,8 @@ class Platform:
                         connection_generation=self._plan_generation,
                         navigation_preparation=dict(client_intent_protocol=1,verify_current_localization=True),
                         previous_connection_stop=copy.deepcopy(self.store.value.get('previous_connection_stop')),
-                        ip=self.link.ip if self.link else None,basic=self.basic,motion=motion,body_attitude=attitude,device=dev,
+                        ip=self.link.ip if self.link else None,basic=self.basic,motion=motion,body_attitude=attitude,
+                        body_posture=body_posture,device=dev,
                         pose=self.pose,velocity=self.velocity,lights=self.lights,reverse=self.reverse,
                         estopped=self.estopped,joints=joints,sdk=sdk,nav=self.nav,faults=self.faults,
                         events=self.events,audit=self.audit[:100],maps=self.maps(),routes=self.store.value['routes'],

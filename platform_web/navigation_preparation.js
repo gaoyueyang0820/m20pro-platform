@@ -258,12 +258,21 @@
   target.map_id=goal.map_id;
   return plan.plan_id;
  }
+ async function checkDisconnectPolicy(t,engine,policy='stop'){
+  if(policy==='stop')return;
+  if(engine!=='native')throw Error('续行或返程需要原厂导航');
+  if(S.mode!=='live')throw Error('请连接已启用 NOS 驻机导航的机器人后执行此路线');
+  const capabilities=await request(t,'/api/nav/resident/capabilities');
+  if(capabilities.available!==true)throw Error('请在连接中心启用 NOS 驻机导航后执行此路线');
+  if(!capabilities.policies?.includes(policy))throw Error('当前 NOS 服务尚不支持所选断联策略');
+ }
  runRoute=async function(id){
   if(pending)return;
   const key=routeKey(id);if(!key)throw Error('路线不存在，请重新选择');
   const route=S.routes.find(r=>r.id===id),options={...currentOptions(id)},t=begin('route',{id,key,optionsKey:JSON.stringify(options),skipLocalization:true,mapAliases:[route.map_id],routeSignature:routeSignature(id)});if(!t)return;
   return finish(t,async()=>{
    const map={map_id:route.map_id},engine=routeExecutor(route.points,options);
+   await checkDisconnectPolicy(t,engine,options.disconnect_policy);
    await ensureNavigationMap(t,map);await localize(t);const plan=await checkFirstWaypoint(t,map,route.points,engine);
    status(t,'正在开始巡检','submitting');guard(t);
    t.startDispatched=true;
@@ -282,6 +291,7 @@
   const t=begin('draft',{key:draftKey(),skipLocalization:true});if(!t)return;
   return finish(t,async()=>{
    const engine=routeExecutor(draft.points,options);
+   await checkDisconnectPolicy(t,engine,options.disconnect_policy);
    await ensureNavigationMap(t,draft);await localize(t);const plan=await checkFirstWaypoint(t,draft,draft.points,engine);
    status(t,'正在开始巡检','submitting');guard(t);
    t.startDispatched=true;

@@ -8,6 +8,9 @@ from copy import deepcopy
 import math
 from pathlib import Path
 import sys
+import tempfile
+import time
+from types import SimpleNamespace
 import unittest
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from m20.pose_monitor import PoseMonitor
@@ -24,6 +27,44 @@ def pose(x=1.,y=2.,yaw=0.,location=0,confidence=.95):
 
 def motion(values=REAL_STATIC_MOTION):
     return dict(zip(['LinearX','LinearY','OmegaZ'],values))
+
+
+class OverviewPostureTests(unittest.TestCase):
+    def test_udp_body_sample_uses_independent_freshness_without_sdk(self):
+        from m20.platform_core import Store
+        from m20_platform import Platform
+
+        with tempfile.TemporaryDirectory() as directory:
+            platform = Platform(Store(Path(directory) / 'workspace.json'))
+            platform.demo = False
+            received = time.monotonic()
+            basic = dict(monotonic_at=received, items=dict(BasicStatus=dict(MotionState=4)))
+            motion_record = dict(monotonic_at=received, items=dict(MotionStatus=dict(
+                Height=.22, Roll=.1, Pitch=-.2, Yaw=.3
+            )))
+            records = {(1002, 6): basic, (1002, 4): motion_record}
+            platform.link = SimpleNamespace(ip='192.0.2.1', record=lambda *key: records.get(key, {}))
+
+            state = platform.snapshot()
+            self.assertEqual(state['body_posture'], dict(height=.22, motion_state=4))
+            self.assertEqual(state['body_attitude'], dict(roll=.1, pitch=-.2, yaw=.3))
+            self.assertFalse(state['sdk']['connected'])
+            self.assertTrue(all(joint['position'] is None for joint in state['joints']))
+
+            motion_record['monotonic_at'] -= 3
+            state = platform.snapshot()
+            self.assertEqual(state['body_posture'], dict(height=None, motion_state=4))
+            self.assertIsNone(state['body_attitude'])
+
+            basic['monotonic_at'] -= 3
+            motion_record['monotonic_at'] = time.monotonic()
+            self.assertEqual(platform.snapshot()['body_posture'], dict(height=.22, motion_state=None))
+
+            motion_record['monotonic_at'] -= 3
+            state = platform.snapshot()
+            self.assertFalse(state['online'])
+            self.assertIsNone(state['body_posture'])
+            self.assertIsNone(state['body_attitude'])
 
 
 class PoseMonitorTests(unittest.TestCase):

@@ -35,6 +35,8 @@ v2.3：`/api/platform` 增加 `cameras`（解码可用性、每路 fresh/age/fra
 | POST | /api/connections/target | {role,action:start或stop}，维护后台连接 |
 | POST | /api/connections/service | {role,action:start或stop或restart或status或logs}，异步操作 |
 
+`/api/platform` 的 `body_attitude` 来自普通运动状态回包，含以弧度计的 `roll`、`pitch` 和 `yaw`。`body_posture` 提供机身高度 `height`（米）与基础运动状态 `motion_state`，分别检查回包时效。缺少有效回包的字段为 `null`，两项均不可用时整个对象为 `null`。
+
 AOS 控制使用 UDP 地址与端口；NOS/GOS 是独立的 SSH/代理通道，可同时连接。SDK 是可选服务的执行端，不代表第四台物理主机。sensor_source 为 nos 或 gos，旧配置默认 nos；不会自动迁移 SDK 或修改原控制器执行位置。
 
 连接检查优先调用受相同令牌保护的机器人代理 `GET /health`（`{ok:true,health_protocol:1}`），不读取地图或启动 ROS。旧代理明确不支持该接口时兼容 `/status`；鉴权失败和传输错误不回退。单次超时显示正在重试，连续超时显示服务无响应。服务在线只表示代理可达；地图、定位、感知新鲜度和运动准备继续由各业务接口独立核对。

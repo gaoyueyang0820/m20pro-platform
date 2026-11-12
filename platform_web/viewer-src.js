@@ -14,20 +14,68 @@ window.createRobotViewer = function(element) {
   const plane=new THREE.Mesh(new THREE.PlaneGeometry(40,40),new THREE.ShadowMaterial({color:0x648182,opacity:.17}));plane.receiveShadow=true;scene.add(plane);
   const grid=new THREE.GridHelper(8,40,0xb3ced0,0xdde7e8);grid.rotation.x=Math.PI/2;grid.position.z=-.003;scene.add(grid);
   const ring=new THREE.Mesh(new THREE.RingGeometry(.68,.683,90),new THREE.MeshBasicMaterial({color:0x39b89d,side:THREE.DoubleSide,transparent:true,opacity:.45}));ring.position.z=.003;scene.add(ring);
-  let robot=null,disposed=false,selected=null,frame,preview=null;
+  let robot=null,disposed=false,selected=null,frame,preview=null,legs=[];
+  const standingHeight=.58, loweredHeight=.19, wheelRadius=.09;
+  let targetHeight=standingHeight,fitLegs=false,lastFrame=performance.now();
   const orientation=new THREE.Quaternion(),bodyEuler=new THREE.Euler(0,0,0,'ZYX');
+  const bodyUp=new THREE.Vector3(),wheelOffset=new THREE.Vector3();
   const referenceJoints={fl_hipy_joint:-.3,fl_knee_joint:.6,fr_hipy_joint:-.3,fr_knee_joint:.6,hl_hipy_joint:.3,hl_knee_joint:-.6,hr_hipy_joint:.3,hr_knee_joint:-.6};
   const loader=new URDFLoader();
   loader.manager.onLoad=()=>{if(disposed||!robot)return;robot.traverse(o=>{if(o.isMesh){o.castShadow=true;o.receiveShadow=true;let p=o;while(p&&!p.isURDFLink)p=p.parent;const name=p?.name||'';o.userData.link=name;const color=name.includes('wheel')?'#25323c':name==='base_link'?'#304a55':'#8cabb1';o.material=new THREE.MeshStandardMaterial({color,metalness:.35,roughness:.55});o.userData.base=color;}});selected=null;element.dispatchEvent(new CustomEvent('modelready'));};
-  loader.load('/assets/model/M20.urdf', r=>{ if(disposed)return;robot=r;r.position.z=.58;scene.add(r);r.setJointValues(referenceJoints);},undefined,()=>element.dispatchEvent(new CustomEvent('modelerror')));
+  loader.load('/assets/model/M20.urdf', r=>{
+    if(disposed)return;
+    robot=r;
+    legs=['fl','fr','hl','hr'].map(name=>{
+      const hip=r.joints[name+'_hipx_joint'],knee=r.joints[name+'_knee_joint'],wheel=r.joints[name+'_wheel_joint'];
+      const bend=name[0]==='f'?1:-1;
+      const offset=hip.position.clone().add(knee.position).add(wheel.position);
+      offset.z=hip.position.z;
+      return {name,bend,offset,thigh:-knee.position.z,shank:-wheel.position.z,
+              minCosine:Math.cos(bend>0?knee.limit.upper:knee.limit.lower)};
+    });
+    r.position.z=targetHeight;
+    scene.add(r);
+    r.setJointValues(referenceJoints);
+  },undefined,()=>element.dispatchEvent(new CustomEvent('modelerror')));
   const resize=()=>{const w=element.clientWidth,h=element.clientHeight;if(!w||!h)return;renderer.setSize(w,h);camera.aspect=w/h;camera.updateProjectionMatrix();};const observer=new ResizeObserver(resize);observer.observe(element);resize();
-  function animate(){if(disposed)return;frame=requestAnimationFrame(animate);if(robot)robot.quaternion.slerp(orientation,.18);controls.update();renderer.render(scene,camera);}animate();
-  return {update(joints,leg,attitude){
+  function updateLegStance(){
+    // Approximate support on a flat surface using the measured base and the URDF lengths.
+    const vertical=bodyUp.set(0,0,1).applyQuaternion(robot.quaternion).z;
+    for(const {name,bend,offset,thigh,shank,minCosine} of legs){
+      const offsetZ=wheelOffset.copy(offset).applyQuaternion(robot.quaternion).z;
+      const clearance=robot.position.z-wheelRadius;
+      const reach=Math.max(0,vertical>.3?(clearance+offsetZ)/vertical:clearance);
+      const cosine=(reach*reach-thigh*thigh-shank*shank)/(2*thigh*shank);
+      const knee=bend*Math.acos(THREE.MathUtils.clamp(cosine,minCosine,1));
+      const hip=-Math.atan2(shank*Math.sin(knee),thigh+shank*Math.cos(knee));
+      robot.setJointValue(name+'_hipy_joint',hip);
+      robot.setJointValue(name+'_knee_joint',knee);
+    }
+  }
+  function animate(now){
+    if(disposed)return;
+    frame=requestAnimationFrame(animate);
+    const blend=1-Math.exp(-Math.max(0,now-lastFrame)/90);
+    lastFrame=now;
+    if(robot){
+      robot.quaternion.slerp(orientation,blend);
+      robot.position.z+=(targetHeight-robot.position.z)*blend;
+      if(fitLegs)updateLegStance();
+    }
+    controls.update();
+    renderer.render(scene,camera);
+  }
+  animate(lastFrame);
+  return {update(joints,leg,attitude,posture){
     if(attitude)orientation.setFromEuler(bodyEuler.set(attitude.roll,attitude.pitch,attitude.yaw,'ZYX'));
     else orientation.identity();
+    fitLegs=Boolean(attitude||posture)&&!(joints||[]).some(j=>j.fresh&&j.part!=='Wheel'&&Number.isFinite(j.position));
+    targetHeight=Number.isFinite(posture?.height)?posture.height:
+      posture?.motion_state===4?loweredHeight:standingHeight;
+    if(fitLegs)targetHeight=Math.max(loweredHeight,targetHeight);
     if(!robot)return;
     for(const j of joints||[]){
-      const position=preview?.[j.index]??j.position;
+      const position=preview?.[j.index]??(j.fresh?j.position:null);
       robot.setJointValue(j.name,Number.isFinite(position)?position:(referenceJoints[j.name]??0));
     }
     if(selected!==leg){selected=leg;robot.traverse(o=>{if(o.isMesh)o.material.color.set(leg&&o.userData.link?.startsWith(leg.toLowerCase())?'#00b89c':o.userData.base);});}

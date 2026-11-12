@@ -1,44 +1,60 @@
 'use strict';
 (function(){
  let capabilities=null,capabilityKey='',loading=false,checked=0;
- const connection=()=>[S?.server_instance,S?.connection_generation,S?.mode].join('|');
+ const connection=()=>[S?.server_instance,S?.connection_generation,S?.mode,S?.ip,S?.online].join('|');
  function paint(){
   if(page!=='navigation')return;
   const current=capabilityKey===connection()?capabilities:null,gos=current?.gos;
   const engineChoice=$('#route-navigation-engine'),policyChoice=$('#disconnect-policy');
+  const previousEngine=engineChoice?.value,previousPolicy=policyChoice?.value;
   const docking=points.some(point=>point.type===3);
   const actions=points.some(point=>point.station_action)||taskCollectorOptions().length>0;
   const active=['running','cancelling'].includes(S?.nav?.status);
   const requiredEngine=docking?'native':actions?'gos':'';
   if(engineChoice){
    if(requiredEngine){
-    if(!engineChoice.dataset.beforeTask)engineChoice.dataset.beforeTask=engineChoice.value;
+    if(!engineChoice.dataset.beforeTask){
+     engineChoice.dataset.beforeTask=engineChoice.value;
+     if(policyChoice)policyChoice.dataset.beforeTask=policyChoice.value;
+    }
     engineChoice.value=requiredEngine;
    }else if(engineChoice.dataset.beforeTask){
     engineChoice.value=engineChoice.dataset.beforeTask;delete engineChoice.dataset.beforeTask;
+    if(policyChoice){policyChoice.value=policyChoice.dataset.beforeTask||'stop';delete policyChoice.dataset.beforeTask;}
    }
    engineChoice.disabled=!!requiredEngine||active;
   }
   const engine=engineChoice?.value||'gos';
-  const nativeReady=S?.mode==='live'&&engine==='native'&&!docking&&!actions&&current?.available===true;
   const nativeOptionsReady=($('#route-arrival')?.value||'continue')==='continue'&&($('#nav-mode')?.value||'1')==='1'&&
    ($('#nav-speed')?.value||'1')==='1'&&($('#nav-gait')?.value||'flat')==='flat'&&($('#nav-manner')?.value||'0')==='0';
   if(policyChoice){
    if(requiredEngine)policyChoice.value='stop';
    policyChoice.disabled=!!requiredEngine||active;
-   for(const option of policyChoice.options)option.disabled=option.value!=='stop'&&!(nativeReady&&nativeOptionsReady&&current.policies?.includes(option.value));
+   const canConfigure=engine==='native'&&!requiredEngine&&nativeOptionsReady;
+   for(const option of policyChoice.options)option.disabled=option.value!=='stop'&&!canConfigure;
   }
   const status=S?.mode==='demo'?'本地演示':docking?'含充电航点 · 自动使用回桩流程':
-   engine==='native'?'原厂导航':
+   engine==='native'?(S?.online===false?'等待连接机器人':'原厂导航'):
+   S?.online===false?'等待连接机器人':
    gos?.available?'GOS 机载寻路已就绪':gos?.message||'正在连接 GOS 寻路服务';
   text('navigation-executor-status',status);
-  const help=docking?'回桩路线采用断联停车。':actions?'到点任务和沿途采集使用 GOS 机载寻路与断联停车。':
-   engine!=='native'?'断联达到 5 秒时停车。继续或返程可在原厂导航下选择。':!nativeReady?'继续或返程需要 NOS 驻机导航服务就绪。':
-   !nativeOptionsReady?'继续或返程要求自动接续、低速敏捷平地、自主导航和正向行走。':'断联达到 5 秒后执行所选策略。';
+  let help='';
+  if(docking)help='回桩路线采用断联停车。';
+  else if(actions)help='到点任务和沿途采集使用 GOS 机载寻路与断联停车。';
+  else if(engine==='gos')help='GOS 断联 5 秒后请求停车。选择「原厂导航」可设置续行或返程。';
+  else if(!nativeOptionsReady)help='续行或返程需要自动接续、低速敏捷平地、自主导航和正向行走。';
+  else if(policyChoice?.value&&policyChoice.value!=='stop'){
+   help=current?.available===true&&current.policies?.includes(policyChoice.value)?
+    '断联达到 5 秒后，NOS 按所选策略执行。':
+    '可先保存路线。执行前请在连接中心启用 NOS 驻机导航。';
+  }
   text('disconnect-policy-help',help);
+  if((previousEngine!==engineChoice?.value||previousPolicy!==policyChoice?.value)&&typeof refreshNavActions==='function'){
+   refreshNavActions();paintGoalPlan();
+  }
  }
  async function refresh(){
-  if(page!=='navigation'||S?.mode!=='live')return;
+  if(page!=='navigation'||S?.mode!=='live'||S?.online===false)return;
   const current=connection();if(current!==capabilityKey){capabilities=null;checked=0;}
   if(loading||Date.now()-checked<30000)return;
   loading=true;capabilityKey=current;
@@ -47,10 +63,16 @@
   finally{loading=false;checked=Date.now();paint();}
  }
  document.addEventListener('change',event=>{
-  if(page==='navigation'&&event.target.id==='route-navigation-engine'&&event.target.value==='gos'){
-   const policy=$('#disconnect-policy');if(policy)policy.value='stop';
-   paint();
+  if(page!=='navigation')return;
+  if(event.target.id==='route-navigation-engine'){
+   const policy=$('#disconnect-policy');
+   if(policy){
+    if(event.target.value==='gos'){policy.dataset.nativePolicy=policy.value;policy.value='stop';}
+    else if(policy.dataset.nativePolicy)policy.value=policy.dataset.nativePolicy;
+   }
+   if(typeof refreshNavActions==='function'){refreshNavActions();paintGoalPlan();}
   }
+  if(event.target.matches('#route-navigation-engine,#disconnect-policy,#route-arrival,#nav-mode,#nav-speed,#nav-gait,#nav-manner,[data-point][data-key="type"],[data-station-key="camera"],[data-collector-enable]'))paint();
  });
  const previousRender=render;render=function(...args){previousRender.apply(this,args);paint();refresh();};
  const previousUpdate=update;update=function(...args){previousUpdate.apply(this,args);paint();refresh();};

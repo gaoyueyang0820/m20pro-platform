@@ -24,6 +24,7 @@ function fixture(){
  for(const name of ['pause-nav','cancel-nav','nav-takeover','clear-points','nav-goal-mode','nav-route-mode','goal-replan','hub-connect','hub-demo'])ctx.ui[name]=async()=>{calls.push({path:'handler:'+name});};
  let responder=path=>{
   if(path==='/api/platform')return structuredClone(ctx.S);
+  if(path==='/api/nav/resident/capabilities')return {available:true,policies:['stop','finish','return','finish_return']};
   if(path==='/api/maps/localize-auto')return {job_id:'recover'};
   if(path.startsWith('/api/operations')){ctx.S.pose.Location=0;return {jobs:{status:'completed',result:{localized:true}}};}
   if(path==='/api/nav/plan')return {plan_id:'NEW',path:[],goal:{yaw:0},points:[],length_m:2};
@@ -68,6 +69,16 @@ test('saved patrol passes its configured native engine and return policy',async(
  assert.equal(f.calls.find(call=>call.path==='/api/nav/plan').data.engine,'native');
  const request=f.calls.find(call=>call.path==='/api/nav/start').data;
  assert.equal(request.engine,'native');assert.equal(request.disconnect_policy,'return');assert.equal(request.explicit_execution,true);
+});
+test('unavailable native continuation leaves the draft or saved route intact before preparation',async()=>{
+ for(const draft of [false,true]){
+  const f=fixture(),options={nav_mode:1,speed:1,engine:'native',disconnect_policy:'return',explicit_execution:true};
+  f.ctx.S.routes[0].options=options;f.ctx.routeOptions=()=>options;f.ctx.navIntent='route';
+  f.setResponder((path,data,requestOptions,previous)=>path==='/api/nav/resident/capabilities'?{available:false}:previous(path));
+  await assert.rejects(draft?f.ctx.ui['start-nav']():f.ctx.runRoute('route'),/启用 NOS 驻机导航/);
+  assert.deepEqual(paths(f),['/api/platform','/api/nav/resident/capabilities']);
+  assert.equal(f.ctx.S.routes[0].options.disconnect_policy,'return');
+ }
 });
 test('edited route starts as a temporary patrol without saving it',async()=>{
  const f=fixture();f.ctx.navIntent='route';await f.ctx.ui['start-nav']();

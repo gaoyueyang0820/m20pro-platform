@@ -46,12 +46,14 @@ for role,target in r['targets'].items():
  if role not in ['nos','gos','sdk','train']:raise ValueError('Invalid role')
  token=target['token']
  if not re.fullmatch(r'[A-Za-z0-9_-]{20,100}',token):raise ValueError('Invalid token')
- envfile=envdir/(role+'.env');envfile.write_text('M20_BRIDGE_TOKEN='+token+'\nM20_DATA_DIR=/var/lib/m20-platform\n');envfile.chmod(0o600)
- if role=='gos' and target.get('gos_aos_ip'):
-  address=ipaddress.IPv4Address(target['gos_aos_ip'])
+ env='M20_BRIDGE_TOKEN='+token+'\nM20_DATA_DIR=/var/lib/m20-platform\n'
+ onboard={'gos':('gos_aos_ip','M20_GOS'),'nos':('resident_aos_ip','M20_RESIDENT')}.get(role)
+ if onboard and target.get(onboard[0]):
+  address=ipaddress.IPv4Address(target[onboard[0]])
   if not address.is_private or address.is_loopback or address.is_unspecified:raise ValueError('Invalid onboard AOS address')
-  with envfile.open('a') as handle:
-   handle.write('M20_GOS_NAVIGATION=1\nM20_GOS_AOS_IP='+str(address)+'\n')
+  prefix=onboard[1]
+  env+=prefix+'_NAVIGATION=1\n'+prefix+'_AOS_IP='+str(address)+'\n'
+ envfile=envdir/(role+'.env');envfile.write_text(env);envfile.chmod(0o600)
  py=target['python'];setups=list(target.get('ros_setup',[]))
  if role=='sdk' and target.get('sdk_workspace'):
   overlay=target['sdk_workspace'].rstrip('/')+'/install/setup.bash'

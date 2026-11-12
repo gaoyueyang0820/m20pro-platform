@@ -123,6 +123,8 @@ class ResidentNavigationClient:
         ref=self.ref;map_=ref['map'];nav=self.nav
         caps=self._request('/missions/capabilities')
         if caps.get('protocol')!=1 or caps.get('available') is not True:raise ValueError('驻机执行服务尚未配置，未启动任务')
+        if ref['policy']!='stop' and ref['policy'] not in caps.get('policies', []):
+            raise ValueError('当前 NOS 服务尚不支持所选断联策略')
         grid=self._request('/maps/grid',dict(name=map_['robot_map_name'],grid_id=map_.get('grid_id',0)))
         raw=base64.b64decode(grid['pgm'],validate=True)
         if (grid.get('robot_map_name')!=map_['robot_map_name'] or hashlib.sha256(raw).hexdigest()!=ref['fingerprint']

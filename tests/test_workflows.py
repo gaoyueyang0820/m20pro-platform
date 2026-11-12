@@ -297,8 +297,9 @@ class ConnectionTests(unittest.TestCase):
     def test_installation_generates_working_service_entries_without_running_services(self):
         sandbox=Path(self.tmp.name)/'installation'
         account=SimpleNamespace(pw_uid=501,pw_gid=20)
-        for role in ['nos','gos','sdk','train']:
-            target=target_config(role,dict(host='robot',sdk_workspace='/home/user/M20_sdk_deploy',train_root='/home/user/rl_training'))
+        for role,onboard in [('nos',False),('nos',True),('gos',True),('sdk',False),('train',False)]:
+            target=target_config(role,dict(host='robot',sdk_workspace='/home/user/M20_sdk_deploy',train_root='/home/user/rl_training',
+                **({'resident_aos_ip' if role=='nos' else 'gos_aos_ip':'10.21.31.103'} if onboard else {})))
             payload=dict(bundle=Connections.bundle(),user='user',targets={role:target})
             source=ROOT_SETUP
             for location in ['/opt/m20-platform','/opt/robot','/var/lib/m20-platform','/etc/m20-platform','/etc/systemd/system','/etc/sudoers.d']:
@@ -315,6 +316,11 @@ class ConnectionTests(unittest.TestCase):
             self.assertTrue((sandbox/'opt/m20-platform/bridge'/entry).is_file())
             self.assertIn('User=user',unit)
             self.assertNotIn('rl_deploy',unit)
+            env=(sandbox/f'etc/m20-platform/{role}.env').read_text()
+            if role=='nos' and onboard:
+                self.assertIn('M20_RESIDENT_NAVIGATION=1\nM20_RESIDENT_AOS_IP=10.21.31.103\n',env)
+            else:self.assertNotIn('M20_RESIDENT_NAVIGATION',env)
+            if role=='gos':self.assertIn('M20_GOS_NAVIGATION=1\nM20_GOS_AOS_IP=10.21.31.103\n',env)
             if role in ['nos','gos']:
                 import xml.etree.ElementTree as ET
                 root=ET.parse(sandbox/('etc/m20-platform/sensors-'+role+'.xml'))

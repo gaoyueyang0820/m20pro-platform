@@ -10,6 +10,7 @@ const modules=[{id:'ops',name:'作业台',icon:'overview',pages:['overview','mot
 function currentModule(){return modules.find(m=>m.pages.includes(page))||modules[0];}
 let S=null,page=pages[location.hash.slice(1)]?location.hash.slice(1):'overview', viewer=null, selectedLeg='FL', session=null, drafts={}, mapId=null, routeId=null, points=[], mapZoom=1, mapTool='waypoint', catalog=[], trainState={jobs:[]}, first=true, stateBusy=false, trainBusy=false, faultSearch='';
 let visionTab='ppe';
+let stateUnavailable=false;
 const modeName=()=>S?.mode==='demo'?'演示模式':'实机连接';
 const btn=(t,ui,style='',ic='',disabled=false)=>`<button type="button" class="btn ${style}" data-ui="${ui}"${disabled?' disabled':''}>${ic?icon(ic):''}${t}</button>`;
 const cmd=(t,a,style='')=>`<button type="button" class="btn ${style}" data-action="${a}">${t}</button>`;
@@ -23,12 +24,31 @@ const empty=(title,text,ic='tasks')=>`<div class="empty">${icon(ic)}<strong>${ti
 function toast(t,error=false){const d=document.createElement('div');d.className='toast'+(error?' error':'');d.textContent=t;$('#toasts').append(d);setTimeout(()=>d.remove(),error?6500:3500);}
 async function api(path,data,quiet=false,options={}){try{const r=await fetch(path,{signal:options.signal,method:data===undefined?'GET':'POST',headers:data===undefined?{}:{'Content-Type':'application/json'},body:data===undefined?undefined:JSON.stringify(data)});const v=await r.json();if(!r.ok||v.ok===false){const error=Error(v.err||'请求失败');if(v.navigation&&typeof v.navigation==='object'&&!Array.isArray(v.navigation))error.navigation=v.navigation;throw error;}return v;}catch(e){if(!quiet)toast(e.message,true);throw e;}}
 function modal(title,html,actions=[]){$('#modal-content').innerHTML=`<h2>${esc(title)}</h2>${html}<div class="dialog-actions">${btn('关闭','modal-close')}${actions.map(a=>btn(a.label,a.ui,a.style||'primary')).join('')}</div>`;if(!$('#modal').open)$('#modal').showModal();}
-async function fetchState(){if(authPending||stateBusy)return;stateBusy=true;try{const data=await api('/api/platform',undefined,true);const prev=S;S=data;if(first){first=false;renderNav();render();}if(prev&&prev.mode!==S.mode){mapId=null;routeId=null;points=[];render();}update();}catch(e){if(S){$('#connection-pill').textContent='服务连接中断';$('#connection-pill').className='pill red';} }finally{stateBusy=false;}}
+async function fetchState(){
+ if(authPending||stateBusy)return;
+ stateBusy=true;
+ try{
+  const data=await api('/api/platform',undefined,true),prev=S;
+  S=data;
+  stateUnavailable=false;
+  if(first){first=false;renderNav();render();}
+  if(prev&&prev.mode!==S.mode){mapId=null;routeId=null;points=[];render();}
+  update();
+ }catch(e){
+  stateUnavailable=true;
+  if(S){
+   const pill=$('#connection-pill');
+   pill.textContent='服务连接中断';
+   pill.className='pill red';
+   if(page==='overview')paintRobotAttitude();
+  }
+ }finally{stateBusy=false;}
+}
 function renderNav(){const mod=currentModule(),rail=$('#rail-nav'),tabs=$('#module-tabs');
  if(rail)rail.innerHTML=modules.map(m=>`<button type="button" class="rail-item ${m.id===mod.id?'active':''}" data-module="${m.id}" title="${m.name}" aria-label="${m.name}" aria-current="${m.id===mod.id?'page':'false'}">${icon(m.icon)}<span>${m.name}</span></button>`).join('');
  if(tabs)tabs.innerHTML=mod.pages.filter(k=>pages[k]).map(k=>`<button type="button" class="module-tab ${page===k?'active':''}" data-page="${k}" role="tab" aria-selected="${page===k}">${icon(k)}<span>${pages[k][0]}</span></button>`).join('');}
 function navigate(p){if(!pages[p])return;if(page==='joints'&&session){api('/api/joints/stop',{},true).catch(()=>{});session=null;}stopMotion();page=p;location.hash=p;window.scrollTo(0,0);renderNav();render();}
-function stage(large=false){return `<div class="robot-stage ${large?'large':''}"><div class="robot-canvas" id="robot-view"></div><div class="model-loading" id="model-loading">正在加载机器人模型…</div><div class="stage-meta"><strong>具身智能机器狗</strong><small>16 DOF · 四轮足式机器人</small></div><div class="stage-controls">${btn('复位视角','reset-view','small')}${page==='joints'?btn('查看反馈','clear-preview','small'):''}</div><div class="stage-bottom"><span>${icon('refresh')} 拖动旋转 · 滚轮缩放</span><b>机器人模型</b></div><span class="source-pill" id="model-source">DEMO TELEMETRY</span><span class="preview-badge" id="preview-badge" hidden>目标姿态预览 · 尚未执行</span></div>`;}
+function stage(large=false){return `<div class="robot-stage ${large?'large':''}"><div class="robot-canvas" id="robot-view"></div><div class="model-loading" id="model-loading">正在加载机器人模型…</div><div class="stage-meta"><strong>M20 Pro</strong><small>四轮足式机器人</small></div><div class="stage-controls">${btn('复位视角','reset-view','small')}${page==='joints'?btn('查看反馈','clear-preview','small'):''}</div><div class="stage-bottom"><span>${icon('refresh')} 拖动旋转 · 滚轮缩放</span></div><span class="source-pill" id="model-source">参考模型</span><span class="preview-badge" id="preview-badge" hidden>目标姿态预览 · 尚未执行</span></div>`;}
 function overview(){return heading(btn('导出状态','export','','download')+btn('连接设备','connect-modal','primary','link'))+`<div class="cards kpi-grid"><div class="card kpi"><div class="kpi-label">${icon('link')}设备连接</div><div class="kpi-value" id="kpi-online">在线<small>DEMO</small></div><div class="kpi-note"><span class="dot"></span><span id="kpi-ip">本地演示环境</span></div></div><div class="card kpi"><div class="kpi-label">${icon('battery')}双电池电量</div><div class="kpi-value" id="kpi-battery">—</div><div class="kpi-note" id="kpi-battery-note">前侧 / 后侧电池</div><svg class="kpi-graph" viewBox="0 0 100 40"><path d="M1 31L15 24 28 27 40 17 53 20 66 13 81 15 99 6" fill="none" stroke="#70bfa5" stroke-width="1.5"/></svg></div><div class="card kpi"><div class="kpi-label">${icon('joints')}关节状态</div><div class="kpi-value" id="kpi-joints">—</div><div class="kpi-note">16 个电机 · 四条腿</div></div><div class="card kpi"><div class="kpi-label">${icon('temp')}最高关节温度</div><div class="kpi-value" id="kpi-temp">—</div><div class="kpi-note" id="kpi-temp-note">反馈温度 · 持续更新</div></div></div><div class="overview-main">${card('机器人数字视图',stage()+`<div class="source-note" id="overview-source">演示数据 · 三维姿态随模拟关节变化。</div>`,'joints','<span class="pill" id="model-pill">模拟反馈</span>')}${card('运行状态',`<div class="health-list">${kv('运动状态','—','health-motion')}${kv('使用模式','—','health-mode')}${kv('当前步态','—','health-gait')}${kv('地图定位','—','health-loc')}${kv('硬急停','—','health-hes')}${kv('充电状态','—','health-charge')}</div><div class="quick-actions">${cmd('站立','stand')}${cmd('趴下','lie')}${btn('前往遥控','goto-motion','','motion')}${cmd('停止运动','stop','danger')}</div>`,'sensors','<span class="dot"></span>')}</div><div class="overview-bottom">${card('计算单元温度',`<canvas id="temp-chart" class="mini-chart"></canvas><div class="chart-legend"><span>最近 60 秒</span><span><span class="dot"></span>最高主机温度 / °C</span></div>`,'cpu')}${card('当前任务',`<div id="overview-task"></div>`,'tasks',btn('任务中心','goto-tasks','small ghost','arrow'))}${card('最近动态','<div class="log-scroll" id="overview-logs"></div>','clock')}</div>`+'';}
 function motion(){return heading(cmd('停止运动','stop','danger')+cmd('软急停','estop','danger'))+`<div class="split"><div class="stack">${card('姿态与步态',`<div class="card-pad"><div class="button-row">${cmd('站立','stand','primary')}${cmd('趴下','lie')}${cmd('软急停','estop','danger')}</div><div class="small-heading">使用模式</div><div class="mode-choice">${[['normal',0,'常规 / 手动','直接遥控'],['aux',2,'辅助 / 避障','雷达辅助避障'],['nav',1,'自主导航','使用地图路线']].map(([m,id,title,tip])=>`<button data-action="mode_${m}" data-mode="${id}"><strong>${title}</strong><small>${tip}</small></button>`).join('')}</div><div class="small-heading">步态 · 切换前先停止运动</div><div class="gait-groups"><div><small>标准运动</small>${cmd('基础','gait_basic')}${cmd('楼梯','gait_standard_stair')}</div><div><small>敏捷运动</small>${cmd('平地','gait_flat')}${cmd('楼梯','gait_stair')}</div><div><small>兼容步态</small>${cmd('高台','gait_platform')}</div></div><p class="help" id="drive-mode-state"></p><details open class="compatibility-tools"><summary>兼容姿态</summary><p class="help">可用动作取决于设备固件。阻尼与空闲不等同于趴下；日常停车请使用“停止运动”。</p>${cmd('阻尼','damping','small')}${cmd('空闲','idle','small')}${cmd('标准姿态','standard','small')}</details></div>`,'motion')}${card('照明与方向',`<div class="card-pad"><div class="form-grid"><div><div class="small-heading">前照明</div>${cmd('打开','light_front_on')}${cmd('关闭','light_front_off')}</div><div><div class="small-heading">后照明</div>${cmd('打开','light_back_on')}${cmd('关闭','light_back_off')}</div></div><div class="divider"></div><div class="small-heading">互动动作</div><div class="button-row">${cmd('灯语问好','greet','primary')}${cmd('点头','greet_nod')}${cmd('起伏','greet_bob')}</div><p class="help">灯语持续 4 秒。点头与起伏需要设备固件支持，请先站稳；无响应时可使用灯语。按停止或手动驾驶可中断。</p><p class="help" id="greeting-status" role="status"></p><div class="divider"></div><div class="segmented"><button data-action="dir_forward" id="dir-forward">头朝前</button><button data-action="dir_backward" id="dir-backward">尾朝前</button></div><p class="help">选择机头或机尾作为手动前进方向。自主行走请使用头朝前。</p></div>`,'vision')}</div><div class="stack">${card('手动遥控',`<div class="joystick-wrap"><div class="dpad"><span></span><button data-velocity="1,0,0" aria-label="向前">↑</button><span></span><button data-velocity="0,1,0" aria-label="向左平移">←</button><button class="center" data-ui="motion-stop">STOP</button><button data-velocity="0,-1,0" aria-label="向右平移">→</button><button data-velocity="0,0,1" aria-label="左转">↶</button><button data-velocity="-1,0,0" aria-label="后退">↓</button><button data-velocity="0,0,-1" aria-label="右转">↷</button></div></div><div class="keys"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 平移 · <kbd>Q</kbd><kbd>E</kbd> 转向<br>保持按住才会移动，离开页面即停止。</div><div class="card-pad"><div class="range-label"><span>遥控幅度</span><b id="speed-label">0.50</b></div><input id="motion-speed" class="range" type="range" min="0.05" max="0.7" step="0.05" value="0.5"><div class="divider"></div>${kv('X / Y / Yaw','—','velocity-readout')}${kv('控制状态','—','motion-readiness')}</div>`,'navigation')}${card('电源与充电',`<div class="card-pad"><div class="form-grid">${btn('开始进桩','charge-in')}${btn('正常退桩','charge-out')}${btn('休眠','sleep')}${btn('唤醒','wake')}</div><p class="help">进桩需已到充电桩前且安装充电选件。休眠需先趴下。</p></div>`,'battery')}</div></div>`;}
 function joints(){
@@ -123,17 +143,35 @@ function diagnostics(){
 function settings(){return heading(btn('设备维护','maintenance-modal','','settings')+btn('导出工作区','export','','download'))+`<div class="settings-grid"><div class="stack">${card('机器人连接',`<form id="connection-form" class="card-pad">${select('运行模式','connect-mode',[['demo','本地演示 · 不发送机器人数据'],['live','实机 · basic_server UDP']])}<div class="form-grid">${field('AOS IP 地址','robot-ip',S.ip||'10.21.31.103')}${field('UDP 端口','robot-port',30000,'number')}</div><button type="submit" class="btn primary wide section-gap">${icon('link')} 应用连接</button><p class="help">填写机器人地址后连接，状态会自动更新。</p></form>`,'link')}${card('扩展通道',`<form id="settings-form" class="card-pad">${field('SDK 关节代理','sdk-url',S.config.sdk,'url','推荐 SSH 隧道：http://127.0.0.1:8091')}${field('NVIDIA 训练工作站代理','train-url',S.config.train,'url','推荐 SSH 隧道：http://127.0.0.1:8092')}${field('NOS 地图与服务代理','nos-url',S.config.nos,'url','推荐 SSH 隧道：http://127.0.0.1:8093')}<button class="btn primary wide" type="submit">保存本次连接设置</button><p class="help">代理令牌通过服务端 M20_BRIDGE_TOKEN 配置，不存入浏览器。URL 本次会话有效，可通过 M20_SDK_URL / M20_TRAIN_URL / M20_NOS_URL 固定。</p></form>`,'settings')}</div><div class="stack">${card('功能接入一览',`<div class="card-pad" id="capability-list"></div>`,'tasks')}${card('运行说明',`<div class="card-pad"><p class="help">连接后可使用驾驶、导航、建图和视觉功能。SDK 与训练服务在各自页面配置。</p>${kv('日常运动','basic_server：RL 状态 17')}${kv('关节控制','独立 SDK 代理 / 校准坐标')}${kv('强化学习','Isaac Lab + RSL-RL / NVIDIA')}${kv('三维模型','本地 M20 URDF + STL')}<div class="divider"></div><a href="/docs" target="_blank" rel="noopener">查看平台 API 文档 ${icon('arrow')}</a><p class="help">连接与维护步骤见使用文档。硬急停请使用机器人上的实体按钮。</p></div>`,'file')}</div></div>`;}
 function render(){if(viewer){viewer.dispose();viewer=null;}drafts={};$('#breadcrumb').textContent=pages[page][0];const crumbModule=document.getElementById('crumb-module');if(crumbModule)crumbModule.textContent=currentModule().name;$('#main').innerHTML=({overview,motion,joints,navigation:navPage,maps:mapsPage,tasks,training,sensors,vision,diagnostics,settings,sdk:sdkPage,autonomy:autonomyPage})[page]();if(page==='settings'&&$('#connect-mode'))$('#connect-mode').value=S.mode;if(page==='joints')renderJointSliders();const ppeCamera=$('#ppe-camera');if(ppeCamera&&S.ppe.enabled)ppeCamera.value=S.ppe.camera;if(['navigation','maps'].includes(page)){renderPoints();drawMap();}if(['overview','joints'].includes(page))setupViewer();if(page==='diagnostics')renderCatalog();if(page==='training')fetchTraining();update();}
 function paintRobotAttitude(){
- const demo=S.mode==='demo',attitude=S.body_attitude,sdk=S.sdk.connected&&S.sdk.fresh;
- const source=demo?'演示姿态':attitude?'IMU 机身姿态':'等待机身姿态';
- text('model-pill',source);
- text('model-source',page==='overview'?source:demo?'演示关节反馈':sdk?'SDK 实时关节':'关节示意');
- const readout=attitude?[
-  '横滚 '+fmt(attitude.roll*180/Math.PI,1)+'°',
-  '俯仰 '+fmt(attitude.pitch*180/Math.PI,1)+'°',
-  '偏航 '+fmt(attitude.yaw*180/Math.PI,1)+'°'
- ].join(' · '):source;
- text('overview-source',readout+(demo?' · 演示':sdk?' · 实时关节':' · 关节示意'));
- viewer?.update(S.joints,page==='joints'?selectedLeg:null,page==='overview'?attitude:null);
+ const overview=page==='overview';
+ const demo=!stateUnavailable&&S.mode==='demo';
+ const attitude=stateUnavailable?null:S.body_attitude;
+ const posture=stateUnavailable?null:S.body_posture;
+ const sdk=!stateUnavailable&&!demo&&S.sdk.connected&&S.sdk.fresh&&S.joints.some(j=>j.fresh&&Number.isFinite(j.position));
+ if(overview){
+  const motionNames={0:'空闲',1:'站立',2:'关节阻尼 / 软急停',3:'开机阻尼',4:'已趴下',17:'站立 / 行走'};
+  const measured=Boolean(attitude||posture);
+  const status=stateUnavailable?'平台连接中断':S.online?'等待机身回报':'机器人离线';
+  const pill=$('#model-pill');
+  if(pill)pill.className='pill'+(demo?' amber':measured?'':' gray');
+  text('model-pill',demo?'演示姿态':motionNames[posture?.motion_state]||(measured?'实时姿态':status));
+  text('model-source',demo?'演示数据':measured?'机身实时回报':'参考模型');
+  const readout=[];
+  if(Number.isFinite(posture?.height))readout.push('机身高度 '+fmt(posture.height,2)+' m');
+  if(attitude)readout.push(
+   '横滚 '+fmt(attitude.roll*180/Math.PI,1)+'°',
+   '俯仰 '+fmt(attitude.pitch*180/Math.PI,1)+'°',
+   '偏航 '+fmt(attitude.yaw*180/Math.PI,1)+'°'
+  );
+  if(!readout.length)readout.push(measured?'等待机身角度与高度':status);
+  readout.push(sdk?'关节 · SDK 实测':demo?'模拟关节':measured?'腿部关节示意':'参考模型');
+  text('overview-source',readout.join(' · '));
+  const joints=stateUnavailable||demo&&posture?.motion_state===4?S.joints.map(({name,index})=>({name,index})):S.joints;
+  viewer?.update(joints,null,attitude,posture);
+ }else{
+  text('model-source',demo?'演示关节反馈':sdk?'SDK 实时关节':'关节示意');
+  viewer?.update(S.joints,selectedLeg);
+ }
 }
 function setupViewer(){const el=$('#robot-view');if(!el)return;if(!window.createRobotViewer){setTimeout(()=>{if(el.isConnected)setupViewer();},100);return;}try{el.addEventListener('modelready',()=>{$('#model-loading')?.setAttribute('hidden','');paintRobotAttitude();});el.addEventListener('modelerror',()=>{const l=$('#model-loading');if(l)l.textContent='模型加载失败，请刷新页面或检查模型文件';});viewer=window.createRobotViewer(el);}catch(e){$('#model-loading').textContent='三维显示需要 WebGL，请启用浏览器硬件加速。';}}
 function text(id,v){const el=document.getElementById(id);if(!el||el.textContent===v)return;el.textContent=v;}
