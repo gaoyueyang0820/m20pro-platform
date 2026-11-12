@@ -234,6 +234,9 @@ class MapService:
             return dict(result,activation_context=context)
         if path=='/maps/build':
             action=req.get('action')
+            if action=='retry_fusion':
+                if self.demo:raise ValueError('演示没有需要重试的原始扫描')
+                return self.privileged('retry_fusion',dict(request_id=req.get('request_id')))
             if action not in ['start','extend','stop','discard']:raise ValueError('建图操作无效')
             identity=request_identity(req.get('request_id'));expected=request_identity(req.get('expected_start_request_id'))
             if action=='discard' and expected is None:raise ValueError('放弃本轮需要明确的采集归属')

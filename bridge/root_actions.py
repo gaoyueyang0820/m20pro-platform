@@ -117,6 +117,8 @@ def _execute(req,maps,data):
         return launch('mapping','m20-session-'+(identity or uuid.uuid4().hex[:10]),context=dict(workflow='extension',base=base,anchor=anchor,grid_id=grid,maps=str(maps)),request_id=identity)
     if action=='mapping':
         return launch('mapping',map_name(req.get('name')),request_id=req.get('request_id'))
+    if action=='retry_fusion':
+        return launch('stop_mapping',request_id=req.get('request_id'),retry_maps=maps)
     if action in ['stop_mapping','discard_mapping']:
         context=None
         if action=='discard_mapping':
@@ -133,7 +135,7 @@ def _execute(req,maps,data):
 
 def execute(req,maps=Path('/var/opt/robot/data/maps'),data=Path('/var/lib/m20-platform')):
     # Serialize activation/producer starts with catalog edits across helper processes.
-    if req.get('action') in ['apply','mapping','extend_mapping','refine_map','import','localize_auto']:
+    if req.get('action') in ['apply','mapping','extend_mapping','refine_map','import','localize_auto','retry_fusion']:
         with catalog_lock(maps):return _execute(req,maps,data)
     return _execute(req,maps,data)
 

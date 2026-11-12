@@ -111,6 +111,8 @@ def transform(points,T):
 
 def voxel(points,size=.15,limit=None):
     import numpy as np
+    # NOS NumPy 1.17 cannot reshape an empty axis-unique input.
+    if not len(points):return points
     _,index=np.unique(np.floor(points[:,:3]/size).astype(np.int32),axis=0,return_index=True)
     result=points[index]
     if limit and len(result)>limit:result=result[::math.ceil(len(result)/limit)]
@@ -358,9 +360,13 @@ def fuse_maps(base,session,destination,anchor,grid_id=0,registration=register_pc
     touched=np.isin(old_keys.view(key_type).ravel(),np.unique(new_keys.view(key_type).ravel()))
     untouched=old[~touched]
     combined=np.concatenate([old[touched],moved]);keys=np.floor(combined[:,:3]/.04).astype(np.int32)
-    _,inverse=np.unique(keys,axis=0,return_inverse=True);counts=np.bincount(inverse).astype(np.float64)
-    merged=np.column_stack([np.bincount(inverse,weights=combined[:,i])/counts for i in range(4)]).astype(np.float32)
-    merged=np.concatenate([untouched,merged])
+    if len(combined):
+        _,inverse=np.unique(keys,axis=0,return_inverse=True);counts=np.bincount(inverse).astype(np.float64)
+        merged=np.column_stack([np.bincount(inverse,weights=combined[:,i])/counts for i in range(4)]).astype(np.float32)
+        merged=np.concatenate([untouched,merged])
+    else:
+        merged=untouched
+    if not len(merged):raise ValueError('没有可生成地图的有效融合点，原始扫描已保留')
     new_grid=read_grid(session,0);prior_file=base/('.m20-grid-evidence-'+str(grid_id)+'.npy')
     prior=np.load(prior_file,allow_pickle=False) if prior_file.exists() else None
     grid=fuse_grid(old_grid,new_grid,T,prior,confirmed_changes=confirmed)

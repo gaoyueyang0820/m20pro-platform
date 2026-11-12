@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from m20.map_fusion import FusionDecisionError
 
@@ -17,7 +18,28 @@ def completion_metadata(record):
     """Additive fields; old callers retain phase/state/result_maps semantics."""
     keys=['save_status','fusion_status','observations_saved','candidate_created',
           'observation_session','requirements','next_capture','discarded','temporary_files_retained','temporary_observations','observation_ownership']
-    return {key:record[key] for key in keys if key in record}
+    metadata={key:record[key] for key in keys if key in record}
+    if record.get('state')=='failed' and record.get('vendor_save_succeeded') and record.get('observation_session'):
+        metadata['can_retry_fusion']=True
+    return metadata
+
+
+def retry_context(capture,stop,maps):
+    """Retry only the retained scan referenced by the current save receipt."""
+    source=stop.get('observation_session') or {}
+    saved=source.get('name');name=capture.get('name')
+    context=stop.get('context') or {}
+    if not (stop.get('state')=='failed' and stop.get('vendor_save_succeeded')
+            and context.get('workflow')=='extension' and stop.get('started',0)>capture.get('started',0)>0
+            and stop.get('expected_start_request_id') in (None,capture.get('request_id'))
+            and capture.get('state') not in ('starting','running') and not capture.get('processes_alive')
+            and isinstance(saved,str) and name and saved.startswith(name+'-')):
+        raise ValueError('没有可重试的已保存扫描')
+    from m20.map_formats import map_name
+    folder=Path(maps)/map_name(saved)
+    if folder.is_symlink() or not (folder/'full_cloud.pcd').is_file() or not (folder/'.sessions/session_0/poses.txt').is_file():
+        raise ValueError('未找到本轮保留的原始扫描')
+    return dict(context,maps=str(maps),retry_saved_scan=saved)
 
 
 def completion_message(record, fallback):
@@ -148,7 +170,7 @@ def unowned_processes(capture):
     return [p for pid,p in slam_processes().items() if pid not in owned]
 
 
-def launch(kind, name=None, logs=LOGS, context=None, request_id=None, expected_start_request_id=None):
+def launch(kind, name=None, logs=LOGS, context=None, request_id=None, expected_start_request_id=None, *, retry_maps=None):
     import fcntl  # Root launcher runs on Linux; local preview also supports Windows.
     if kind not in ['mapping', 'stop_mapping']:
         raise ValueError('建图操作无效')
@@ -165,6 +187,10 @@ def launch(kind, name=None, logs=LOGS, context=None, request_id=None, expected_s
         fcntl.flock(lock,fcntl.LOCK_EX)
         previous = read_job(kind, logs)
         capture=read_job('mapping',logs) if kind=='stop_mapping' else previous
+        if retry_maps is not None:
+            if slam_processes():raise ValueError('当前有地图采集或后处理，稍后可重试融合')
+            context=retry_context(capture,previous,retry_maps)
+            expected_start_request_id=capture.get('request_id')
         if expected_start_request_id is not None and capture.get('request_id')!=expected_start_request_id:
             raise ValueError('当前采集不属于本次请求，未发送停止命令')
         if expected_start_request_id is not None and capture.get('state') not in ['starting','running'] and unowned_processes(capture):
@@ -248,9 +274,12 @@ def worker(kind, logs, name=None, context=None, request_id=None, expected_start_
                     break
                 if time.monotonic()>=deadline:raise ValueError('建图启动尚未结束，停止结果待核对；请稍后重试停止保存')
                 state['message']='等待本次建图启动结束后停止保存';persist();time.sleep(.2)
-        with logfile.open('w') as log:
-            logfile.chmod(0o644)
-            result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
+        if kind=='stop_mapping' and context.get('retry_saved_scan'):
+            result=SimpleNamespace(returncode=0)
+        else:
+            with logfile.open('w') as log:
+                logfile.chmod(0o644)
+                result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
         if result.returncode==0 and kind=='stop_mapping' and context.get('discard') is True:
             maps=Path(context['maps']);temporary=[];active=(maps/'active').resolve()
             # drmap stop_mapping always performs vendor post-processing. Keep
@@ -289,7 +318,9 @@ def worker(kind, logs, name=None, context=None, request_id=None, expected_start_
                 from datetime import datetime,timezone,timedelta
                 from m20.map_formats import map_name
                 base=maps/map_name(context['base'])
-                candidates=[p for p in maps.glob(previous['name']+'-*') if p.is_dir() and (p/'full_cloud.pcd').is_file() and p.stat().st_mtime>=previous.get('started',0)]
+                saved=context.get('retry_saved_scan')
+                candidates=([maps/map_name(saved)] if saved else
+                            [p for p in maps.glob(previous['name']+'-*') if p.is_dir() and (p/'full_cloud.pcd').is_file() and p.stat().st_mtime>=previous.get('started',0)])
                 if len(candidates)!=1:raise ValueError('未找到本轮完整扫描，原图保持不变，请查看采集日志')
                 state.update(vendor_save_succeeded=True,save_status='vendor_save_finished',
                     observation_session=dict(name=candidates[0].name,path=str(candidates[0]),native_session='session_0'),

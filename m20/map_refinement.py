@@ -91,6 +91,7 @@ def collect_evidence(files,grid):
         if pts.ndim!=2 or pts.shape[1]!=3 or len(pts)>60000 or pose.shape!=(7,) or not np.isfinite(pts).all() or not np.isfinite(pose).all() or not math.isfinite(stamp):raise ValueError('采集记录格式无效')
         T=pose_matrix(pose);body=transform(pts,np.linalg.inv(T));distance=np.linalg.norm(body[:,:2],axis=1)
         pts=pts[(distance>.55)&(distance<6)];body=body[(distance>.55)&(distance<6)]
+        if not len(pts):continue
         floor=supported_floor(body);free={tuple(p) for p in floor['floor']};blocked={tuple(p) for p in floor['obstacles']}
         epoch=math.floor(stamp/10);accepted+=1;poses.append(pose[:3].tolist())
         # A voxel is counted once per ten-second visit, not once per laser return.
