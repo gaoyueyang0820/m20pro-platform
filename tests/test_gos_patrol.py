@@ -16,6 +16,7 @@ from bridge.root_actions import execute
 from bridge.task_collection import CollectionCancelled, RouteCollection
 from m20.autonomy_core import disk
 from m20.patrol_actions import FastBee, StationActions, station_spec
+from m20.point_navigation import PointNavigator
 from m20.resident_navigation_client import ResidentNavigationClient
 from m20.task_collectors import IoTSampler, collector_specs
 
@@ -132,6 +133,24 @@ class GOSPatrolTests(unittest.TestCase):
                                                                 goal=[3.,3.],yaw=0.))
         self.assertGreater(result['plan']['length_m'], .8)
         self.factory.assert_not_called()
+
+    def test_control_preparation_waits_for_the_first_basic_reply(self):
+        navigator=object.__new__(PointNavigator)
+        navigator.app=SimpleNamespace(lock=threading.RLock(),link=self.link)
+        navigator.check=Mock()
+        record=self.link.record
+        basic_reads=0
+        def delayed(kind,command):
+            nonlocal basic_reads
+            if (kind,command)==(1002,6):
+                basic_reads+=1
+                if basic_reads==1:return {}
+            return record(kind,command)
+        with patch.object(self.link,'record',side_effect=delayed):
+            navigator._prepare_motion('synthetic')
+        self.assertEqual(basic_reads,2)
+        self.assertEqual(navigator.motion_mode,0)
+        self.assertEqual(self.link.events,[])
 
     def test_device_only_station_reads_each_device_while_stopped(self):
         actions = StationActions(self.service.aos, dict(iot_url='http://gateway.example.invalid',iot_token='fixture'))
@@ -287,6 +306,7 @@ class GOSPatrolTests(unittest.TestCase):
             if role=='nos' and path=='/maps/navigation-lease':
                 return manage_map_lease(self.map_service,req)
             self.assertEqual(role,'gos')
+            if path=='/sensors/status':return dict(odom=dict(frame_id='map'))
             return self.service.dispatch(path,req)
         with patch('m20.resident_navigation_client.rpc',side_effect=rpc):
             client.prepared(nav,executor='gos')

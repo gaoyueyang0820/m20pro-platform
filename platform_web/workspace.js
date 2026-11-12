@@ -148,7 +148,8 @@ function navigationMapReady(){
  const map=selectedMap();return S.mode==='demo'||!!(map?.verified_for_robot&&map.robot_ip===S.ip&&map.robot_map_name===mapLibrary.active);
 }
 function navigationMapCanPrepare(map=selectedMap()){
- return S.mode==='demo'||!!(map?.robot_map_name&&map.robot_ip===S.ip&&(!mapLibrary.active||map.robot_map_name===mapLibrary.active));
+ return S.mode==='demo'||!!(map?.robot_map_name&&!map.demo&&!map.archived&&
+  (mapLibrary.active?map.robot_map_name===mapLibrary.active:map.robot_ip===S.ip));
 }
 function paintMapFlow(){
  if(!['maps','navigation'].includes(page)||!$('#main .page-heading'))return;
@@ -214,7 +215,7 @@ render=function(){
   }
   if(navSyncOwner?.scope!==scope){navSyncBusy=false;navSyncOwner=null;}
   if(window.M20NavigationPreparation?.state){paintMapFlow();return;}
-  if(page==='navigation'&&!navSyncBusy&&current?.robot_map_name===mapLibrary.active&&!current?.verified_for_robot&&S.mode==='live'){
+  if(page==='navigation'&&!navSyncBusy&&current?.robot_map_name===mapLibrary.active&&current?.robot_ip===S.ip&&!current?.verified_for_robot&&S.mode==='live'){
    const token={scope};navSyncOwner=token;navSyncBusy=true;paintMapFlow();
    try{const previous=mapId;await syncNavigationMap(mapLibrary.active,current.grid_id||0);if(scope===navigationMapScope()&&page==='navigation'&&previous!==mapId)render();}
    catch(e){if(scope===navigationMapScope())toast('地图暂未同步，开始时将自动重试',true);}

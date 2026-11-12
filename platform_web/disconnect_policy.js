@@ -8,7 +8,8 @@
   const engineChoice=$('#route-navigation-engine'),policyChoice=$('#disconnect-policy');
   const previousEngine=engineChoice?.value,previousPolicy=policyChoice?.value;
   const docking=points.some(point=>point.type===3);
-  const actions=points.some(point=>point.station_action)||taskCollectorOptions().length>0;
+  const collectors=taskCollectorOptions();
+  const actions=points.some(point=>point.station_action)||collectors.some(spec=>spec.kind!=='people_count'||!['front','rear'].includes(spec.camera));
   const active=['running','cancelling'].includes(S?.nav?.status);
   const requiredEngine=docking?'native':actions?'gos':'';
   if(engineChoice){
@@ -36,11 +37,11 @@
   const status=S?.mode==='demo'?'本地演示':docking?'含充电航点 · 自动使用回桩流程':
    engine==='native'?(S?.online===false?'等待连接机器人':'原厂导航'):
    S?.online===false?'等待连接机器人':
-   gos?.available?'GOS 机载寻路已就绪':gos?.message||'正在连接 GOS 寻路服务';
+   gos?.available?'GOS 寻路服务已连接':gos?.message||'正在连接 GOS 寻路服务';
   text('navigation-executor-status',status);
   let help='';
   if(docking)help='回桩路线采用断联停车。';
-  else if(actions)help='到点任务和沿途采集使用 GOS 机载寻路与断联停车。';
+  else if(actions)help='到点作业、外接球机和物联网采集使用 GOS 机载寻路与断联停车。';
   else if(engine==='gos')help='GOS 断联 5 秒后请求停车。选择「原厂导航」可设置续行或返程。';
   else if(!nativeOptionsReady)help='续行或返程需要自动接续、低速敏捷平地、自主导航和正向行走。';
   else if(policyChoice?.value&&policyChoice.value!=='stop'){
@@ -48,6 +49,7 @@
     '断联达到 5 秒后，NOS 按所选策略执行。':
     '可先保存路线。执行前请在连接中心启用 NOS 驻机导航。';
   }
+  if(engine==='native'&&collectors.length&&!actions)help=(help?help+' ':'')+'人数由电脑采集，电脑断联期间暂停。';
   text('disconnect-policy-help',help);
   if((previousEngine!==engineChoice?.value||previousPolicy!==policyChoice?.value)&&typeof refreshNavActions==='function'){
    refreshNavActions();paintGoalPlan();
@@ -72,7 +74,7 @@
    }
    if(typeof refreshNavActions==='function'){refreshNavActions();paintGoalPlan();}
   }
-  if(event.target.matches('#route-navigation-engine,#disconnect-policy,#route-arrival,#nav-mode,#nav-speed,#nav-gait,#nav-manner,[data-point][data-key="type"],[data-station-key="camera"],[data-collector-enable]'))paint();
+  if(event.target.matches('#route-navigation-engine,#disconnect-policy,#route-arrival,#nav-mode,#nav-speed,#nav-gait,#nav-manner,[data-point][data-key="type"],[data-station-key="camera"],[data-collector-enable],[data-collector-field="camera"]'))paint();
  });
  const previousRender=render;render=function(...args){previousRender.apply(this,args);paint();refresh();};
  const previousUpdate=update;update=function(...args){previousUpdate.apply(this,args);paint();refresh();};

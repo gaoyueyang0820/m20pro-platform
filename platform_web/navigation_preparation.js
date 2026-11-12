@@ -158,13 +158,16 @@
   if(!force&&selected?.verified_for_robot&&selected.robot_ip===S.ip&&typeof mapLibrary!=='undefined'&&selected.robot_map_name===mapLibrary.active)return;
   const name=selected?.robot_map_name,grid=selected?.grid_id||0;
   const library=await request(t,'/api/maps/library');
-  if(!name||selected.robot_ip!==S.ip||library.active!==name){
+  if(!name||selected.demo||selected.archived||library.active!==name){
    throw Object.assign(Error('目标不在机器人当前地图上，请显示当前地图后重新选点'),{navigation:{classification:'map_identity_mismatch',reason_code:'active_map_mismatch',recommended_action:'sync_active_map',selected_map:name,active_map:library.active}});
   }
   const entry=library.maps?.find(m=>m.name===name);
   if(!entry?.grids?.includes(grid))throw Error('所选地图分区当前不可用，请重新选择地图');
   status(t,'正在更新导航地图','syncing');
-  const synced=await request(t,'/api/maps/library/sync',{name,grid_id:grid},15000),map=synced.map;
+  const sourceMapId=selected.robot_ip!==S.ip?selected.id:null;
+  const syncRequest={name,grid_id:grid,...(sourceMapId?{source_map_id:sourceMapId}:{})};
+  const synced=await request(t,'/api/maps/library/sync',syncRequest,15000),map=synced.map;
+  if(sourceMapId&&(synced.matched_source_map_id!==sourceMapId||map?.id!==sourceMapId))throw Error('平台尚未确认旧地图坐标，请同步当前地图后核对航点');
   if(!map?.id||map.robot_map_name!==name||(map.grid_id||0)!==grid||map.verified_for_robot!==true)throw Error('地图仍在更新，请稍后再试');
   const previous=payload.map_id;payload.map_id=map.id;
   S.maps=S.maps.filter(m=>m.id!==map.id).concat([map]);

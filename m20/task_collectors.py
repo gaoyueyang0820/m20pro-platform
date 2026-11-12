@@ -79,6 +79,10 @@ def collector_catalog():
                  min_interval_s=entry.min_interval, max_interval_s=300, fields=list(entry.fields))
             for kind, entry in COLLECTORS.items()]
 
+def requires_gos_collection(specs):
+    return any(spec.get('kind') != 'people_count' or spec.get('camera') not in ('front', 'rear')
+               for spec in specs)
+
 
 def collector_specs(items):
     if items is None:

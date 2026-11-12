@@ -34,6 +34,7 @@ GROUPS={
                   'test_localization_recovery','test_navigation_intents','test_goal_approach','test_goal_approach_review','test_body_projection_start','test_navigation_speckles','test_navigation_motion_alignment','test_planning_snapshot'],
     'sensing':['test_sensor_cache','test_sensor_reader','test_latest_observation','test_ground_recovery','test_sensing_equivalence','test_manual_turn_scan_frames','test_live_surface_precision'],
     'maps':['test_map_change_policy','test_map_fusion','test_map_update_v3','test_map_catalog','test_map_catalog_review',
+            'test_workflows.HubTests.test_navigation_sync_reuses_exact_grid_across_robot_addresses',
             'test_map_learning.MapLearningTests.test_recorder_quality_and_duplicate_stamp_checks',
             'test_mapping_save_outcomes.SyntheticSavedObservationTests'],
     'lifecycle':['test_mapping_request_identity','test_operations_lifecycle','test_delivery_boundary','test_navigation_preview_identity','test_greeting_runtime','test_shared_listener.SharedStartupTests','test_map_management_hub','test_map_management_review','test_connection_recovery','test_sdk_setup_review',

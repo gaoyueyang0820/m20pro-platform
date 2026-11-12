@@ -248,6 +248,23 @@ test('a truly different active map is not given the old target coordinates',asyn
  assert.equal(started(f),false);assert.equal(f.calls.some(r=>r.path==='/api/maps/library/sync'),false);
  assert.equal(f.calls.some(r=>r.path==='/api/maps/localize-auto'),false);assert.equal(f.ctx.points[0].x,2);
 });
+test('patrol after an address change keeps waypoints only after exact grid confirmation',async()=>{
+ for(const confirmed of [true,false]){
+  const f=fixture(),old=f.ctx.S.maps[0];
+  old.robot_ip='previous-address';old.verified_for_robot=false;
+  f.ctx.navIntent='route';f.ctx.S.pose.Location=0;f.ctx.points.push({x:3,y:1});
+  f.ctx.navigationMapReady=()=>false;f.ctx.navigationMapCanPrepare=()=>true;
+  f.setResponder((path,data,options,previous)=>path==='/api/maps/library/sync'
+   ?{map:{...old,robot_ip:f.ctx.S.ip,verified_for_robot:true},...(confirmed?{matched_source_map_id:old.id}:{})}
+   :previous(path));
+  if(confirmed)await f.ctx.ui['start-nav']();
+  else await assert.rejects(f.ctx.ui['start-nav'](),/尚未确认旧地图坐标/);
+  const sync=f.calls.find(call=>call.path==='/api/maps/library/sync');
+  assert.equal(sync.data.source_map_id,old.id);
+  assert.equal(started(f),confirmed);
+  assert.deepEqual(f.ctx.points,[{x:2,y:1},{x:3,y:1}]);
+ }
+});
 test('automatic localization recovery cannot late-start after cancellation',async()=>{
  const f=fixture(),gate={};f.ctx.S.pose.Location=0;let plans=0;
  f.setResponder((path,data,options,previous)=>{

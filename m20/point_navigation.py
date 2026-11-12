@@ -259,14 +259,24 @@ class PointNavigator:
     def _prepare_motion(self, token):
         app=self.app
         commands={};limit=time.monotonic()+9
+        reason='平台导航模式准备未获确认'
         while time.monotonic()<limit:
             self.check(token)
             with app.lock:
                 self.check(token);link=app.link;b=link.record(1002,6);basic=b.get('items',{}).get('BasicStatus',{})
                 loc=link.record(1007,2);native=link.record(1007,1)
-                if age_of(b)>2 or basic.get('HES')!=0 or basic.get('MotionState')!=17:raise ValueError('站立或控制状态未就绪')
-                if age_of(loc)>1 or loc.get('items',{}).get('Location')!=0:raise ValueError('定位未就绪')
-                if age_of(native)>2:
+                reason='平台导航模式准备未获确认'
+                if age_of(b)>2:
+                    reason='等待机内运控状态回报超时'
+                elif basic.get('HES')!=0:
+                    raise ValueError('机器人急停尚未解除')
+                elif basic.get('MotionState')!=17:
+                    raise ValueError('机器人尚未确认站立，请站稳后重试')
+                elif age_of(loc)>1:
+                    reason='等待机内地图定位回报超时'
+                elif loc.get('items',{}).get('Location')!=0:
+                    raise ValueError('机内地图定位未就绪')
+                elif age_of(native)>2:
                     if 'query' not in commands:commands['query']=time.monotonic();link.command(1007,1,{},'平台导航核对任务')
                 elif native.get('items',{}).get('Status') not in [0,4]:raise ValueError('原厂仍有活动导航任务')
                 elif basic.get('Sleep'):
@@ -281,7 +291,7 @@ class PointNavigator:
                     self.motion_mode=basic['ControlUsageMode']
                     return
             time.sleep(.06)
-        raise ValueError('平台导航模式准备未获确认')
+        raise ValueError(reason)
 
     def _fetch_scan(self, after_stamp):
         return self.app.autonomy.scan_now(False,after_stamp=after_stamp)
@@ -331,7 +341,7 @@ class PointNavigator:
         age=max(0.,.65+time.monotonic()-result['_valid_until']) if '_valid_until' in result else float(result.get('age',0.))
         # Compare at a common time using measured motion. This is only a
         # residual check: never move the paired scan pose/cloud or its expiry.
-        if len(sp)!=3:raise ValueError('雷达位姿无效')
+        if len(sp)!=3:raise ValueError(result.get('pose_error') or '雷达位姿无效')
         evidence=dict(age=age_of(loc),pose=[pp.get('PosX'),pp.get('PosY'),pp.get('Yaw')],velocity_body=[vx,vy],yaw_rate=omega,motion_age=age_of(rec))
         if not poses_consistent(sp,age,evidence):
             raise ValueError('雷达与地图定位坐标不同步')

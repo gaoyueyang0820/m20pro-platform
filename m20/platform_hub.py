@@ -249,7 +249,9 @@ class Hub:
 
     def sync_map(self,req):
         context=getattr(self._operation_context,'value',None) or self.context()
-        grid=self.remote_maps('/maps/grid',req,context=context)
+        request=dict(req)
+        source_id=request.pop('source_map_id',None)
+        grid=self.remote_maps('/maps/grid',request,context=context)
         with self.app.lock:
             if not self.same_context(context):raise OperationCancelled('地图同步期间连接已变化，旧栅格未导入当前机器人')
             if (req.get('name') not in [None,'active',grid.get('robot_map_name')]
@@ -258,9 +260,14 @@ class Hub:
             ip=self.app.link.ip if self.app.link else None
             matches=[m for m in self.app.store.value['maps'] if m.get('robot_map_name')==grid['robot_map_name'] and
                      m.get('grid_id',0)==grid.get('grid_id',0) and m.get('robot_ip')==ip]
-            result=self.app.import_map(grid,existing_id=matches[0]['id'] if matches else None)
+            if source_id is not None:
+                self._check_navigation_map_source(source_id,grid)
+            result=self.app.import_map(grid,existing_id=source_id if source_id is not None else (matches[0]['id'] if matches else None))
             selected=result['map']
             duplicate_ids={m['id'] for m in matches if m['id']!=selected['id'] and all(m.get(k)==selected.get(k) for k in ['origin','resolution','width','height'])}
+            if source_id is not None:
+                result['matched_source_map_id']=source_id
+                duplicate_ids.clear()
             if grid.get('active'):
                 for m in self.app.store.value['maps']:m['verified_for_robot']=False
             selected.update(grid_id=grid.get('grid_id',0),verified_for_robot=grid.get('active',False),robot_ip=ip,demo=self.app.demo,archived=False)
@@ -269,6 +276,20 @@ class Hub:
                 if route['map_id'] in duplicate_ids:route['map_id']=selected['id']
             self.app.store.save()
             return result
+
+    def _check_navigation_map_source(self,source_id,grid):
+        """Reuse waypoint coordinates across addresses only for the identical active grid."""
+        source=next((m for m in self.app.maps() if m['id']==source_id),None)
+        error='当前活动地图的栅格或坐标系与已选地图不同，请显示当前地图后重新选点'
+        if (self.app.demo or not source or source.get('demo') or grid.get('active') is not True
+                or source.get('robot_map_name')!=grid.get('robot_map_name')
+                or any(source.get(key,default)!=grid.get(key,default) for key,default in
+                       (('grid_id',0),('origin',None),('resolution',None),('negate',0),
+                        ('free_thresh',.196),('occupied_thresh',.65)))):
+            raise ValueError(error)
+        cached=self.data/'maps'/(source['id']+'.pgm')
+        if not cached.is_file() or cached.read_bytes()!=base64.b64decode(grid['pgm'],validate=True):
+            raise ValueError(error)
 
     def _map_routes(self,name):
         """Saved definitions are not running jobs; retain data before hard loss."""
