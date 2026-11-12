@@ -6,6 +6,20 @@ const iotName=id=>iotNames.get(String(id))||'设备 '+id;
 const iotSummary=ids=>ids.length?ids.map(iotName).join('、'):'尚未选择设备';
 const iotSelected=input=>JSON.parse(input.value);
 
+function iotAccessCard(title,primaryAction){
+ const hint=S?.mode==='demo'
+  ?'当前为演示模式。连接机器人后可配置平台并查询设备读数。'
+  :'连接物联网平台后，可查询设备状态和读数，并用于巡检采集。';
+ const style=action=>action===primaryAction?'primary':'';
+ return card(title,`<div class="card-pad iot-access">
+  <p class="help">${hint}</p>
+  <div class="button-row">
+   ${btn('连接物联网平台','iot-settings',style('iot-settings'),'link')}
+   ${btn('查询物联网设备','iot-devices',style('iot-devices'),'sensors')}
+  </div>
+ </div>`,'sensors');
+}
+
 function iotPicker(ids, attributes, label='设备'){
  return `<div class="field iot-picker" data-iot-picker><span>${esc(label)}</span>
   <input type="hidden" data-iot-selection ${attributes} value="${esc(JSON.stringify(ids))}">
@@ -86,24 +100,38 @@ function openIoTDevices(picker=null){
 
 ui['iot-devices']=()=>openIoTDevices();
 ui['iot-settings']=async()=>{
- const scope=iotScope();
- if(S?.mode!=='live'){modal('物联网连接','<p class="help">连接 GOS 后可验证并保存物联网平台。</p>');return;}
- const saved=await api('/api/iot/settings');if(iotScope()!==scope)return;
- modal('物联网连接',`<form id="iot-connection-form">
-  ${field('物联网 API 地址','iot-url',saved.url,'url')}
-  <div class="form-grid">${field('账号','iot-user',saved.user)}${field('密码','iot-password','','password')}</div>
-  ${field('授权令牌（也可用账号登录）','iot-token','','password')}
-  <div data-iot-challenge hidden><img alt="物联网登录验证码" data-iot-captcha>
-   ${field('验证码','iot-code','')}</div>
-  <p data-iot-connection-status class="help" role="status">${saved.configured?'已配置，原凭据可留空沿用。':'由 GOS 访问物联网平台，验证通过后保存。'}</p>
-  <button type="submit" class="btn primary">验证并保存</button></form>`);
+ const scope=iotScope(),live=S?.mode==='live';
+ modal('连接物联网平台',`<form id="iot-connection-form">
+  <fieldset disabled>
+   ${field('物联网 API 地址','iot-url','','url')}
+   <div class="form-grid">${field('账号','iot-user')}${field('密码','iot-password','','password')}</div>
+   ${field('授权令牌（也可用账号登录）','iot-token','','password')}
+   <div data-iot-challenge hidden><img alt="物联网登录验证码" data-iot-captcha>
+    ${field('验证码','iot-code','')}</div>
+   <p data-iot-connection-status class="help" role="status">${live?'正在读取连接配置…':'连接机器人并启用 GOS 服务后，即可验证并保存配置。'}</p>
+   <button type="submit" class="btn primary">验证并保存</button>
+  </fieldset>
+ </form>`);
  const form=$('#iot-connection-form'),status=form.querySelector('[data-iot-connection-status]');
+ const active=()=>form.isConnected&&$('#modal')?.open&&iotScope()===scope;
+ if(!live)return;
+ try{
+  const saved=await api('/api/iot/settings',undefined,true);
+  if(!active())return;
+  form.querySelector('#iot-url').value=saved.url||'';
+  form.querySelector('#iot-user').value=saved.user||'';
+  status.textContent=saved.configured?'已配置，原凭据可留空沿用。':'填写平台地址和账号或令牌，验证通过后保存。';
+  form.querySelector('fieldset').disabled=false;
+ }catch(error){
+  if(active())status.textContent=error.message;
+  return;
+ }
  let challenge=null;
  form.querySelectorAll('input[type=password]').forEach(input=>input.autocomplete='new-password');
  form.addEventListener('submit',async event=>{
   event.preventDefault();
   const button=form.querySelector('button[type=submit]');
-  if(button.disabled||iotScope()!==scope)return;
+  if(button.disabled||!active())return;
   const value=id=>form.querySelector('#iot-'+id).value;
   const url=value('url').trim(),user=value('user').trim();
   const params={url,user,password:value('password'),token:value('token')};
@@ -111,7 +139,7 @@ ui['iot-settings']=async()=>{
   status.textContent='正在验证设备清单…';button.disabled=true;
   try{
    const result=await api('/api/iot/settings',params,true);
-   if(!form.isConnected||!$('#modal')?.open||iotScope()!==scope)return;
+   if(!active())return;
    if(result.challenge){
     challenge={...result.challenge,url,user};
     form.querySelector('[data-iot-challenge]').hidden=false;
@@ -121,7 +149,7 @@ ui['iot-settings']=async()=>{
    iotNames.clear();
    form.querySelectorAll('input[type=password]').forEach(input=>input.value='');
    openIoTDevices();toast('物联网平台已连接');
-  }catch(error){if(form.isConnected){status.textContent=error.message;challenge=null;form.querySelector('[data-iot-challenge]').hidden=true;}}
+  }catch(error){if(active()){status.textContent=error.message;challenge=null;form.querySelector('[data-iot-challenge]').hidden=true;}}
   finally{button.disabled=false;}
  });
 };

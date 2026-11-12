@@ -89,7 +89,10 @@ function paintQuickConnections(){
 }
 const dailyConnectionLoad=loadConnections;
 loadConnections=async function(paint=false){await dailyConnectionLoad(paint);if(page==='settings'&&!$('#quick-aos-ip')&&connections)connectionCenter();paintQuickConnections();};
-settings=function(){return heading(btn('物联网平台','iot-settings','','link')+btn('导出工作区','export','','download')+btn('设备维护','maintenance-modal','small','settings'))+operationPanel()+'<div id="connection-content"></div>';};
+settings=function(){
+ return heading(btn('导出工作区','export','','download')+btn('设备维护','maintenance-modal','small','settings'))+
+  operationPanel()+iotAccessCard('物联网平台','iot-settings')+'<div id="connection-content" class="section-gap"></div>';
+};
 
 const detailedMapsPage=mapsPage;
 let mappingView='cloud';
