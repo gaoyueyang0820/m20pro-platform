@@ -8,6 +8,7 @@ import time
 import unittest
 from unittest.mock import Mock, patch
 
+from bridge.gos_agent import GOSAgent
 from bridge.gos_navigation import GOSNavigation, pack_grid
 from bridge.map_service import MapService
 from bridge.resident_mission import held_map_lease, manage_map_lease, navigation_grid_identity
@@ -16,6 +17,7 @@ from bridge.task_collection import CollectionCancelled, RouteCollection
 from m20.autonomy_core import disk
 from m20.patrol_actions import FastBee, StationActions, station_spec
 from m20.resident_navigation_client import ResidentNavigationClient
+from m20.task_collectors import IoTSampler, collector_specs
 
 
 class LocalLink:
@@ -130,6 +132,65 @@ class GOSPatrolTests(unittest.TestCase):
                                                                 goal=[3.,3.],yaw=0.))
         self.assertGreater(result['plan']['length_m'], .8)
         self.factory.assert_not_called()
+
+    def test_device_only_station_reads_each_device_while_stopped(self):
+        actions = StationActions(self.service.aos, dict(iot_url='http://gateway.example.invalid',iot_token='fixture'))
+        def read(device):
+            self.assertEqual(tuple(self.link.axes),(0.,0.,0.))
+            if device=='43':raise ValueError('设备离线')
+            return {'温度':24.5}
+        actions.fastbee.telemetry=Mock(side_effect=read)
+        self.service.actions=actions
+        self.request['points'][0]['station_action']=dict(camera='none',iot_device_ids=['42','43'])
+        with patch.object(actions,'_counts',side_effect=AssertionError('设备任务不应打开相机')):
+            self.service.start(self.request)
+            result=self.wait_for(lambda row:row['phase']=='completed',pulse=True)
+        station=result['station_results'][0]
+        self.assertNotIn('people',station)
+        self.assertEqual(station['devices'][0]['measurements'],{'温度':24.5})
+        self.assertEqual(station['devices'][1]['error'],'设备离线')
+        self.assertEqual(result['completed'],2)
+
+    def test_iot_catalog_configuration_and_collection_share_the_supported_contract(self):
+        agent=GOSAgent(self.data)
+        self.addCleanup(agent.close)
+        seen=[]
+        large='9007199254740993'
+        def endpoint(client,path,method='GET',data=None,token=None,timeout=3):
+            seen.append(path)
+            if path.startswith('/captchaImage'):
+                return 200,dict(code=200,captchaEnabled=True,uuid='fixture-captcha',img='aW1hZ2U=')
+            if path=='/login':
+                self.assertEqual(data['code'],'9')
+                return 200,dict(code=200,token='fixture-iot-token')
+            self.assertEqual(token,'fixture-iot-token')
+            if path.startswith('/iot/device/list'):
+                return 200,dict(code=200,rows=[dict(deviceId=int(large),deviceName='气体检测',status=3)],total=21)
+            if path=='/iot/device/runningStatus?deviceId='+large:
+                return 200,dict(code=200,data=dict(thingsModelValue=None,serialNumber='gas-demo'))
+            if path=='/iot/runtime/running?serialNumber=gas-demo':
+                return 200,dict(code=200,data=[dict(id='methane',name='甲烷',value='2.5',datatype=dict(unit='%LEL'))])
+            if path=='/iot/device/runningStatus?deviceId=43':
+                return 403,{}
+            raise AssertionError(path)
+        with patch.object(FastBee,'_json',endpoint):
+            params=dict(url='http://gateway.example.invalid',user='fixture-user',password='fixture-secret')
+            response=agent.dispatch('/iot/settings',params)
+            self.assertIn('challenge',response)
+            self.assertFalse(agent.patrol_config.exists())
+            response=agent.dispatch('/iot/settings',dict(params,code='9',uuid=response['challenge']['uuid']))
+            self.assertTrue(response['configured'])
+            self.assertEqual(response['devices'][0]['id'],large)
+            self.assertNotIn('fixture-iot-token',str(response))
+            self.assertNotIn('password',agent.dispatch('/iot/settings',None))
+            page=agent.dispatch('/iot/devices',dict(page=2,name='气体'))
+            self.assertFalse(page['has_more'])
+            self.assertTrue(any('pageNum=2' in p and 'deviceName=' in p for p in seen))
+            spec,=collector_specs([dict(kind='iot_readings',device_ids=[large,'43'],interval_s=5)])
+            sample=IoTSampler(SimpleNamespace(fastbee=agent.iot_client()),spec).sample()
+        self.assertNotIn('error',sample)
+        self.assertEqual(sample['devices'][0]['measurements'],{'甲烷 (%LEL)':'2.5'})
+        self.assertIn('403',sample['devices'][1]['error'])
 
     def test_station_parks_then_counts_then_moves_to_next_point(self):
         self.request['points'][0]['station_action'] = dict(camera='ball',pan='right',iot_device_id='42')
