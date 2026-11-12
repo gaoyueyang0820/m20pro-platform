@@ -201,7 +201,7 @@ class Platform:
             if original.PPE and original.PPE.enabled:
                 original.PPE.stop()
             if self.link:
-                if preserve_resident:self.link.close(stop=False)
+                if preserve_resident or self.autonomy.onboard_task is not None:self.link.close(stop=False)
                 else:self.link.close()
                 self.link = None
             original.LINK = None
@@ -266,7 +266,7 @@ class Platform:
 
     def stop(self, estop=False):
         self.cancel_greeting()
-        gos_owns_axes=self.resident_navigation.gos_busy()
+        gos_owns_axes=self.resident_navigation.gos_busy() or self.autonomy.onboard_task is not None
         if self.resident_navigation.busy():self.resident_navigation.cancel()
         self.invalidate_navigation_start()
         self.autonomy.pause()
@@ -316,6 +316,9 @@ class Platform:
                     warnings=failures, message='停止请求尚未确认，请核对状态反馈' if unconfirmed else '已发停止请求；请核对状态反馈' if self.link else '演示动作已停止')
 
     def command(self, action):
+        if self.autonomy.onboard_task is not None and action not in ['stop','estop','heartbeat'] and not action.startswith('light_'):
+            self.autonomy.pause()
+            raise ValueError('正在切回手动控制，等待 GOS 停车')
         if self.resident_navigation.busy() and action not in ['stop','estop','heartbeat']:
             self.resident_navigation.cancel()
             raise ValueError('驻机任务已请求停车，请等待停止确认后手动操作')
@@ -416,6 +419,10 @@ class Platform:
         self.greeting.cancel(reason)
 
     def set_velocity(self, req, autonomous=False, valid_until=None):
+        if self.autonomy.onboard_task is not None:
+            if not any(req.get(k,0) for k in ('forward','side','yaw')):return dict(ok=True)
+            self.autonomy.pause()
+            raise ValueError('正在切回手动控制，等待 GOS 停车')
         if self.resident_navigation.gos_busy() and not any(req.get(k,0) for k in ('forward','side','yaw')):
             return dict(ok=True)
         if not autonomous and self.resident_navigation.busy() and any(req.get(k,0) for k in ('forward','side','yaw')):
@@ -461,7 +468,7 @@ class Platform:
             return dict(ok=True,positions=leg_target(self.positions,req.get('leg'),req.get('height')))
         if operation == 'arm':
             if self._greet_busy:raise ValueError('请先停止问候动作，再开启关节控制')
-            if self.autonomy.active:raise ValueError('请先停止自主任务')
+            if self.autonomy.active or self.autonomy.onboard_task is not None:raise ValueError('请先停止自主任务')
             if self.hub.busy:raise ValueError('后台操作正在进行，请等待完成')
             if self.sdk.get('vendor_running') or (self.demo and self.hub.demo_policy.get('vendor_running')):
                 raise ValueError('请先停止 SDK 策略程序，再开启独立关节调试')
@@ -980,7 +987,7 @@ class Platform:
             if self._greet_busy:raise ValueError('请先停止问候动作，再开始导航')
             if client_intent is None:client_intent=self.navigation_intents.register(req,self.instance_id,self._plan_generation)
             self.navigation_intents.check(client_intent,self.instance_id,self._plan_generation)
-            if self.autonomy.active:raise ValueError('请先停止自主任务，再开始导航')
+            if self.autonomy.active or self.autonomy.onboard_task is not None:raise ValueError('请先停止自主任务，再开始导航')
             if self.hub.busy:raise ValueError('后台操作正在进行，请等待完成')
             if not self.demo and self.hub.sdk_mode.get('state') in ['sdk','awaiting_handset_exit']:
                 raise ValueError('请先退出 SDK 流程再开始导航')
@@ -2160,7 +2167,7 @@ def main():
         APP.people.stop()
         APP.desktop_patrol_counts.finish()
         APP.cameras.close()
-        if APP.link: APP.link.close(stop=not preserve_resident)
+        if APP.link: APP.link.close(stop=not (preserve_resident or APP.autonomy.onboard_task is not None))
         if original.PPE: original.PPE.stop()
         server.server_close()
         instance_lock.close()

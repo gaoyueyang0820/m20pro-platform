@@ -8,6 +8,7 @@ import time
 from collections import deque
 from m20.robot_geometry import BODY_HALF_LENGTH,BODY_HALF_WIDTH,CLEARANCE_HALF_LENGTH,CLEARANCE_HALF_WIDTH
 from m20.exploration_frontiers import FrontierSelector
+from m20.moving_obstacles import MovingObstacles
 
 RESOLUTION = .2
 RADIUS = .65  # Conservative circular envelope for the complete wheel-legged body.
@@ -125,6 +126,8 @@ class Explorer:
         self.forward_limit=forward_limit
         self.yaw_limit=yaw_limit
         self.free = set(); self.obstacles = set(); self.path = []
+        self._static_obstacles = set()
+        self._moving_obstacles = MovingObstacles(RESOLUTION)
         self.origin = None; self.last_pose = None; self.goal = None
         self.last_stamp=None
         self.prior=None;self.target_kind='observe'
@@ -196,15 +199,15 @@ class Explorer:
                     if local in measured:cleared.add((gx,gy))
         start=cell(x,y)
         self.free.update((start[0]+dx,start[1]+dy) for dx,dy in SUPPORT)
-        # A transient obstacle must not block the start forever after a later
-        # scan observes ground there. Mere absence of returns does not clear it.
-        self.obstacles.difference_update(cleared)
-        self.obstacles.update(world(p) for p in scan['obstacles'])
-        self.free.difference_update(self.obstacles)
+        observation=self._moving_obstacles.observe(scan,cleared=cleared)
+        self._static_obstacles.difference_update(observation.cleared)
+        self._static_obstacles.update(observation.confirmed)
         # Finite per-run exploration bounds keep memory and route search bounded.
         within = lambda p: math.hypot(p[0]*RESOLUTION-self.origin[0],p[1]*RESOLUTION-self.origin[1]) <= self.radius+1
+        self._static_obstacles={p for p in self._static_obstacles if within(p)}
+        self.obstacles=self._static_obstacles | {p for p in observation.current | observation.temporary if within(p)}
+        self.free.difference_update(self.obstacles)
         self.free = {p for p in self.free if within(p)}
-        self.obstacles = {p for p in self.obstacles if within(p)}
         # Map-based exploration follows newly observed passages instead of
         # treating the initial map extent as a permanent task radius.
         if self.expand and self.radius<100 and any(math.hypot(p[0]*RESOLUTION-self.origin[0],p[1]*RESOLUTION-self.origin[1])>=self.radius-.8 for p in self.free):
@@ -253,6 +256,21 @@ class Explorer:
         self.goal=selected['goal'];self.path=selected['path'];self.target_kind=selected['kind']
         self.plan_state='planned'
         return 'planned'
+
+    def straight_clearance(self, pose, length, margin):
+        """The current scan certifies the sweep; keep its centre in task scope."""
+        x,y,yaw=pose
+        end=(x+length*math.cos(yaw),y+length*math.sin(yaw))
+        return max(math.dist((x,y),self.origin),math.dist(end,self.origin))+margin<=self.radius
+
+    def obstacle_on_approach(self, scan):
+        """Replan early on a newly observed obstacle in the approach lane."""
+        if not self.path or self.goal is None:return False
+        x,y,yaw=scan['pose']
+        px,py=(self.path[min(3,len(self.path)-1)][i]*RESOLUTION for i in (0,1))
+        if math.hypot(px-x,py-y)<.32 or abs(wrap(math.atan2(py-y,px-x)-yaw))>.30:return False
+        from m20.local_trajectory import LocalSurface
+        return LocalSurface.cached(scan).forward_obstacle()<1.1
 
     def note_blocked(self,reason=''):
         """Defer a repeatedly blocked approach, not the entire exploration run.
@@ -351,7 +369,8 @@ class Explorer:
     def _translation(self,error):
         # Lateral/reverse commands are deliberately smaller than open-space
         # forward travel. These are joystick amplitudes, not metres per second.
-        f=max(-min(.25,self.forward_limit),self.forward_limit*math.cos(error));side=max(-.25,min(.25,self.forward_limit*math.sin(error)))
+        f=max(-min(.25,self.forward_limit),self.forward_limit*math.cos(error))
+        side=max(-.42,min(.42,self.forward_limit*1.15*math.sin(error)))
         return (0. if abs(f)<1e-9 else f),(0. if abs(side)<1e-9 else side)
 
     def _inside_bound(self,f,side,distance=.4):
@@ -388,7 +407,8 @@ class Explorer:
         if self.recovery_attempts>=3 or self.recovery_candidate_failures>=3:return []
         gx,gy=self._direct_goal();n=max(.001,math.hypot(gx,gy));scored=[]
         slow = min(.25, self.forward_limit)
-        cardinal = [(self.forward_limit, 0.), (0., slow), (0., -slow), (-slow, 0.)]
+        lateral=min(.42,self.forward_limit*1.15)
+        cardinal = [(self.forward_limit, 0.), (0., lateral), (0., -lateral), (-slow, 0.)]
         traversed = self._traversed_directions(slow)
         diagonals = [(slow*f, slow*s) for f,s in DIAGONAL_DIRECTIONS]
         oblique = [(slow*f, slow*s) for f,s in OBLIQUE_DIRECTIONS]

@@ -1,7 +1,8 @@
 import math
 import unittest
 import numpy as np
-from m20.local_trajectory import TrajectoryFollower,LocalSurface
+from m20.local_trajectory import TrajectoryFollower,LocalSurface,exploration_step
+from m20.autonomy_core import Explorer, disk
 from m20.navigation_planner import GridPlanner
 from m20.point_navigation import simulated_scan
 
@@ -104,6 +105,20 @@ class TrajectoryTests(unittest.TestCase):
         self.assertEqual(clear['axes'],[.35,0.,0.])
         changed=f.command(dict(scan,obstacles=[(3,0)]))
         self.assertEqual(changed['policy'],'sampled_trajectory')
+
+    def test_exploration_follows_a_clear_sweep_then_reconsiders_new_obstacles(self):
+        explorer=Explorer(6);follower=TrajectoryFollower()
+        scan=dict(pose=[0.,0.,0.],floor=list(disk(2.4)),obstacles=[],stamp=1.,
+                  _velocity_body=[.28,0.],age=.03)
+        explorer.ingest(scan)
+        explorer.path=[(i,0) for i in range(13)];explorer.goal=explorer.path[-1]
+        clear=exploration_step(explorer,follower,scan)
+        self.assertEqual((clear['policy'],clear['axes']),('straight_corridor',[.35,0.,0.]))
+        scan=dict(scan,stamp=1.2,obstacles=[(3,0)])
+        explorer.ingest(scan)
+        changed=exploration_step(explorer,follower,scan)
+        self.assertEqual(changed['policy'],'sampled_trajectory')
+        self.assertNotEqual(changed['axes'],clear['axes'])
 
     def test_two_times_input_speed_brakes_before_near_wall_goal_and_waits_for_stillness(self):
         g=world_grid();g[:,60:]=0;goal=[5.54,4.5,0.]

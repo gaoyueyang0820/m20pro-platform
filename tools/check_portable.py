@@ -27,7 +27,7 @@ ROOT=Path(__file__).resolve().parents[1]
 MARKER='PORTABLE_WORKER_RESULT='
 GROUPS={
     'algorithms':['test_autonomy_recovery','test_exploration_frontiers','test_exploration_completion','test_exploration_control_v3',
-                  'test_local_trajectory','test_motion_response','test_local_surface_cache','test_exploration_flow','test_follow_control','test_exploration_view',
+                  'test_local_trajectory','test_motion_response','test_moving_obstacles','test_local_surface_cache','test_exploration_flow','test_follow_control','test_exploration_view',
                   'test_recovery_issuance','test_precise_clearance.PreciseClearanceTests',
                   'test_control_clock','test_terrain_profiles','test_pose_monitor','test_greeting','test_greeting_cli'],
     'navigation':['test_navigation_planner','test_navigation_planning_v3','test_live_surface_localization',
@@ -42,7 +42,7 @@ GROUPS={
                  'test_navigation_lifecycle.NavigationLifecycleTests.test_new_idle_report_and_stationary_feedback_reconcile_a_lost_stop_ack',
                  'test_navigation_lifecycle.NavigationLifecycleTests.test_stop_can_be_retried_after_receipt_timeout',
                  'test_navigation_lifecycle.NavigationLifecycleTests.test_original_route_waits_for_station_count_before_next_goal',
-                 'test_autonomy','test_point_navigation_runtime','test_point_navigation_recovery','test_platform_route_dispatch','test_map_activation_localization','test_gos_patrol',
+                 'test_autonomy','test_point_navigation_runtime','test_point_navigation_recovery','test_platform_route_dispatch','test_map_activation_localization','test_gos_patrol','test_gos_exploration','test_onboard_exploration',
                  'test_autonomy_observation_runtime.AutonomyObservationRuntimeTests.test_ground_occlusion_survives_long_wait_and_resumes_same_task',
                  'test_autonomy_observation_runtime.AutonomyObservationRuntimeTests.test_sparse_valid_surface_recovers_without_a_passive_wait_becoming_actuator_failure'],
     'native':['test_native_sensing'],

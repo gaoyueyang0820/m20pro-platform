@@ -1,6 +1,6 @@
 """Computer-side autonomous sessions; no robot I/O until an explicit start.
 
-ROS observation reduction is on NOS/GOS. Planning and YOLO run on the computer.
+ROS observation reduction is on NOS/GOS. Updated GOS services execute exploration.
 The existing 0.5 s robot-link velocity watchdog remains the last command expiry.
 """
 import base64
@@ -222,22 +222,24 @@ class Autonomy:
         self.lifecycle_phase='idle';self._worker_thread=None
         self._discard_capability=None;self._last_discard_result=None;self.discard_details=None
         self._control_generation=0
+        self.onboard_task=None;self.onboard_cleanup=None;self.executor='desktop'
 
     def _resumable(self):
         p=self.app.hub.preparation
         return bool(self.mode=='explore' and self.state in ['paused','failed'] and not self.active
                     and self.explorer is not None and self.capture_id and self.app.mapping
                     and self.context is not None and self.app.hub.same_context(self.context)
-                    and self._save_token is None and self._resume_token is None and not p and not self.app.hub.busy)
+                    and self._save_token is None and self._resume_token is None and not p and not self.app.hub.busy
+                    and self.onboard_task is None and self.onboard_cleanup is None)
 
     def snapshot(self):
         p=self.app.hub.preparation
-        cleanup=bool(self._save_token or self._resume_token or p and p['kind']=='mapping' and p['cancelled'])
+        cleanup=bool(self._save_token or self._resume_token or self.onboard_cleanup or p and p['kind']=='mapping' and p['cancelled'])
         uncertain=self.app.hub.mapping_uncertain
         unresolved=bool(uncertain and self.app.hub.same_context(uncertain['context']))
         resumable=self._resumable() and not unresolved
         return dict(active=self.active,run_id=self.run_id,state=self.state,mode=self.mode,message=self.message,
-                    demo=self.app.demo,elapsed=round(self.elapsed_base+time.monotonic()-self.started) if self.started and self.active else self.finished_elapsed,
+                    demo=self.app.demo,executor=self.executor,elapsed=round(self.elapsed_base+time.monotonic()-self.started) if self.started and self.active else self.finished_elapsed,
                     map=self.display_observer.decorate(self.map_view),target=self.target.box if self.target else None,
                     follow_controller=self.follow_detail,
                     vision=self.vision.snapshot(),result_maps=self.result_maps,timing=list(self.timing),scope=self.scope,
@@ -247,11 +249,14 @@ class Autonomy:
                     can_discard=bool((self.app.demo or self._discard_capability) and self.mode=='explore' and self.capture_id and self.app.mapping
                                      and self.context is not None and self.app.hub.same_context(self.context) and not cleanup and not unresolved and not self.app.hub.busy),
                     discard_supported=bool(self.app.demo or self._discard_capability),discard_details=self.discard_details,
-                    can_start=not(self.active or self.state in ['saving','discarding'] or cleanup or unresolved or self.app.hub.busy or resumable))
+                    can_start=not(self.active or self.onboard_task or self.state in ['saving','discarding'] or cleanup or unresolved or self.app.hub.busy or resumable))
 
     def pause(self,message='已停止自主移动，可手动接管'):
         # Always called while app.lock is held. No joins or network operations.
         self._control_generation+=1
+        if self.onboard_task is not None:
+            self.onboard_task.cancelled.set()
+            message='正在请求 GOS 停车'
         preparation=self.app.hub.preparation
         self.app.hub.cancel_preparations()
         if self.observation_pump:self.observation_pump.cancel()
@@ -262,7 +267,7 @@ class Autonomy:
             self.active=False;self.run_id=None;self.state='paused';self.message=message
             self.lifecycle_phase='paused'
             self.app.velocity=[0.,0.,0.]
-            if self.app.link:self.app.link.set_velocity(0,0,0)
+            if self.app.link and self.onboard_task is None:self.app.link.set_velocity(0,0,0)
 
     def reset_context(self):
         """Connection changes invalidate callbacks without reconnecting anything."""
@@ -270,6 +275,7 @@ class Autonomy:
         self.app.hub.detach_context()
         self.generation+=1;self._save_token=None;self.context=None
         self.state='idle';self.message='连接已切换，等待开始新任务';self.result_maps=[]
+        self.onboard_cleanup=None
         self.map_view=None;self.scan=None;self.deadline=None;self.capture_id=None;self.follow_detail=None
         self._resume_token=None;self._resume_receipts={};self._session_request={};self.elapsed_base=0.;self.lifecycle_phase='idle'
         self._discard_capability=None;self._last_discard_result=None;self.discard_details=None
@@ -388,6 +394,7 @@ class Autonomy:
             self.message='正在检查实时感知与建图条件' if mode=='explore' else '已锁定人物，正在检查前方地面'
             self.started=time.monotonic();self.lease=self.started;self.result_maps=[];self.map_view=None;self.scan=None;self.follow_detail=None;self.finished_elapsed=0
             self.elapsed_base=0.;self._session_request=dict(req);self._resume_receipts={};self.lifecycle_phase='preparing'
+            self.executor='desktop'
             self._last_discard_result=None;self.discard_details=None
             self.deadline=self.started+minutes*60;self.timing.clear();run_id=self.run_id
         # Return the task ID before slow sensor warmup or map I/O. Stop requests
@@ -565,6 +572,12 @@ class Autonomy:
 
     def _run(self,run_id,job_id,duration):
         mode=self.mode;explorer=self.explorer;target=self.target
+        if mode=='explore' and not self.app.demo and not getattr(self.app,'resident_execution',False):
+            from m20.onboard_exploration import OnboardExploration
+            endpoint=OnboardExploration.probe(self.app)
+            if endpoint is not None:
+                self._run_onboard(run_id,job_id,endpoint)
+                return
         from m20.local_trajectory import TrajectoryFollower, exploration_step
         from m20.follow_control import FollowControl
         follow_controller=FollowControl() if mode=='follow' else None
@@ -761,7 +774,9 @@ class Autonomy:
                                 if self.run_id==run_id:self.message=explorer.motion_hint;self.map_view=dict(explorer.view(),controller=trajectory_detail)
                             time.sleep(.02);continue
                     if progress.stalled(time.monotonic()) and not environment_waiting and explorer.plan_state not in ['searching','exhausted']:raise ValueError('持续没有有效位移或目标接近，已暂停；转向摆动不会计为行走进展')
-                    if new_scan and explorer.recovery is None and not explorer.recovery_pending and (now-last_plan>1 or not explorer.path):
+                    if (new_scan and explorer.recovery is None and not explorer.recovery_pending
+                            and (now-last_plan>1 or not explorer.path
+                                 or now-last_plan>.35 and explorer.obstacle_on_approach(scan))):
                         stage=time.monotonic();outcome=explorer.plan();last_plan=now
                         self.scan_timing['plan_ms']=round((time.monotonic()-stage)*1000,1)
                         complete=completion.observe(outcome,scan,explorer,now)
@@ -903,9 +918,112 @@ class Autonomy:
     def _save_current(self,token):
         return self._save_token is token and self.generation==token['generation'] and self.app.hub.same_context(token['context'])
 
+    def _run_onboard(self,run_id,job_id,endpoint):
+        from m20.onboard_exploration import OnboardExploration
+        app=self.app;task=None;mission={}
+        context=self.context
+        try:
+            while job_id:
+                self._assert_run(run_id)
+                job=app.hub.operations.get(job_id)
+                if job['status']=='failed':raise ValueError(job['error'])
+                if job['status']=='completed':
+                    if job['result'].get('cancelled'):
+                        with app.lock:self.pause('准备已取消，未启动自主移动')
+                        return
+                    with app.lock:
+                        self._assert_run(run_id);self.capture_id=job['result'].get('request_id')
+                    break
+                time.sleep(.06)
+            def map_status():
+                return app.hub.remote_maps('/maps/build/status',context=context,timeout=1.8)
+            status=map_status()
+            with app.lock:
+                self._assert_run(run_id)
+                build=status.get('mapping',{})
+                if not self.capture_id or status.get('phase')!='collecting' or build.get('request_id')!=self.capture_id:
+                    raise ValueError('等待本轮建图采集就绪')
+                task=OnboardExploration(app,run_id,self.capture_id,context,endpoint)
+                explorer=self.explorer
+                spec=dict(duration_s=max(6.,min(3600.,self.deadline-time.monotonic())),radius=explorer.radius,
+                          forward_limit=explorer.forward_limit,yaw_limit=explorer.yaw_limit,expand=explorer.expand,
+                          prior_grid=self.prior_grid,anchor=build.get('context',{}).get('anchor'))
+                quiet_until=app.link.release_axis_stream() if app.link and hasattr(app.link,'release_axis_stream') else 0.
+                self.onboard_task=task;self.executor='gos'
+            def current():
+                with app.lock:
+                    return self.active and self.run_id==run_id and app.hub.same_context(context)
+            def report(reply):
+                with app.lock:
+                    if not current():return
+                    detail=reply.get('exploration') or {}
+                    self.state=detail.get('state') or self.state
+                    self.message=detail.get('message') or reply.get('message') or self.message
+                    if detail.get('map'):
+                        self.map_view=dict(detail['map'],capture_id=self.capture_id)
+                        observation=self.map_view.get('observation') or {}
+                        age=observation.get('age')
+                        self.scan=dict(stamp=observation.get('stamp'))
+                        if observation.get('live') and isinstance(age,(int,float)) and 0<=age<1.5:
+                            self.scan['_valid_until']=time.monotonic()+.65-age
+            while current() and not task.cancelled.is_set() and time.monotonic()<quiet_until:
+                task.cancelled.wait(min(.08,max(0.,quiet_until-time.monotonic())))
+            mission=task.run(spec,map_status,report,current) or {}
+            with app.lock:
+                if self.onboard_task is task and task.stopped.is_set():
+                    self.onboard_task=None
+                    if self.state=='paused' and app.hub.same_context(context):
+                        self.message='GOS 已停车，可继续探索或手动接管'
+                if current():
+                    if mission.get('phase')=='completed' and mission.get('stop_confirmed'):
+                        self.finish_save(run_id,'自主探索已完成，正在保存地图')
+                    else:self.pause(mission.get('message') or 'GOS 自主作业已结束')
+        except Exception as exc:
+            with app.lock:
+                if self.onboard_task is task and task is not None and task.stopped.is_set():self.onboard_task=None
+                if self.run_id==run_id:self.pause(str(exc))
+        finally:
+            with app.lock:
+                if task is not None and self.onboard_task is task and task.stopped.is_set():
+                    self.onboard_task=None
+                    if self.state=='paused' and app.hub.same_context(context):
+                        self.message='GOS 已停车，可继续探索或手动接管'
+
+    def _defer_onboard_close(self,kind,callback):
+        if self.onboard_cleanup:
+            if self.onboard_cleanup['kind']!=kind:raise ValueError('本轮正在结束采集')
+            return self.onboard_cleanup['result']
+        task=self.onboard_task;context=self.context;capture=self.capture_id
+        token=dict(kind=kind)
+        self.onboard_cleanup=token
+        self.pause()
+        self.state=self.lifecycle_phase='saving' if kind=='save' else 'discarding'
+        def work(progress):
+            try:
+                progress(.1,'正在等待 GOS 停车')
+                if not task.stopped.wait(12):raise ValueError('GOS 尚未确认停车，采集仍保留')
+                with self.app.lock:
+                    if self.onboard_cleanup is not token or self.capture_id!=capture or not self.app.hub.same_context(context):
+                        raise OperationCancelled('本轮采集或连接已变化')
+                    self.onboard_cleanup=None
+                    if self.onboard_task is task:self.onboard_task=None
+                    self.state=self.lifecycle_phase='paused'
+                    return callback()
+            except Exception as exc:
+                with self.app.lock:
+                    if self.onboard_cleanup is token:
+                        self.onboard_cleanup=None;self.state=self.lifecycle_phase='paused';self.message=str(exc)
+                raise
+        try:token['result']=self.app.hub.operations.submit('结束 GOS 自主作业',work)
+        except Exception:
+            self.onboard_cleanup=None;self.state=self.lifecycle_phase='paused';raise
+        return token['result']
+
     def finish_save(self,run_id=None,message='已停车，正在保存地图'):
         with self.app.lock:
             if run_id and self.run_id!=run_id:return
+            if self.onboard_task is not None or self.onboard_cleanup is not None:
+                return self._defer_onboard_close('save',lambda:self.finish_save(message=message))
             if self._save_token and self._save_current(self._save_token):
                 if self._save_token.get('mode')=='discard':raise ValueError('本轮正在放弃，不能同时保存')
                 result=self._save_token.get('result')
@@ -967,6 +1085,8 @@ class Autonomy:
         req=req or {}
         with self.app.lock:
             if req.get('capture_id') not in [None,self.capture_id]:raise ValueError('采集已变化，未放弃其他会话')
+            if self.onboard_task is not None or self.onboard_cleanup is not None:
+                return self._defer_onboard_close('discard',lambda:self.finish_discard(req))
             if self._save_token and self._save_current(self._save_token):
                 if self._save_token.get('mode')!='discard':raise ValueError('本轮正在保存，不能改为放弃')
                 if self._save_token.get('result'):return self._save_token['result']

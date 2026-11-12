@@ -77,7 +77,8 @@ class Hub:
             resident=getattr(self.app,'resident_navigation',None)
             if resident and resident.busy():raise ValueError('驻机任务或停车状态尚未确认')
             if getattr(self.app,"_greet_busy",False):raise ValueError("请先停止问候动作")
-            if getattr(self.app,'autonomy',None) and self.app.autonomy.active:raise ValueError('请先停止自主任务')
+            autonomy=getattr(self.app,'autonomy',None)
+            if autonomy and (autonomy.active or getattr(autonomy,'onboard_task',None)):raise ValueError('请先停止自主任务')
             if self.app.nav['status'] in ['running','cancelling'] or any(self.app.velocity) or self.app.sdk.get('armed'):
                 raise ValueError('请先停止运动并结束导航/关节控制')
 

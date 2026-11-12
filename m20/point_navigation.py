@@ -14,6 +14,7 @@ import uuid
 
 from m20.local_trajectory import TrajectoryFollower,LocalSurface,wrap
 from m20.latest_observation import LatestObservationPump, ObservationContextChanged
+from m20.moving_obstacles import MovingObstacles
 from m20.navigation_detour import plan_local_detour
 from m20.navigation_validation import poses_consistent
 from m20.observation_errors import GroundObservationPending, ObservationSyncPending
@@ -266,7 +267,7 @@ class PointNavigator:
         if not map_.get('verified_for_robot') or map_.get('robot_ip')!=app.link.ip:raise ValueError('请先同步当前活动地图')
         self._prepare_motion(token)
 
-    def _prepare_motion(self, token):
+    def _prepare_motion(self, token, *, require_location=True):
         app=self.app
         commands={};limit=time.monotonic()+9
         reason='平台导航模式准备未获确认'
@@ -274,7 +275,8 @@ class PointNavigator:
             self.check(token)
             with app.lock:
                 self.check(token);link=app.link;b=link.record(1002,6);basic=b.get('items',{}).get('BasicStatus',{})
-                loc=link.record(1007,2);native=link.record(1007,1)
+                loc=link.record(1007,2) if require_location else {}
+                native=link.record(1007,1)
                 reason='平台导航模式准备未获确认'
                 if age_of(b)>2:
                     reason='等待机内运控状态回报超时'
@@ -282,9 +284,9 @@ class PointNavigator:
                     raise ValueError('机器人急停尚未解除')
                 elif basic.get('MotionState')!=17:
                     raise ValueError('机器人尚未确认站立，请站稳后重试')
-                elif age_of(loc)>1:
+                elif require_location and age_of(loc)>1:
                     reason='等待机内地图定位回报超时'
-                elif loc.get('items',{}).get('Location')!=0:
+                elif require_location and loc.get('items',{}).get('Location')!=0:
                     reason='等待机内地图定位恢复'
                 elif age_of(native)>2:
                     if 'query' not in commands:commands['query']=time.monotonic();link.command(1007,1,{},'平台导航核对任务')
@@ -419,17 +421,16 @@ class PointNavigator:
             goal=initial_result['goal'];last_replan=0.;blocked_at=None;sensor_lost=None;initial=None
             recovery=None;start_checked=False;start_wait=time.monotonic()
             from m20.autonomy_runtime import MotionProgress
-            progress=MotionProgress();dynamic={};last_stamp=None
+            progress=MotionProgress();last_stamp=None
+            obstacle_tracks=MovingObstacles();obstacle_memory={};applied_obstacles=set()
             local_follower=None;local_plan=None;local_pending=False;local_tried=[];avoid_axes=None;route_first=False
-            vendor_rechecked=False
-            def update_dynamic(scan,now):
-                nonlocal dynamic
-                pose=scan['pose'];c,s=math.cos(pose[2]),math.sin(pose[2])
-                def world(p):return (round((pose[0]+c*p[0]*.2-s*p[1]*.2)/.2),round((pose[1]+s*p[0]*.2+c*p[1]*.2)/.2))
-                for p in scan['floor']:dynamic.pop(world(p),None)
-                for p in scan['obstacles']:dynamic[world(p)]=now
-                dynamic={p:t for p,t in dynamic.items() if now-t<15}
-                planner.update_obstacles([(p[0]*.2,p[1]*.2) for p in dynamic],robot_pose=pose)
+            vendor_rechecked=False;last_lookahead=-math.inf
+            def apply_obstacles(cells,pose):
+                nonlocal applied_obstacles
+                if cells!=applied_obstacles:
+                    resolution=obstacle_tracks.resolution
+                    planner.update_obstacles([(x*resolution,y*resolution) for x,y in cells],robot_pose=pose)
+                    applied_obstacles=cells
             def request_local(reason,failed=None,prefer_route=False):
                 nonlocal local_follower,local_plan,local_pending,avoid_axes,blocked_at,route_first
                 if local_plan:
@@ -473,6 +474,22 @@ class PointNavigator:
                     basic_record=app.link.record(1002,6);basic=basic_record.get('items',{}).get('BasicStatus',{})
                     standing=age_of(basic_record)<.5 and basic.get('MotionState')==17 and basic.get('HES')==0 and not basic.get('Sleep')
                     vendor_avoidance |= age_of(basic_record)<.65 and basic.get('ControlUsageMode')==2 and basic.get('OOA')==3
+                if app.demo or surface.get('accepted'):
+                    observed=obstacle_tracks.observe(projected,epoch=localization.get('epoch'))
+                    for p in observed.cleared:obstacle_memory.pop(p,None)
+                    obstacle_memory.update((p,now) for p in observed.confirmed)
+                    obstacle_memory={p:at for p,at in obstacle_memory.items() if now-at<15}
+                    planning_obstacles=observed.current | observed.temporary | obstacle_memory.keys()
+                    surface['moving_obstacle_tracks']=observed.moving_tracks
+                else:
+                    obstacle_tracks.reset()
+                    obstacle_memory.clear()
+                    planning_obstacles=set()
+                # Defer adding a planning overlay to replans. Retire obsolete
+                # cells immediately so a mover does not leave a 15 s trail.
+                if applied_obstacles-planning_obstacles:
+                    apply_obstacles(applied_obstacles & planning_obstacles,pose)
+                if not app.demo:
                     self._update(token,live_surface=surface,vendor_avoidance=vendor_avoidance)
                 if not vendor_avoidance:vendor_rechecked=False
                 motion_supported=math.hypot(*scan.get('_velocity_body',[0.,0.]))>.08
@@ -517,7 +534,7 @@ class PointNavigator:
                     if route_first:
                         route_first=False;last_replan=now
                         if candidate is None:
-                            update_dynamic(scan,now)
+                            apply_obstacles(planning_obstacles,pose)
                             try:
                                 new=plan_with_recovery(planner,pose,[goal['x'],goal['y']],goal['yaw'],
                                                        projected,localization,standing,budget=.55)
@@ -611,6 +628,17 @@ class PointNavigator:
                     result=dict(state='blocked',axes=[0.,0.,0.],reason='已绕过局部障碍，正在接续原目标')
                 blocked_at=(blocked_at or now) if result['state'] in ['blocked','waiting_feedback'] else None
                 issued=self._drive(token,result['axes'],scan);progress.observe_command(issued,now)
+                if (local_follower is None and not local_pending and standing and issued[0]>0
+                        and result.get('ahead_obstacle_m') is not None and now-last_lookahead>=1.5):
+                    last_lookahead=now
+                    bypass=plan_local_detour(scan,[goal['x'],goal['y']],tried=local_tried,avoid_axes=issued)
+                    self.check(token)
+                    if bypass:
+                        local_plan=bypass;local_follower=self._trajectory_follower()
+                        local_follower.set_path(bypass['path'])
+                        self._update(token,phase='local_bypass',message='正在提前绕开前方障碍',
+                                     recovery=dict(state='following_local_path',**bypass))
+                        continue
                 with app.lock:
                     if not self.current(token):return
                     self.nav.update(phase='local_bypass' if local_follower is not None else 'tracking',execution_state=('moving' if motion_supported or abs(yaw_rate)>.12 else 'awaiting_progress') if any(result['axes']) else 'waiting_progress',

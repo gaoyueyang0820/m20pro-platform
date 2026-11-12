@@ -112,6 +112,14 @@ class LocalSurface:
         self.sweeps[key]=(value,self.last_failure)
         return value
 
+    def forward_obstacle(self):
+        """Near edge of an obstacle in the straight travel lane, not side walls."""
+        lane=CLEARANCE_HALF_WIDTH+.04
+        if self.precise:
+            boxes=self.bounds
+            return min((max(0.,x0) for x0,y0,x1,y1 in boxes if x1>0 and y0<lane and y1>-lane),default=math.inf)
+        return min((max(0.,x*RES-RES/2) for x,y in self.blocked if x>0 and abs(y*RES)<lane+RES/2),default=math.inf)
+
     def _sweep_uncached(self,dx,dy,turn=0.):
         if turn:
             step=math.pi/36;radius=math.hypot(CLEARANCE_HALF_LENGTH,CLEARANCE_HALF_WIDTH)
@@ -187,7 +195,7 @@ class TrajectoryFollower:
 
     def command(self,scan,yaw_rate=0.,goal_yaw=None,allowed_pose=None,*,fixed_heading=False):
         started=time.perf_counter();pose=np.asarray(scan['pose'],dtype=float)
-        self.last.update(zero_reason=None,terminal_path=self.terminal,needs_continuation=False,policy='sampled_trajectory')
+        self.last.update(zero_reason=None,terminal_path=self.terminal,needs_continuation=False,policy='sampled_trajectory',ahead_obstacle_m=None)
         if len(pose)!=3 or not np.isfinite(pose).all():raise ValueError('位姿无效')
         feedback=self._feedback(scan,yaw_rate)
         if feedback is None:return self._result([0,0,0],'waiting_feedback','等待新鲜运动反馈',[],started)
@@ -257,7 +265,11 @@ class TrajectoryFollower:
         surface=LocalSurface.cached(scan)
         f=self.forward_limit;t=self.yaw_limit
         terminal=remaining_path<.9
-        if not terminal and self.straight_clearance is not None:
+        if not terminal and abs(desired)<.30:
+            ahead=surface.forward_obstacle()
+            if ahead<min(1.5,max(1.0,.85+stopping+speed*.5)):
+                self.last['ahead_obstacle_m']=round(ahead,2)
+        if not terminal and self.straight_clearance is not None and self.last['ahead_obstacle_m'] is None:
             straight=self._straight_corridor(pose,feedback,local,arc,surface,remaining_path,reaction,deceleration)
             if straight is not None:
                 self.last.update(policy='straight_corridor',candidate_count=1,valid_candidates=1)
@@ -274,12 +286,15 @@ class TrajectoryFollower:
             f=min(self.forward_limit,max(minimum,allowed_speed/response))
             self.last['terminal_speed_limit_mps']=round(allowed_speed,3)
         side=min(.25,f);reverse=min(.25,f)
+        # Give the holonomic body a useful lateral pulse as an alternative
+        # to low axes inside its dead zone. It passes the same swept checks.
+        lateral=min(.42,self.forward_limit*1.25) if not terminal else side
         slow_f=max(min(.20,self.forward_limit),.7*f) if terminal else .7*f
         candidates=[(0.,0.,0.)]
         if not at_goal:
             yaw_candidates=(0.,) if fixed_heading else (0.,t,-t)
             for vx in list(dict.fromkeys([f,slow_f,0.,-reverse])):
-                for vy in [0.,side,-side]:
+                for vy in dict.fromkeys((0.,side,-side,lateral,-lateral) if vx==0 else (0.,side,-side)):
                     for wz in yaw_candidates:
                         if vx==0 and vy==0 and wz==0:continue
                         candidates.append((vx,vy,wz))
@@ -391,7 +406,8 @@ class TrajectoryFollower:
         length = speed*hold+speed**2/(2*deceleration)
         if length+.25 >= remaining:
             return None
-        end = min(len(local),int(np.searchsorted(arc,length+.25,side='left'))+1)
+        preview=max(length+.25,.65+abs(vx)*.8)
+        end = min(len(local),int(np.searchsorted(arc,preview,side='left'))+1)
         ahead = local[:end]
         if len(ahead)<2 or ahead[-1,0]<length or np.max(np.abs(ahead[:,1]))>.08 or np.any(np.diff(ahead[:,0])<-.01):
             return None
@@ -463,6 +479,8 @@ def exploration_step(explorer,follower,scan,yaw_rate=0.,*,new_scan=True):
     evidence. If no successor can be planned, the original terminal braking
     remains in force. This function issues no command itself.
     """
+    if follower.straight_clearance is None:
+        follower.straight_clearance=explorer.straight_clearance
     if (follower.path_repair_anchor is not None and scan.get('_speed_mps',0)>=.08
             and math.dist(scan['pose'][:2],follower.path_repair_anchor)>=.5):
         follower.path_repair_attempts=0;follower.path_repair_anchor=None

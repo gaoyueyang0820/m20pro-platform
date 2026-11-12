@@ -135,7 +135,9 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(applied(e), (0.,0.,0.))  # Wait for a fresh stopped frame.
 
         e.ingest(dict(frame, stamp=1.2))
-        self.assertEqual(applied(e), (0.,.25,0.))
+        forward,side,yaw=applied(e)
+        self.assertEqual((forward,yaw),(0.,0.))
+        self.assertGreater(side,.30)
         self.assertEqual(e.recovery_attempts, 1)
 
         e.ingest(dict(frame, stamp=1.4, obstacles=[*frame['obstacles'], [0,3]]))
