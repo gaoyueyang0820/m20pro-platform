@@ -17,12 +17,22 @@ test('navigation separates GOS status from its disconnect policy',async()=>{
  assert.match(f.messages['disconnect-policy-help'],/5 秒后请求停车.*原厂导航/);
  assert.deepEqual(f.calls,['/api/nav/resident/capabilities']);
 });
-test('station action automatically selects GOS with stop on disconnect',()=>{
+test('ball camera station action automatically selects GOS with stop on disconnect',()=>{
  const f=setup({available:true});f.engine.value='native';f.policy.value='finish';
- f.context.points=[{type:1,station_action:{camera:'front'}}];f.context.render();
+ f.context.points=[{type:1,station_action:{camera:'ball'}}];f.context.render();
  assert.equal(f.engine.value,'gos');assert.equal(f.policy.value,'stop');
  assert.equal(f.engine.disabled,true);
  f.context.points=[];f.context.update();assert.equal(f.engine.value,'native');assert.equal(f.policy.value,'finish');
+});
+test('front camera station counting allows original navigation and stop on disconnect',()=>{
+ const f=setup({available:true},{available:true,policies:['return']});
+ f.engine.value='native';f.policy.value='return';
+ f.context.points=[{type:1,station_action:{camera:'front',pan:'none'}}];
+ f.context.render();
+ assert.equal(f.engine.disabled,false);
+ assert.equal(f.engine.value,'native');
+ assert.equal(f.policy.value,'stop');
+ assert.match(f.messages['disconnect-policy-help'],/到点停稳后由电脑统计/);
 });
 test('front or rear people counts preserve native navigation and its disconnect policy',()=>{
  const f=setup({available:true},{available:true,policies:['return']});

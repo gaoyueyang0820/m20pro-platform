@@ -37,10 +37,11 @@ from m20.vision_models import ModelChecks, catalog as vision_catalog, default_pa
 from m20.ppe_runtime import PPESources
 from m20.map_learning_runtime import MapLearning
 from m20.people_counting import PeopleCounter
-from m20.patrol_actions import station_spec
+from m20.patrol_actions import station_spec, station_requires_gos
 from m20.point_navigation import PointNavigator, navigation_observation, stationary_feedback
 from m20.task_collectors import collector_catalog, collector_specs, requires_gos_collection
-from m20.desktop_patrol_counts import DesktopPatrolCounts
+from m20.desktop_patrol_counts import DesktopPatrolCounts, count_at_station
+from bridge.task_collection import CollectionCancelled
 
 if not os.environ.get('M20_PPE_MODEL'):
     original.PPE_MODEL_PATH=str(default_path('ppe'))
@@ -892,8 +893,11 @@ class Platform:
             if policy != 'stop':
                 raise ValueError('含充电航点的路线使用断联停车')
             engine = 'native'
-        if engine != 'gos' and (station_actions or requires_gos_collection(collectors)):
-            raise ValueError('到点任务、外接球机和物联网采集需要 GOS 机载寻路')
+        if engine != 'gos':
+            if any(station_requires_gos(p.get('station_action')) for p in route['points']) or requires_gos_collection(collectors):
+                raise ValueError('外接球机和物联网采集需要 GOS 机载寻路')
+            if station_actions and (engine!='native' or policy!='stop'):
+                raise ValueError('前后视到点人数统计可选原厂导航与断联停车')
         if policy != 'stop':
             if engine != 'native':
                 raise ValueError('断联后继续或返程需要原厂导航')
@@ -947,10 +951,12 @@ class Platform:
                 req=dict(req,engine=stored['options']['engine'])
             if req.get('engine')=='gos':
                 return self._start_gos_route(req,client_intent)
-            if stored and (requires_gos_collection(stored.get('options',{}).get('collectors', [])) or any(p.get('station_action') for p in stored['points'])):
+            if stored and (requires_gos_collection(stored.get('options',{}).get('collectors', [])) or any(station_requires_gos(p.get('station_action')) for p in stored['points'])):
                 raise ValueError('带采集作业的巡检路线请选择 GOS 自主寻路')
         if goal is None and req.get('engine')=='platform':
             with self.lock:stored=next((r for r in self.store.value['routes'] if r['id']==req.get('id')),None)
+            if stored and any(p.get('station_action') for p in stored['points']):
+                raise ValueError('前后视到点人数统计请选择原厂导航或 GOS 机载寻路')
             policy=req.get('disconnect_policy',(stored or {}).get('options',{}).get('disconnect_policy','stop'))
             if stored and policy=='stop' and not any(p.get('type')==3 for p in stored.get('points',[])):
                 return self._start_platform_route(req,client_intent)
@@ -980,6 +986,8 @@ class Platform:
             from m20.navigation_disconnect import POLICIES
             disconnect_policy=req.get('disconnect_policy',saved.get('disconnect_policy','stop'))
             if disconnect_policy not in POLICIES:raise ValueError('未知断联策略')
+            if any(p.get('station_action') for p in route['points']) and disconnect_policy!='stop':
+                raise ValueError('原厂到点人数统计需要断联停车')
             if disconnect_policy!='stop' and self.demo:raise ValueError('驻机断联任务需连接已配置的机器人端服务')
             if not isinstance(pause,bool):raise ValueError('到点暂停参数无效')
             options=dict(NavMode=integer(req.get('nav_mode',saved.get('nav_mode',0)),0,1),
@@ -1219,6 +1227,17 @@ class Platform:
         self.nav['index'] += 1
         self.nav['completed'] = self.nav['index']
         self.nav['progress'] = self.nav['index']/len(self.nav['route']['points'])
+        station=finished.get('station_action')
+        if station and not station_requires_gos(station):
+            result=dict(index=self.nav['index']-1,camera=station['camera'])
+            if self.link and not self.demo:
+                after=('completed' if self.nav['index']>=len(self.nav['route']['points'])
+                       else 'paused' if self.nav.get('pause_at_point') and finished.get('type',1)==1 else 'running')
+                self.nav['desktop_station']=dict(result,after=after)
+                self._cancel_navigation('station_parking','station_action')
+                return
+            result['error']='演示模式未读取真实相机'
+            self.nav.setdefault('station_results',[]).append(result)
         if self.nav['index'] >= len(self.nav['route']['points']):
             self.stop()
             self.nav.update(after_cancel='completed',stop_reason='route_complete')
@@ -1307,39 +1326,73 @@ class Platform:
                 self.nav.update(phase='cancel_unconfirmed',execution_state='stop_unconfirmed',error=message,cancel_error=message)
         else:self.nav.update(status=after,phase=after,execution_state=after,stop_reason=reason)
 
+    def _native_idle_and_still(self,nav):
+        native=self.link.record(1007,1);items=native.get('items',{})
+        motion=self.link.record(1002,4);values=motion.get('items',{}).get('MotionStatus',{})
+        cancel_at=nav.get('cancel_at',time.time())
+        cancel_mono=nav.get('cancel_monotonic')
+        return (age_of(native)<2 and items.get('Status') in (0,4)
+                 and items.get('Value') in (None,0,nav.get('value'))
+                 and self._navigation_record_after(native,cancel_at,cancel_mono)
+                 and age_of(motion)<.5 and self._navigation_record_after(motion,cancel_at,cancel_mono)
+                 and all(isinstance(values.get(k),(int,float)) and abs(values[k])<limit
+                         for k,limit in [('LinearX',.08),('LinearY',.08),('OmegaZ',.12)]))
     def _tick_native_stop(self):
         nav=self.nav
         request=self.cancel_request
         ack=self.link.record(1004,1)
         matching_ack=(request and ack.get('seq')==request['seq'] and
                       self._navigation_record_after(ack,request['sent_at'],request.get('sent_monotonic')))
-        native=self.link.record(1007,1);items=native.get('items',{})
-        motion=self.link.record(1002,4);values=motion.get('items',{}).get('MotionStatus',{})
-        cancel_at=nav.get('cancel_at',request['sent_at'] if request else time.time())
-        cancel_mono=nav.get('cancel_monotonic')
-        stopped=(age_of(native)<2 and items.get('Status') in (0,4)
-                 and items.get('Value') in (None,0,nav.get('value'))
-                 and self._navigation_record_after(native,cancel_at,cancel_mono)
-                 and age_of(motion)<.5 and self._navigation_record_after(motion,cancel_at,cancel_mono)
-                 and all(isinstance(values.get(k),(int,float)) and abs(values[k])<limit
-                         for k,limit in [('LinearX',.08),('LinearY',.08),('OmegaZ',.12)]))
-        if (matching_ack and ack['items'].get('ErrorCode')==0) or stopped:
-            status=nav.get('after_cancel','cancelled')
+        accepted=matching_ack and ack['items'].get('ErrorCode')==0
+        stopped=self._native_idle_and_still(nav)
+        status=nav.get('after_cancel','cancelled')
+        if (accepted and status!='station_action') or stopped:
             nav.update(status=status,phase=status,execution_state=status,cancel_confirmed=True)
             self.cancel_request=None
             cancel_error=nav.pop('cancel_error',None)
             if cancel_error and nav.get('error')==cancel_error:nav.pop('error',None)
             if nav.get('failure_error'):nav['error']=nav.pop('failure_error')
-            if stopped and not matching_ack:nav['message']='已核对原厂导航空闲和停稳反馈'
+            if stopped and not accepted:nav['message']='已核对原厂导航空闲和停稳反馈'
             if nav.get('stop_reason')=='no_progress':
                 nav.update(message='持续无进展，停车已确认',warning='任务已暂停；可重新规划或手动调整位置')
             if status=='completed':self._record_route_completion()
-        elif matching_ack:
+            elif status=='station_action':self._start_native_station_count(nav)
+        elif matching_ack and not accepted:
             message='机器人未接受停止请求，请重试或核对现场'
             nav.update(phase='cancel_rejected',execution_state='stop_unconfirmed',error=message,cancel_error=message)
         elif time.monotonic()-nav.get('cancel_monotonic',time.monotonic())>5:
             message='停车状态待核对，可重试结束任务或手动接管'
             nav.update(phase='cancel_unconfirmed',execution_state='stop_unconfirmed',error=message,cancel_error=message)
+
+    def _start_native_station_count(self,nav):
+        station=nav['desktop_station'];link=self.link
+        nav.update(status='running',phase='station_action',execution_state='station_action',
+                   message='已停稳，正在统计航点人数',station_deadline=time.monotonic()+20)
+        def current():
+            return (self.nav is nav and self.link is link and nav['status']=='running'
+                    and nav['phase']=='station_action' and not self.done)
+        def cancelled():
+            with self.lock:
+                return not current() or not self._native_idle_and_still(nav)
+        def work():
+            row=dict(index=station['index'],camera=station['camera'])
+            try:
+                row.update(count_at_station(self.cameras,link.ip,station['camera'],cancelled))
+            except (CollectionCancelled,ValueError,OSError) as error:
+                row['error']=str(error) or '停稳状态变化，已停止航点统计'
+            with self.lock:
+                if not current():return
+                if not self._native_idle_and_still(nav):row['error']='停稳状态变化，已停止航点统计'
+                nav.setdefault('station_results',[]).append(row)
+                nav.pop('desktop_station',None)
+                after='paused' if row.get('error') else station['after']
+                nav.update(status=after,phase=after,execution_state=after,
+                           message=row.get('error') or '航点人数统计完成')
+                if after=='completed':self._record_route_completion()
+                elif after=='running':
+                    if self.basic.get('ControlUsageMode')==1:self._send_point()
+                    else:self._begin_navigation_preparation()
+        threading.Thread(target=work,daemon=True,name='native-station-count').start()
 
     @staticmethod
     def _native_location_ready(record):
@@ -1480,6 +1533,9 @@ class Platform:
                 self._tick_native_stop()
             if self.nav['status']=='running' and self.nav.get('engine')!='platform' and self.nav.get('phase')=='preparing':
                 self._tick_navigation_preparation(now)
+            if (self.nav['status']=='running' and self.nav.get('phase')=='station_action'
+                    and time.monotonic()>self.nav.get('station_deadline',math.inf)):
+                self.nav.update(status='paused',phase='paused',execution_state='paused',message='航点人数统计超时，任务已暂停')
             if self.nav['status']=='running' and self.nav.get('phase')=='validating' and time.monotonic()>self.nav['validation_deadline']:
                 self.nav.update(status='failed',phase='validation_timeout',execution_state='failed',error='导航地图核对超时，未下发目标')
             if self.nav['status']=='running' and self.nav.get('engine')!='platform' and self.nav.get('phase','running')=='running':

@@ -9,7 +9,9 @@
   const previousEngine=engineChoice?.value,previousPolicy=policyChoice?.value;
   const docking=points.some(point=>point.type===3);
   const collectors=taskCollectorOptions();
-  const actions=points.some(point=>point.station_action)||collectors.some(spec=>spec.kind!=='people_count'||!['front','rear'].includes(spec.camera));
+  const stations=points.map(point=>point.station_action).filter(Boolean);
+  const actions=stations.some(action=>!['front','rear'].includes(action.camera)||action.pan&&action.pan!=='none'||action.iot_device_id||action.iot_device_ids?.length)
+   ||collectors.some(spec=>spec.kind!=='people_count'||!['front','rear'].includes(spec.camera));
   const active=['running','cancelling'].includes(S?.nav?.status);
   const requiredEngine=docking?'native':actions?'gos':'';
   if(engineChoice){
@@ -26,12 +28,13 @@
    engineChoice.disabled=!!requiredEngine||active;
   }
   const engine=engineChoice?.value||'gos';
+  const desktopStations=engine==='native'&&stations.length>0&&!actions;
   const nativeOptionsReady=($('#route-arrival')?.value||'continue')==='continue'&&($('#nav-mode')?.value||'1')==='1'&&
    ($('#nav-speed')?.value||'1')==='1'&&($('#nav-gait')?.value||'flat')==='flat'&&($('#nav-manner')?.value||'0')==='0';
   if(policyChoice){
-   if(requiredEngine)policyChoice.value='stop';
-   policyChoice.disabled=!!requiredEngine||active;
-   const canConfigure=engine==='native'&&!requiredEngine&&nativeOptionsReady;
+   if(requiredEngine||desktopStations)policyChoice.value='stop';
+   policyChoice.disabled=!!requiredEngine||active||desktopStations;
+   const canConfigure=engine==='native'&&!requiredEngine&&!desktopStations&&nativeOptionsReady;
    for(const option of policyChoice.options)option.disabled=option.value!=='stop'&&!canConfigure;
   }
   const status=S?.mode==='demo'?'本地演示':docking?'含充电航点 · 自动使用回桩流程':
@@ -41,7 +44,8 @@
   text('navigation-executor-status',status);
   let help='';
   if(docking)help='回桩路线采用断联停车。';
-  else if(actions)help='到点作业、外接球机和物联网采集使用 GOS 机载寻路与断联停车。';
+  else if(actions)help='外接球机和物联网采集使用 GOS 机载寻路与断联停车。';
+  else if(desktopStations)help='到点停稳后由电脑统计人数，电脑断联后停车。';
   else if(engine==='gos')help='GOS 断联 5 秒后请求停车。选择「原厂导航」可设置续行或返程。';
   else if(!nativeOptionsReady)help='续行或返程需要自动接续、低速敏捷平地、自主导航和正向行走。';
   else if(policyChoice?.value&&policyChoice.value!=='stop'){

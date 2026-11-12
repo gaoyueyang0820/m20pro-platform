@@ -34,6 +34,18 @@ class SharedPeopleSampler:
     def close(self):
         self.feed.unsubscribe()
 
+def count_at_station(cameras, aos, camera, cancelled):
+    sampler=SharedPeopleSampler(cameras,aos,dict(camera=camera))
+    samples=[]
+    try:
+        for _ in range(3):
+            sample=sampler.sample(cancelled)
+            if sample.get('error'):raise ValueError(sample['error'])
+            samples.append(sample['values']['people'])
+        return dict(camera=camera,pan='none',samples=samples,people=max(samples),sampled_at=time.time())
+    finally:
+        sampler.close()
+
 
 class DesktopPatrolCounts:
     def __init__(self, app):

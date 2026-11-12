@@ -41,6 +41,7 @@ GROUPS={
                  'test_navigation_lifecycle.NavigationLifecycleTests.test_native_route_keeps_running_without_desktop_location_and_advances_on_arrival',
                  'test_navigation_lifecycle.NavigationLifecycleTests.test_new_idle_report_and_stationary_feedback_reconcile_a_lost_stop_ack',
                  'test_navigation_lifecycle.NavigationLifecycleTests.test_stop_can_be_retried_after_receipt_timeout',
+                 'test_navigation_lifecycle.NavigationLifecycleTests.test_original_route_waits_for_station_count_before_next_goal',
                  'test_autonomy','test_point_navigation_runtime','test_point_navigation_recovery','test_platform_route_dispatch','test_map_activation_localization','test_gos_patrol',
                  'test_autonomy_observation_runtime.AutonomyObservationRuntimeTests.test_ground_occlusion_survives_long_wait_and_resumes_same_task',
                  'test_autonomy_observation_runtime.AutonomyObservationRuntimeTests.test_sparse_valid_surface_recovers_without_a_passive_wait_becoming_actuator_failure'],

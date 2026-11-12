@@ -154,6 +154,34 @@ class NavigationLifecycleTests(unittest.TestCase):
         a.tick(.01);self.assertEqual(a.nav['phase'],'cancel_unconfirmed')
         a.stop()
         self.assertNotEqual(a.cancel_request['seq'],previous)
+    def test_original_route_waits_for_station_count_before_next_goal(self):
+        self.route();a=self.app
+        points=[dict(x=4,y=0,station_action=dict(camera='front')),dict(x=5,y=0)]
+        options=dict(engine='native',disconnect_policy='stop',explicit_execution=True)
+        r=a.route_save(dict(name='station counts',map_id='test',points=points,options=options))['route']
+        a.start_route(dict(id=r['id']))
+        value=a.nav['value']
+        a.link.put(1007,1,dict(Value=value,Status=4,ErrorCode=0));a.tick(.01)
+        self.assertEqual(a.nav['status'],'cancelling')
+        entered,release=threading.Event(),threading.Event()
+        def count(cameras,aos,camera,cancelled):
+            self.assertEqual(camera,'front');self.assertFalse(cancelled())
+            entered.set();release.wait(2)
+            return dict(camera=camera,people=2,samples=[2,1,2])
+        with patch.object(web,'count_at_station',side_effect=count):
+            try:
+                a.link.put(1004,1,dict(ErrorCode=0),seq=a.cancel_request['seq'])
+                a.tick(.01);self.assertFalse(entered.is_set())
+                self.ready(x=4);a.link.put(1007,1,dict(Value=value,Status=0,ErrorCode=0))
+                a.tick(.01);self.assertTrue(entered.wait(1))
+                self.assertEqual(len([p for p in a.link.sent if p['type']==1003]),1)
+            finally:
+                release.set()
+            deadline=time.monotonic()+1
+            while len([p for p in a.link.sent if p['type']==1003])<2 and time.monotonic()<deadline:
+                time.sleep(.01)
+        self.assertEqual(a.nav['station_results'][0]['people'],2)
+        self.assertEqual(len([p for p in a.link.sent if p['type']==1003]),2)
     def test_robot_pause_wins_over_a_queued_completion_and_never_advances(self):
         r=self.route();a=self.app;a.start_route(dict(id=r['id']))
         a.link.lock=threading.RLock()
