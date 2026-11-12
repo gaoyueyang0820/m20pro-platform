@@ -941,6 +941,10 @@ class Hub:
         if path=='/api/maps/library/build':
             if req.get('action')=='start':return self.post('/api/maps/start-here',req)
             self.normal_mode()
+            if req.get('action')=='retry_fusion':
+                context=self.context()
+                return self.mutate('map-fusion',lambda _:self.remote_maps('/maps/build',
+                    dict(action='retry_fusion',request_id=uuid.uuid4().hex),context=context))
             if req.get('action')=='stop':
                 self.app.stop()
                 pending=self.preparation_job()

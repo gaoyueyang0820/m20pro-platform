@@ -7,7 +7,7 @@ import sys
 import zipfile
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from m20.map_formats import Files,map_name,inspect_package,digest
+from m20.map_formats import Files,map_name,inspect_package,digest,make_map_readable
 from m20.map_catalog import MapCatalog,catalog_lock,read_json
 try:
     from .mapping_job import launch,request_identity
@@ -88,7 +88,8 @@ def _execute(req,maps,data):
                     raise ValueError('地图包包含目标地图之外的文件，已拒绝导入，避免覆盖其他地图')
             if (maps/name).exists() or (maps/name).is_symlink():raise ValueError('目标地图已存在，已拒绝覆盖')
             output=run(['drmap','unpack','-n',str(target)])
-            if not (maps/name).is_dir():raise ValueError('drmap 已结束，但未发现预期地图目录，请查看日志核对结果')
+            if (maps/name).is_symlink() or not (maps/name).is_dir():raise ValueError('drmap 已结束，但未发现预期地图目录，请查看日志核对结果')
+            make_map_readable(maps/name)
             return dict(ok=True,name=name,output=output,activated=False)
     if action=='apply':
         import hashlib,time
@@ -117,6 +118,8 @@ def _execute(req,maps,data):
         return launch('mapping','m20-session-'+(identity or uuid.uuid4().hex[:10]),context=dict(workflow='extension',base=base,anchor=anchor,grid_id=grid,maps=str(maps)),request_id=identity)
     if action=='mapping':
         return launch('mapping',map_name(req.get('name')),request_id=req.get('request_id'))
+    if action=='retry_fusion':
+        return launch('stop_mapping',request_id=req.get('request_id'),retry_maps=maps)
     if action in ['stop_mapping','discard_mapping']:
         context=None
         if action=='discard_mapping':
@@ -133,7 +136,7 @@ def _execute(req,maps,data):
 
 def execute(req,maps=Path('/var/opt/robot/data/maps'),data=Path('/var/lib/m20-platform')):
     # Serialize activation/producer starts with catalog edits across helper processes.
-    if req.get('action') in ['apply','mapping','extend_mapping','refine_map','import','localize_auto']:
+    if req.get('action') in ['apply','mapping','extend_mapping','refine_map','import','localize_auto','retry_fusion']:
         with catalog_lock(maps):return _execute(req,maps,data)
     return _execute(req,maps,data)
 

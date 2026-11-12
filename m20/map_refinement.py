@@ -91,6 +91,7 @@ def collect_evidence(files,grid):
         if pts.ndim!=2 or pts.shape[1]!=3 or len(pts)>60000 or pose.shape!=(7,) or not np.isfinite(pts).all() or not np.isfinite(pose).all() or not math.isfinite(stamp):raise ValueError('采集记录格式无效')
         T=pose_matrix(pose);body=transform(pts,np.linalg.inv(T));distance=np.linalg.norm(body[:,:2],axis=1)
         pts=pts[(distance>.55)&(distance<6)];body=body[(distance>.55)&(distance<6)]
+        if not len(pts):continue
         floor=supported_floor(body);free={tuple(p) for p in floor['floor']};blocked={tuple(p) for p in floor['obstacles']}
         epoch=math.floor(stamp/10);accepted+=1;poses.append(pose[:3].tolist())
         # A voxel is counted once per ten-second visit, not once per laser return.
@@ -256,6 +257,7 @@ def refine_map(base,session,destination,grid_id,expected):
 
 
 def _publish_refinement(base,session,destination,grid_id,expected,files,original_files,grid,old,correction):
+    from m20.map_formats import make_map_readable
     e=collect_evidence(files,grid)
     if len(e['points'])==0 and not(e['occupied_added'] or e['free_updated']):
         return dict(ok=True,unchanged=True,message='已保存观测，重复观测尚不足以确认地图变化',frames=len(files))
@@ -271,15 +273,18 @@ def _publish_refinement(base,session,destination,grid_id,expected,files,original
     observed=np.array([tuple(p) in newkeys for p in keys],dtype=bool)
     existing=retained[observed];untouched=retained[~observed]
     combined=np.concatenate([existing,np.column_stack([pts,np.zeros(len(pts))])]).astype(np.float32)
-    _,inverse=np.unique(np.floor(combined[:,:3]/.05).astype(np.int64),axis=0,return_inverse=True)
-    n=np.bincount(inverse);merged=np.column_stack([np.bincount(inverse,weights=combined[:,i])/n for i in range(4)]).astype(np.float32)
-    old_counts=np.bincount(inverse[:len(existing)],minlength=len(n));intensity=np.bincount(inverse[:len(existing)],weights=existing[:,3],minlength=len(n));valid_intensity=old_counts>0
-    merged[valid_intensity,3]=intensity[valid_intensity]/old_counts[valid_intensity]
-    old_mean=np.column_stack([np.bincount(inverse[:len(existing)],weights=existing[:,i],minlength=len(n))/np.maximum(old_counts,1) for i in range(3)])
-    changed_geometry=int((old_counts==0).sum())+int((np.linalg.norm(merged[:,:3]-old_mean,axis=1)[valid_intensity]>.01).sum())
+    merged=combined;changed_geometry=0
+    if len(combined):
+        _,inverse=np.unique(np.floor(combined[:,:3]/.05).astype(np.int64),axis=0,return_inverse=True)
+        n=np.bincount(inverse);merged=np.column_stack([np.bincount(inverse,weights=combined[:,i])/n for i in range(4)]).astype(np.float32)
+        old_counts=np.bincount(inverse[:len(existing)],minlength=len(n));intensity=np.bincount(inverse[:len(existing)],weights=existing[:,3],minlength=len(n));valid_intensity=old_counts>0
+        merged[valid_intensity,3]=intensity[valid_intensity]/old_counts[valid_intensity]
+        old_mean=np.column_stack([np.bincount(inverse[:len(existing)],weights=existing[:,i],minlength=len(n))/np.maximum(old_counts,1) for i in range(3)])
+        changed_geometry=int((old_counts==0).sum())+int((np.linalg.norm(merged[:,:3]-old_mean,axis=1)[valid_intensity]>.01).sum())
     if not changed_geometry and not removed_points and not(e['occupied_added'] or e['free_updated']):
         return dict(ok=True,unchanged=True,message='观测已保存，尚未确认需要更新的地图变化',frames=len(files))
     merged=np.concatenate([untouched,merged])
+    if not len(merged):return dict(ok=True,unchanged=True,message='观测已保存，本轮没有可生成地图的有效点云')
     report={k:v for k,v in e.items() if k not in ['points','image','old_offset','confirmed_cells']}
     report.update(base_map=base.name,map=destination.name,created=time.time(),stable_points=len(pts),old_points=len(old),new_points=len(merged),preserved_unobserved_points=len(untouched),removed_points=removed_points,method='structure_aligned_temporal_visibility',grid_id=grid_id,includes_complete_base=True,structural_alignment=alignment,structural_correction=correction,old_surface_visibility=old_visibility)
     with tempfile.TemporaryDirectory(prefix='.m20-refine-',dir=destination.parent) as temp:
@@ -311,5 +316,6 @@ def _publish_refinement(base,session,destination,grid_id,expected,files,original
         project['revision']+=1;project.setdefault('refinements',[]).append(report);meta.write_text(json.dumps(project,ensure_ascii=False,indent=2))
         (stage/'.nav_maps/nav_map_0').mkdir(parents=True);(stage/'.nav_maps/active').symlink_to('nav_map_0')
         (stage/'.m20-refinement.json').write_text(json.dumps(dict(report,source_fingerprint=expected,observations=[dict(file=p.name,sha256=hashlib.sha256(p.read_bytes()).hexdigest()) for p in original_files]),ensure_ascii=False))
+        make_map_readable(stage)
         stage.rename(destination)
     return dict(ok=True,map=destination.name,report=report,activated=False,message='完整旧地图与行走更新已合并为新版本，点击启用后生效')

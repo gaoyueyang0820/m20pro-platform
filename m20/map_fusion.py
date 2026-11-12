@@ -111,6 +111,8 @@ def transform(points,T):
 
 def voxel(points,size=.15,limit=None):
     import numpy as np
+    # NOS NumPy 1.17 cannot reshape an empty axis-unique input.
+    if not len(points):return points
     _,index=np.unique(np.floor(points[:,:3]/size).astype(np.int32),axis=0,return_index=True)
     result=points[index]
     if limit and len(result)>limit:result=result[::math.ceil(len(result)/limit)]
@@ -294,11 +296,12 @@ def refine_slam_structure(old,session,poses,T,grid):
 
 def fuse_maps(base,session,destination,anchor,grid_id=0,registration=register_pcl):
     import numpy as np
+    from m20.map_formats import make_map_readable
     base,session,destination=map(Path,[base,session,destination])
     if destination.exists() or base.resolve()==destination.resolve() or session.resolve()==destination.resolve():raise ValueError('融合结果必须另存为新版本')
     old=read_pcd(base/'full_cloud.pcd');new=read_pcd(session/'full_cloud.pcd')
     poses=np.loadtxt(session/'.sessions/session_0/poses.txt',ndmin=2)
-    if poses.shape[1]!=8:raise ValueError('扫描轨迹格式不匹配')
+    if not len(poses) or poses.shape[1]!=8:raise ValueError('本轮没有可配准的扫描轨迹，原始扫描已保留')
     cloud_indices={int(p.stem) for p in (session/'.sessions/session_0/lidar_cloud').glob('*.pcd') if p.stem.isdigit()}
     if cloud_indices!=set(range(len(poses))):raise ValueError('本轮扫描轨迹与原始帧数不一致，已保留原图与采集数据')
     first=pose_matrix(poses[0,1:]);yaw=float(anchor['yaw']);anchor_T=pose_matrix([anchor['x'],anchor['y'],anchor.get('z',0),0,0,math.sin(yaw/2),math.cos(yaw/2)])
@@ -358,9 +361,13 @@ def fuse_maps(base,session,destination,anchor,grid_id=0,registration=register_pc
     touched=np.isin(old_keys.view(key_type).ravel(),np.unique(new_keys.view(key_type).ravel()))
     untouched=old[~touched]
     combined=np.concatenate([old[touched],moved]);keys=np.floor(combined[:,:3]/.04).astype(np.int32)
-    _,inverse=np.unique(keys,axis=0,return_inverse=True);counts=np.bincount(inverse).astype(np.float64)
-    merged=np.column_stack([np.bincount(inverse,weights=combined[:,i])/counts for i in range(4)]).astype(np.float32)
-    merged=np.concatenate([untouched,merged])
+    if len(combined):
+        _,inverse=np.unique(keys,axis=0,return_inverse=True);counts=np.bincount(inverse).astype(np.float64)
+        merged=np.column_stack([np.bincount(inverse,weights=combined[:,i])/counts for i in range(4)]).astype(np.float32)
+        merged=np.concatenate([untouched,merged])
+    else:
+        merged=untouched
+    if not len(merged):raise ValueError('没有可生成地图的有效融合点，原始扫描已保留')
     new_grid=read_grid(session,0);prior_file=base/('.m20-grid-evidence-'+str(grid_id)+'.npy')
     prior=np.load(prior_file,allow_pickle=False) if prior_file.exists() else None
     grid=fuse_grid(old_grid,new_grid,T,prior,confirmed_changes=confirmed)
@@ -392,5 +399,6 @@ def fuse_maps(base,session,destination,anchor,grid_id=0,registration=register_pc
             structural_alignment=structure,structural_correction=structural_correction,deferred_known_conflicts=grid['deferred_known_conflicts'],confirmed_known_changes=grid['confirmed_known_changes'],deferred_known_region_points=deferred_points,known_region_change_policy='saved_keyframe_temporal_evidence',temporal_evidence=evidence_report)
         history['revision']+=1;history['sessions'].append(report);(stage/'.m20-project.json').write_text(json.dumps(history,ensure_ascii=False,indent=2))
         (stage/'.nav_maps/nav_map_0').mkdir(parents=True);(stage/'.nav_maps/active').symlink_to('nav_map_0')
+        make_map_readable(stage)
         stage.rename(destination)
     return dict(ok=True,report=report,revision=history['revision'],map=destination.name)

@@ -105,7 +105,7 @@ mapsPage=function(){
  const grid=gridTools?.outerHTML||'';
  const dpad=`<div class="mapping-dpad"><button data-velocity="0,0,1" aria-label="建图左转">↶</button><button data-velocity="1,0,0" aria-label="建图前进">↑</button><button data-velocity="0,0,-1" aria-label="建图右转">↷</button><button data-velocity="0,1,0" aria-label="建图左移">←</button><button class="center" data-action="stop">停止</button><button data-velocity="0,-1,0" aria-label="建图右移">→</button><span></span><button data-velocity="-1,0,0" aria-label="建图后退">↓</button><span></span></div>`;
  return heading(btn('同步活动地图','sync-map','','refresh')+btn('原图续建 / 优化','extend-map','','maps')+btn('地图包与导入','map-files-open','','file'))+operationPanel()+
- `<section class="card mapping-phase-card"><div><span id="mapping-phase" class="mapping-phase idle">等待状态</span><strong id="mapping-phase-message">正在读取建图状态</strong><small id="mapping-phase-extra"></small></div></section>
+ `<section class="card mapping-phase-card"><div><span id="mapping-phase" class="mapping-phase idle">等待状态</span><strong id="mapping-phase-message">正在读取建图状态</strong><small id="mapping-phase-extra"></small><button type="button" class="btn small" data-ui="map-fusion-retry" hidden>重试融合</button></div></section>
   <div class="mapping-layout">
    <aside class="mapping-sidebar">
     ${card('我的地图','<div class="map-library-toolbar"><input id="map-library-search" type="search" placeholder="搜索地图名称或编号" aria-label="搜索地图"><div><span id="map-library-count" class="help"></span><button class="text-button" data-ui="map-library-trash">回收站</button></div></div><div id="map-batch-bar" class="map-batch-bar" hidden></div><div id="remote-map-list" class="compact-map-library"></div><p id="map-disk" class="help card-pad"></p>','maps',`<div class="button-row"><span id="map-library-source" class="pill ${S.mode==='demo'?'amber':'gray'}">${S.mode==='demo'?'演示 NOS':'NOS'}</span>${btn('编辑地图','map-library-edit','small')}</div>`)}
@@ -160,6 +160,7 @@ loadBuildStatus=async function(){
   text('mapping-phase-message',r.message||'暂未收到采集状态，请检查 NOS 连接');
   text('mapping-phase-extra',r.result_maps?.length?'结果地图：'+r.result_maps.join('、'):r.fusion?'本轮融合：'+r.fusion.keyframes+' 帧 · 回环 '+r.fusion.loop_constraints+' 个 · 配准误差 '+r.fusion.quality.rmse_m+' m':r.in_progress&&r.mapping?.context?.base?'正在补扫：'+r.mapping.context.base:r.in_progress&&r.mapping?.name?'正在创建：'+r.mapping.name:r.demo?'演示采集 · 无真实雷达数据':'等待采集状态');
   const start=$('[data-ui="hub-mapping-start"]'),stop=$('[data-ui="hub-mapping-stop"]');if(start)start.disabled=!!r.in_progress;if(stop)stop.disabled=!r.in_progress;
+  const retry=$('[data-ui="map-fusion-retry"]');if(retry)retry.hidden=!r.can_retry_fusion||!!r.in_progress;
   html('mapping-progress',['mapping','stop_mapping'].map((key,i)=>`<strong>${i?'保存日志':'启动日志'}</strong><pre class="pre">${esc(r[key]?.output||r[key]?.message||'暂无日志')}</pre>`).join(''));
   if(r.phase==='saved'&&r.result_maps?.length&&lastBuildEnd!==scope+'|'+r.result_maps.join(',')){
    const previousSelection=selectedRemote;await loadMapLibrary();if(!current()||page!==sourcePage||previousSelection&&selectedRemote!==previousSelection)return;
@@ -172,6 +173,9 @@ loadBuildStatus=async function(){
  finally{if(workflowBuildRequest===token){workflowBuildRequest=null;buildLoading=false;}}
 };
 ui['map-build-status']=loadBuildStatus;
+ui['map-fusion-retry']=async()=>{
+ await job('/api/maps/library/build',{action:'retry_fusion'},'重试融合');await loadBuildStatus();
+};
 ui['hub-mapping-start']=async()=>{
  await job('/api/maps/start-here',{name:$('#hub-map-name').value},'停稳并启动建图');await loadBuildStatus();
  if(S.mode==='live'){if($('#live-cloud-topic'))$('#live-cloud-topic').value='/SLAM_ALIGNED_POINTS';ui['cloud-live']().catch(()=>{});}toast(S.mode==='demo'?'演示建图已开始':'启动已提交，请观察采集状态与点云');
