@@ -89,7 +89,7 @@ function paintQuickConnections(){
 }
 const dailyConnectionLoad=loadConnections;
 loadConnections=async function(paint=false){await dailyConnectionLoad(paint);if(page==='settings'&&!$('#quick-aos-ip')&&connections)connectionCenter();paintQuickConnections();};
-settings=function(){return heading(btn('导出工作区','export','','download')+btn('设备维护','maintenance-modal','small','settings'))+operationPanel()+'<div id="connection-content"></div>';};
+settings=function(){return heading(btn('物联网平台','iot-settings','','link')+btn('导出工作区','export','','download')+btn('设备维护','maintenance-modal','small','settings'))+operationPanel()+'<div id="connection-content"></div>';};
 
 const detailedMapsPage=mapsPage;
 let mappingView='cloud';
@@ -255,6 +255,10 @@ function taskCollectionSettings() {
  <div class="collector-list">${types.map(type=>{
   const current=saved.find(item=>item.kind===type.kind);
   const fields=type.fields.map(field=>{
+   if(field.device_picker){
+    const ids=current?.[field.key]||(current?.device_id?[current.device_id]:[]);
+    return iotPicker(ids,`data-collector-field="${esc(field.key)}"`,field.label);
+   }
    const value=current?.[field.key]??'';
    const input=field.choices
     ? `<select data-collector-field="${esc(field.key)}">${Object.entries(field.choices).map(([key,label])=>
@@ -276,7 +280,7 @@ function taskCollectorOptions() {
  return $$('#task-collection-settings [data-collector]')
   .filter(row=>row.querySelector('[data-collector-enable]').checked)
   .map(row=>({kind:row.dataset.collector,interval_s:+row.querySelector('[data-collector-interval]').value,
-              ...Object.fromEntries([...row.querySelectorAll('[data-collector-field]')].map(field=>[field.dataset.collectorField,field.value]))}));
+              ...Object.fromEntries([...row.querySelectorAll('[data-collector-field]')].map(field=>[field.dataset.collectorField,field.hasAttribute('data-iot-selection')?iotSelected(field):field.value]))}));
 }
 
 function navigationIntent(){
@@ -359,36 +363,29 @@ const classicRenderPoints=renderPoints;
 function stationFields(index, point) {
  const action = point.station_action || {};
  const camera = action.camera || 'none';
- const options = [['none','通过航点'],['front','前视人数统计'],['rear','后视人数统计'],['ball','外接球机人数统计']];
+ const options = [['none','不统计'],['front','前视相机'],['rear','后视相机'],['ball','外接球机']];
+ const devices=action.iot_device_ids||(action.iot_device_id?[action.iot_device_id]:[]);
  const row = document.createElement('div');
  row.className = 'stack waypoint-station';
- row.innerHTML = `<label class="field">到点任务<select data-station-point="${index}" data-station-key="camera">
+ row.innerHTML = `<label class="field">到点人数统计<select data-station-point="${index}" data-station-key="camera">
    ${options.map(([value,label])=>`<option value="${value}" ${value===camera?'selected':''}>${label}</option>`).join('')}
  </select></label>
- <div class="station-options" ${camera==='none'?'hidden':''}>
    <label class="field station-pan" ${camera==='ball'?'':'hidden'}>云台动作
      <select data-station-point="${index}" data-station-key="pan">
        <option value="none">当前位置</option><option value="left" ${action.pan==='left'?'selected':''}>短转向左</option>
        <option value="right" ${action.pan==='right'?'selected':''}>短转向右</option>
      </select>
    </label>
-   <label class="field">物联网设备 ID（可选）
-     <input inputmode="numeric" maxlength="20" data-station-point="${index}" data-station-key="iot_device_id" value="${esc(action.iot_device_id||'')}">
-   </label>
- </div>`;
+   ${iotPicker(devices,`data-station-point="${index}" data-station-key="iot_device_ids"`,'到点读取设备')}`;
  row.addEventListener('change', event=>{
-  const key = event.target.dataset.stationKey;
-  if (!key) return;
-  const configured = {...(point.station_action || {camera:'front',pan:'none',iot_device_id:''}), [key]:event.target.value};
-  if (configured.camera === 'none') {
-   delete point.station_action;
-  } else {
-   if (configured.camera !== 'ball') configured.pan = 'none';
-   point.station_action = configured;
-  }
-  row.querySelector('.station-options').hidden = !point.station_action;
-  row.querySelector('.station-pan').hidden = configured.camera !== 'ball';
-  row.querySelector('[data-station-key="pan"]').value = configured.pan;
+  if (!event.target.dataset.stationKey) return;
+  const camera=row.querySelector('[data-station-key="camera"]').value;
+  const pan=row.querySelector('[data-station-key="pan"]');
+  const devices=iotSelected(row.querySelector('[data-iot-selection]'));
+  if(camera!=='ball')pan.value='none';
+  row.querySelector('.station-pan').hidden=camera!=='ball';
+  if(camera==='none'&&!devices.length)delete point.station_action;
+  else point.station_action={camera,pan:pan.value,iot_device_ids:devices};
  });
  return row;
 }
@@ -405,7 +402,7 @@ renderPoints=function(){
  }
 };
 document.addEventListener('change',event=>{
- if(page==='navigation'&&event.target.matches('[data-point][data-key="type"],[data-station-key="camera"],[data-collector-enable],#route-navigation-engine,#disconnect-policy')){
+ if(page==='navigation'&&event.target.matches('[data-point][data-key="type"],[data-station-key="camera"],[data-station-key="iot_device_ids"],[data-collector-enable],#route-navigation-engine,#disconnect-policy')){
   refreshNavActions();paintGoalPlan();
  }
 });
@@ -424,13 +421,14 @@ function collectionResults(task) {
  const content=rows.map(row=>{
   const label=types.find(type=>type.kind===row.spec?.kind)?.title||'采集项';
   const values=row.latest?.values;
+  const devices=row.latest?.devices||[];
   const summary=row.spec?.kind==='people_count'&&values
    ? `最近一帧 ${esc(values.people)} 人 · 峰值 ${esc(row.peak_people)} 人`
-   : Object.entries(values||{}).slice(0,4).map(([key,value])=>esc(key)+' '+esc(value)).join(' · ');
+   : devices.length?`本轮 ${devices.length} 台设备`:Object.entries(values||{}).slice(0,4).map(([key,value])=>esc(key)+' '+esc(value)).join(' · ');
   const state={waiting:'等待行进',collecting:'采集中',ended:'已结束',error:'采集异常'}[row.state]||'等待采集';
   return `<div class="route-row"><div><strong>${esc(label)} · ${state}</strong>
    <small>${summary||'等待首条读数'} · ${esc(row.samples)} 条记录</small>
-   ${row.error?`<small>${esc(row.error)}</small>`:''}</div></div>`;
+   ${iotReadings(devices)}${row.error?`<small>${esc(row.error)}</small>`:''}</div></div>`;
  }).join('');
  return card('沿途采集',`<div class="card-pad">${content}${collectionDownloadButton(task)}</div>`,'vision');
 }
@@ -441,11 +439,13 @@ function patrolResults(nav) {
  const content = rows.map(row=>{
   const camera = {front:'前视',rear:'后视',ball:'外接球机'}[row.camera] || '相机';
   const readings = Object.entries(row.measurements || {}).map(([name,value])=>esc(name)+' '+esc(value)).join(' · ');
-  return `<div class="route-row"><div><strong>航点 ${esc(row.index+1)} · ${esc(row.people)} 人</strong>
-    <small>${camera} · 最高同帧人数${readings?' · '+readings:''}</small>
+  const counted=Number.isFinite(row.people);
+  return `<div class="route-row"><div><strong>航点 ${esc(row.index+1)} · ${counted?esc(row.people)+' 人':'设备读数'}</strong>
+    ${counted?`<small>${camera} · 最高同帧人数${readings?' · '+readings:''}</small>`:''}
+    ${iotReadings(row.devices||[])}
     ${row.iot_error?`<small>${esc(row.iot_error)}</small>`:''}</div></div>`;
  }).join('');
- return card('到点统计',`<div class="card-pad">${content}</div>`,'vision')+collectionResults(nav);
+ return card('到点作业',`<div class="card-pad">${content}</div>`,'vision')+collectionResults(nav);
 }
 
 taskSummary=function(){
@@ -502,6 +502,12 @@ document.addEventListener('change',event=>{
  event.target.closest('[data-collector]').querySelector('[data-collector-options]').hidden=!event.target.checked;
 });
 document.addEventListener('click',async event=>{
+ const results=event.target.closest('[data-patrol-results]');
+ if(results){
+  const task=(S.task_history||[]).find(item=>String(item.started)===results.dataset.patrolResults);
+  if(task)modal('巡检结果',patrolResults(task));
+  return;
+ }
  const button=event.target.closest('[data-collection-download]');
  if(!button||button.disabled)return;
  button.disabled=true;

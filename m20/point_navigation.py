@@ -221,7 +221,7 @@ class PointNavigator:
                 self.check(token)
                 if not self.app.demo and not stationary_feedback(self.app.link, began):
                     raise ValueError('航点作业时机身停稳状态已变化')
-            self._update(token, phase='station_action', execution_state='inspecting', message='正在执行航点人数统计')
+            self._update(token, phase='station_action', execution_state='inspecting', message='正在执行到点作业')
             self.app.station_action(index, point['station_action'], pose, guard)
 
     def _rejoin_live_route(self,planner,follower,scan,goal):

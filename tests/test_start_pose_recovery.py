@@ -78,7 +78,8 @@ class StartRecoveryTests(unittest.TestCase):
   h=w=120;yy,xx=np.mgrid[:h,:w];wx=(xx+.5)*.1;wy=(h-yy-.5)*.1
   start=[2.,3.,.29];c,s=math.cos(start[2]),math.sin(start[2]);dx,dy=wx-start[0],wy-start[1]
   u,v=c*dx+s*dy,-s*dx+c*dy
-  free=((u>-.8)&(u<.8)&(abs(v)<.36))|((u>.45)&(u<4.5)&(abs(v)<1.7))
+  # Extend the angled entrance so the main planner needs a forward recovery before it can turn.
+  free=((u>-.8)&(u<1.)&(abs(v)<.36))|((u>.65)&(u<4.5)&(abs(v)<1.7))
   p=planner(np.where(free,254,0).astype(np.uint8));goal=[2+c*3-s,3+s*3+c]
   r=self.run_recovery(p,start,goal,yaw=0.,budget=2.)
   self.assertTrue(r['ok'],r);self.assertEqual(r['classification'],'start_quantization')

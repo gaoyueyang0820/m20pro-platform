@@ -150,7 +150,7 @@ class GOSNavigation:
     def capabilities(self):
         available = bool(self.enabled and importlib.util.find_spec('numpy') is not None)
         return dict(ok=True, protocol=1, available=available, executor='gos',
-                    policies=['stop'], station_actions=self.actions.capabilities(), collection_protocol=1,
+                    policies=['stop'], station_actions=self.actions.capabilities(), collection_protocol=1, iot_task_protocol=1,
                     message='GOS 自主寻路已配置' if available else '请在连接中心更新并配置 GOS 导航服务')
 
     def _persist(self):
@@ -270,8 +270,6 @@ class GOSNavigation:
             if action is not None:
                 point['station_action'] = action
         collectors = collector_specs(request.get('collectors'))
-        if collectors:
-            check_collectors(collectors, self.actions.capabilities())
         spec.update(start_index=start_index, pause_at_point=pause)
         if collectors:
             spec['collectors'] = collectors
@@ -280,7 +278,6 @@ class GOSNavigation:
         if (hashlib.sha256(raw).hexdigest() != spec['map']['sha256']
                 or any(grid[k] != spec['map'][k] for k in ('resolution', 'origin'))):
             raise ValueError('GOS 收到的栅格与 NOS 活动地图不一致')
-        self.actions.validate(spec['points'][start_index:])
         with self.lock:
             if spec['id'] in self.revoked:
                 raise ValueError('本次启动已撤销')
@@ -292,6 +289,9 @@ class GOSNavigation:
                 raise ValueError('GOS 仍在执行任务或确认停车')
             if self.navigator and self.navigator.worker and self.navigator.worker.is_alive():
                 raise ValueError('上一航点动作正在收尾')
+            self.actions.validate(spec['points'][start_index:])
+            if collectors:
+                check_collectors(collectors, self.actions.capabilities())
             previous = self.job, self.nav, self.navigator, self.collection
             self.job = dict(id=spec['id'], owner=spec['owner'], digest=digest)
             self.lease_until = time.monotonic() + GOS_LEASE_SECONDS
