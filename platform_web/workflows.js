@@ -442,11 +442,12 @@ function patrolResults(nav) {
  const content = rows.map(row=>{
   const camera = {front:'前视',rear:'后视',ball:'外接球机'}[row.camera] || '相机';
   const readings = Object.entries(row.measurements || {}).map(([name,value])=>esc(name)+' '+esc(value)).join(' · ');
-  const counted=Number.isFinite(row.people);
-  return `<div class="route-row"><div><strong>航点 ${esc(row.index+1)} · ${counted?esc(row.people)+' 人':'设备读数'}</strong>
+  const counted=Number.isFinite(row.people)&&!row.error;
+  const result=row.error?'人数统计未完成':counted?esc(row.people)+' 人':'设备读数';
+  return `<div class="route-row"><div><strong>航点 ${esc(row.index+1)} · ${result}</strong>
     ${counted?`<small>${camera} · 最高同帧人数${readings?' · '+readings:''}</small>`:''}
     ${iotReadings(row.devices||[])}
-    ${row.iot_error?`<small>${esc(row.iot_error)}</small>`:''}</div></div>`;
+    ${row.error||row.iot_error?`<small>${esc(row.error||row.iot_error)}</small>`:''}</div></div>`;
  }).join('');
  return card('到点作业',`<div class="card-pad">${content}</div>`,'vision')+collectionResults(nav);
 }
@@ -493,7 +494,7 @@ update=function(){
   text('nav-drive-state',offline?'实机离线':stopping?'正在停车':running?'导航执行中':navStatus==='paused'?'导航已暂停':S.mode==='demo'?'演示模式':'');
   if(!offline&&(running||stopping))text('motion-readiness',stopping?'等待停车确认':'接管后可手动驾驶');
   const takeover=$('[data-ui="nav-takeover"]');
-  if(takeover)takeover.disabled=offline||stopping||Boolean(S.background_operation);
+  if(takeover)takeover.disabled=offline||Boolean(S.background_operation);
   const hasData=task=>task?.station_results?.length||task?.collection?.length;
   const latest=hasData(S.nav)?S.nav:[...(S.task_history||[])].reverse().find(hasData);
   html('patrol-station-results',patrolResults(latest));

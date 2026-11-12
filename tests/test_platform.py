@@ -162,15 +162,14 @@ class PlatformTests(unittest.TestCase):
         a.link.put(1007,1,dict(Value=a.nav['value'],Status=0,ErrorCode=0))
         a.tick(.01);self.assertEqual(a.nav['index'],1);self.assertEqual(a.link.events,[])
         a.tick(.01);self.assertEqual(a.nav['index'],1)
-    def test_localization_loss_prevents_dispatching_next_point_on_success(self):
+    def test_arrival_during_localization_loss_waits_for_navigation_mode_to_recover(self):
         a=self.app;r=self.route(True);a.start_route(dict(id=r['id']))
         a.link.put(1007,1,dict(Value=a.nav['value'],Status=0,ErrorCode=8960))
         a.link.put(1007,2,dict(Location=1))
+        a.link.records[1002,6]['items']['BasicStatus']['ControlUsageMode']=0
         a.tick(.01)
-        self.assertEqual(a.nav['index'],0);self.assertEqual(a.nav['status'],'cancelling')
-        self.assertEqual([r['type'] for r in a.link.sent],[1003,1004])
-        a.link.put(1004,1,dict(ErrorCode=0),seq=a.cancel_request['seq']);a.tick(.01)
-        self.assertEqual(a.nav['status'],'failed')
+        self.assertEqual(a.nav['index'],1);self.assertEqual(a.nav['phase'],'preparing')
+        self.assertEqual([r['type'] for r in a.link.sent],[1003])
     def test_task_point_pause_requires_continue_before_next_target(self):
         a=self.app;r=self.route(True);a.start_route(dict(id=r['id'],pause_at_point=True))
         a.link.put(1007,1,dict(Value=a.nav['value'],Status=0,ErrorCode=8960));a.tick(.01)
@@ -194,12 +193,15 @@ class PlatformTests(unittest.TestCase):
         self.assertEqual(a.nav['status'],'cancelling')
         a.link.put(1004,1,dict(ErrorCode=0),seq=a.cancel_request['seq']);a.tick(.01)
         self.assertEqual(a.nav['status'],'cancelled')
-    def test_location_failure_cancels_route(self):
+    def test_loss_of_location_and_original_task_feedback_pauses_route(self):
         a=self.app;r=self.route(True);a.start_route(dict(id=r['id']))
         a.link.put(1007,2,dict(Location=1));a.tick(.01)
+        self.assertEqual(a.nav['execution_state'],'waiting_feedback')
+        a.nav['missing_execution_since']=time.monotonic()-4
+        a.tick(.01)
         self.assertEqual(a.nav['status'],'cancelling');self.assertEqual(a.link.sent[-1]['type'],1004)
         a.link.put(1004,1,dict(ErrorCode=0),seq=a.cancel_request['seq']);a.tick(.01)
-        self.assertEqual(a.nav['status'],'failed')
+        self.assertEqual(a.nav['status'],'paused')
     def test_map_change_prevents_navigation(self):
         r=self.route(True);self.app.proxy=lambda *args,**kwargs:dict(active='different')
         with self.assertRaises(ValueError):self.app.start_route(dict(id=r['id']))

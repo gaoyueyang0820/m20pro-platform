@@ -45,6 +45,11 @@ def station_spec(value):
         result['iot_device_ids'] = devices
     return result
 
+def station_requires_gos(action):
+    return bool(action and (action.get('camera') not in ('front','rear')
+                or action.get('pan','none')!='none' or action.get('iot_device_id')
+                or action.get('iot_device_ids')))
+
 
 class NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):

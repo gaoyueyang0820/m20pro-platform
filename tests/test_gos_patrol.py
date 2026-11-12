@@ -1,5 +1,6 @@
 """Synthetic controls, map files and station adapters. No real robot or sockets."""
 import math
+import json
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
@@ -335,6 +336,19 @@ class GOSPatrolTests(unittest.TestCase):
 
 
 class PatrolIntegrationTests(unittest.TestCase):
+    def test_gos_navigation_can_read_paired_nos_scans_over_loopback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data=Path(directory)
+            (data/'gos-nav-sensors.local.json').write_text(json.dumps(dict(port=8095,token='test-only')))
+            remote=Mock()
+            remote.status.return_value=dict(odom=dict(frame_id='map'))
+            remote.autonomy.return_value=dict(pose=[0,0,0])
+            with patch('bridge.sensor_client.SensorClient',return_value=remote) as factory:
+                agent=GOSAgent(data)
+                self.assertEqual(agent.dispatch('/sensors/status',None)['navigation_sensor_host'],'nos')
+                self.assertEqual(agent.dispatch('/sensors/autonomy',dict(mapping=False))['pose'],[0,0,0])
+            factory.assert_called_once_with(port=8095,token='test-only')
+
     def test_fastbee_direction_and_stop_follow_sip_v2_contract(self):
         bridge = FastBee(dict(iot_url='http://iot.example.invalid/prod-api',iot_token='fake',
                               sip_device='1'*20,sip_channel='2'*20,fastbee_ptz=True))

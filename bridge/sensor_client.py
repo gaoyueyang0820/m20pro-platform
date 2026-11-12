@@ -7,9 +7,16 @@ from m20.observation_errors import BridgeTransportError,sync_error
 
 
 class SensorClient:
+    def __init__(self, *, port=8094, token=None):
+        if type(port) is not int or not 1<=port<=65535:
+            raise ValueError('只读感知转发端口无效')
+        self.port = port
+        self.token = token
+
     def call(self,path,data=None,timeout=2):
-        headers={'Content-Type':'application/json','X-API-Token':os.environ.get('M20_BRIDGE_TOKEN','')}
-        request=Request('http://127.0.0.1:8094'+path,data=json.dumps(data).encode() if data is not None else None,headers=headers)
+        token=self.token if self.token is not None else os.environ.get('M20_BRIDGE_TOKEN','')
+        headers={'Content-Type':'application/json','X-API-Token':token}
+        request=Request('http://127.0.0.1:'+str(self.port)+path,data=json.dumps(data).encode() if data is not None else None,headers=headers)
         try:
             with urlopen(request,timeout=timeout) as response:result=json.load(response)
         except HTTPError as exc:

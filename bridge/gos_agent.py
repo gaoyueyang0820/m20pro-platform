@@ -23,6 +23,7 @@ class GOSAgent:
         self.data=Path(data or os.environ.get('M20_DATA_DIR',Path.home()/'.local/share/m20-platform/data'))
         self.data.mkdir(parents=True,exist_ok=True)
         self.sensors=None;self.lock=threading.RLock()
+        self.navigation_sensors=None;self.navigation_sensor_host='gos'
         self.navigation=None
         self.patrol_config=self.data/'gos-patrol.local.json'
         self.iot=None
@@ -37,6 +38,21 @@ class GOSAgent:
                 except Exception as exc:raise ValueError('GOS ROS2 通道未就绪，请核对环境、domain 和 multicast-relay：'+str(exc))
             return self.sensors
 
+    def navigation_ros(self):
+        with self.lock:
+            if self.navigation_sensors is None:
+                config=read_json(self.data/'gos-nav-sensors.local.json',{})
+                if not config:
+                    self.navigation_sensors=self.ros()
+                else:
+                    from bridge.sensor_client import SensorClient
+                    token=config.get('token')
+                    if not isinstance(token,str) or not token:
+                        raise ValueError('NOS 只读感知转发缺少连接凭据')
+                    self.navigation_sensors=SensorClient(port=config.get('port'),token=token)
+                    self.navigation_sensor_host='nos'
+            return self.navigation_sensors
+
     def dispatch(self,path,req):
         if path.startswith('/iot/'):
             return self.iot_request(path,req)
@@ -44,7 +60,7 @@ class GOSAgent:
             with self.lock:
                 if self.navigation is None:
                     from bridge.gos_navigation import GOSNavigation
-                    self.navigation = GOSNavigation(self.data, self.ros)
+                    self.navigation = GOSNavigation(self.data, self.navigation_ros)
                     self.navigation.actions.fastbee = self.iot_client()
             return self.navigation.dispatch(path, req)
         if path=='/status':
@@ -58,8 +74,13 @@ class GOSAgent:
             proc=subprocess.run(['journalctl','--no-pager','-n','100','-u','m20-platform-gos.service','-u','multicast-relay.service'],
                                 capture_output=True,text=True,timeout=10)
             return dict(ok=True,output=(proc.stdout+proc.stderr)[-18000:])
-        if path=='/sensors/autonomy':return self.ros().autonomy(bool((req or {}).get('mapping')),**(dict(after_stamp=req['after_stamp']) if req and 'after_stamp' in req else {}))
-        if path=='/sensors/status':return dict(self.ros().status(),host_role='gos')
+        if path=='/sensors/autonomy':
+            mapping=bool((req or {}).get('mapping'))
+            sensors=self.ros() if mapping else self.navigation_ros()
+            return sensors.autonomy(mapping,**(dict(after_stamp=req['after_stamp']) if req and 'after_stamp' in req else {}))
+        if path=='/sensors/status':
+            status=self.navigation_ros().status()
+            return dict(status,host_role='gos',navigation_sensor_host=self.navigation_sensor_host)
         if path=='/sensors/cloud':return dict(self.ros().preview((req or {}).get('topic','/ALIGNED_POINTS')),host_role='gos')
         raise ValueError('GOS 只读代理不支持此操作')
 
