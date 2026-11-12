@@ -1,5 +1,6 @@
 """Route task collection contracts. Samplers return measurements, not controls."""
 from dataclasses import dataclass
+from m20.patrol_actions import device_ids
 import re
 import time
 
@@ -32,9 +33,16 @@ class PeopleSampler:
 class IoTSampler:
     def __init__(self, source, spec):
         self.fastbee = source.fastbee
-        self.device = spec['device_id']
+        self.devices = spec.get('device_ids')
+        self.device = spec.get('device_id')
 
     def sample(self):
+        if self.devices is not None:
+            rows = self.fastbee.read_devices(self.devices)
+            result = dict(sampled_at=time.time(), devices=rows)
+            if all(row.get('error') for row in rows):
+                result['error'] = '本轮物联网设备读数不可用'
+            return result
         readings = self.fastbee.telemetry(self.device)
         if not readings:
             raise ValueError('设备暂未上报读数')
@@ -61,7 +69,7 @@ COLLECTORS = {
         PeopleSampler, lambda caps, spec: caps['people_count'] and (spec['camera'] != 'ball' or caps['ball_camera'])),
     'iot_readings': Collector(
         '物联网读数', 5, 2,
-        ({'key': 'device_id', 'label': '设备 ID', 'pattern': r'[0-9]{1,20}'},),
+        ({'key': 'device_ids', 'label': '设备', 'device_picker': True},),
         IoTSampler, lambda caps, spec: caps['iot']),
 }
 
@@ -90,6 +98,15 @@ def collector_specs(items):
         spec = dict(kind=kind, interval_s=interval)
         for field in entry.fields:
             key = field['key']
+            if field.get('device_picker'):
+                selected = device_ids(item[key] if key in item else [item.get('device_id')])
+                if not selected:
+                    raise ValueError('请为沿途采集选择物联网设备')
+                if key in item:
+                    spec[key] = selected
+                else:
+                    spec['device_id'] = selected[0]
+                continue
             choices = field.get('choices')
             if choices is not None:
                 value = item.get(key, next(iter(choices)))
