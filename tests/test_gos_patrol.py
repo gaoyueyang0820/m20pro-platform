@@ -31,6 +31,7 @@ class LocalLink:
         self.stamp = time.monotonic()
         self.events = []
         self.auxiliary = False
+        self.located = True
 
     def _advance(self):
         now = time.monotonic()
@@ -53,7 +54,7 @@ class LocalLink:
                                                 OOA=3 if self.auxiliary else 0)),
                 (1002, 4): dict(MotionStatus=dict(zip(('LinearX','LinearY','OmegaZ'),self.axes))),
                 (1007, 1): dict(Status=0),
-                (1007, 2): dict(Location=0, Confidence=.99, **dict(zip(('PosX','PosY','Yaw'),self.pose))),
+                (1007, 2): dict(Location=0 if self.located else 1, Confidence=.99, **dict(zip(('PosX','PosY','Yaw'),self.pose))),
                 (2002, 1): dict(ObsState=1 if self.auxiliary else 0),
             }
             return dict(items=records[(kind,command)], monotonic_at=self.stamp)
@@ -134,6 +135,20 @@ class GOSPatrolTests(unittest.TestCase):
                                                                 goal=[3.,3.],yaw=0.))
         self.assertGreater(result['plan']['length_m'], .8)
         self.factory.assert_not_called()
+
+    def test_temporary_localization_loss_stops_axes_then_resumes_same_job(self):
+        self.service.start(self.request)
+        self.wait_for(lambda _:any(any(axes) for _,axes in self.link.events),timeout=5,pulse=True)
+        self.link.located=False
+        self.wait_for(lambda s:'定位恢复' in s['message'],timeout=2,pulse=True)
+        parked=len(self.link.events)
+        began=time.monotonic()
+        status=self.wait_for(lambda _:time.monotonic()-began>5.1,timeout=6,pulse=True)
+        self.assertEqual(status['phase'],'running')
+        self.assertTrue(all(not any(axes) for _,axes in self.link.events[parked:]))
+        self.link.located=True
+        result=self.wait_for(lambda s:s.get('stop_confirmed'),pulse=True)
+        self.assertEqual((result['phase'],result['completed']),('completed',2))
 
     def test_control_preparation_waits_for_the_first_basic_reply(self):
         navigator=object.__new__(PointNavigator)

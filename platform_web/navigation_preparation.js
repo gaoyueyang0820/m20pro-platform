@@ -7,11 +7,11 @@
  const cancelled=()=>Object.assign(new Error('导航准备已取消'),{navigationPreparationCancelled:true});
  const connection=s=>JSON.stringify([s?.mode,s?.ip,s?.server_instance,s?.connection_generation]);
  const routeKey=id=>{const r=S.routes?.find(r=>r.id===id);return r?JSON.stringify([r.id,r.map_id,r.points,r.options]):'';};
- const routeExecutor=(rows,options)=>rows.some(p=>p.type===3)?'native':options.engine||'gos';
+ const routeExecutor=(rows,options)=>rows.some(p=>p.type===3)?'native':options.engine||(patrolNeedsGos(rows,options.collectors)?'gos':'native');
  const currentOptions=id=>{
   const route=S.routes?.find(r=>r.id===id);
   const options=route?.options||{};
-  return options.explicit_execution===true?options:{...options,engine:'gos',disconnect_policy:'stop'};
+  return options.explicit_execution===true?options:{...options,engine:routeExecutor(route?.points||[],{collectors:options.collectors}),disconnect_policy:'stop'};
  };
  const routeSignature=id=>{const r=S.routes?.find(r=>r.id===id);return r?JSON.stringify([r.id,r.points,r.options]):'';};
  const selection=()=>JSON.stringify([mapId,routeId,typeof mapLibrary==='undefined'?null:mapLibrary.active]);
@@ -147,7 +147,7 @@
  function goalRequest(){
   if(!goalKey())throw Error('请先选择目标');
   const manual=$('#goal-yaw-mode')?.value==='manual',degrees=+($('#goal-yaw')?.value||0);
-  const goal={map_id:mapId,x:points[0].x,y:points[0].y,yaw:manual?(((degrees+180)%360+360)%360-180)*Math.PI/180:null,engine:S.mode==='demo'?'native':'gos'};
+  const goal={map_id:mapId,x:points[0].x,y:points[0].y,yaw:manual?(((degrees+180)%360+360)%360-180)*Math.PI/180:null,engine:goalNavigationEngine()};
   if(![goal.x,goal.y].every(Number.isFinite)||goal.yaw!==null&&!Number.isFinite(goal.yaw))throw Error('目标坐标或朝向无效');
   return goal;
  }

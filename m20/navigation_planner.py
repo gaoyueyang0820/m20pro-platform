@@ -125,7 +125,7 @@ class GridPlanner:
                 grown=_dilate_cells(grown,1)
         self.static_speckles.update(planning_cells=int(self.soft_cells.sum()),cost_radius_m=round(rings*self.res,3))
         self.overlay=set();self.grid_revision=0
-        self.masks={};self._rotations={};self._potential_cache={}
+        self.masks={};self._rotations={};self._lattice_sweeps={};self._potential_cache={}
         self._straight_certificate=None
         self.occupied_thresh=occupied_thresh;self.free_thresh=free_thresh
         self.self_projection_ignored=0;self._deadline=None;self._potential_expanded=0
@@ -136,15 +136,24 @@ class GridPlanner:
             occupied=np.zeros((oh,ow),bool);occupied[oh-h:,:w]=probability>occupied_thresh
             occupied=occupied.reshape(oh//factor,factor,ow//factor,factor).any(axis=(1,3))
             self.live_surface=LiveTraversability(self.base_free,occupied,self.res,self.origin)
-        self._refresh_clearance()
+        self._clearance=None
         self.update_obstacles(obstacles,robot_pose)
 
-    def _refresh_clearance(self):
+    @property
+    def clearance(self):
+        # Full-map distance bands are a search cost, not a collision gate.
+        # Moving obstacles may revise free cells at the lidar rate. Build
+        # these bands only when a search actually needs them.
+        if self._clearance is not None:return self._clearance
         import numpy as np
-        self.clearance=np.zeros_like(self.free,dtype=float);inside=self.free.copy()
+        self._check_time()
+        bands=np.zeros_like(self.free,dtype=float);inside=self.free.copy()
         for i in range(1,max(2,math.ceil(1.2/self.res))):
-            self.clearance[inside]=i*self.res
+            self._check_time()
+            bands[inside]=i*self.res
             a=np.zeros_like(inside);a[1:-1,1:-1]=inside[1:-1,1:-1]&inside[:-2,1:-1]&inside[2:,1:-1]&inside[1:-1,:-2]&inside[1:-1,2:]&inside[:-2,:-2]&inside[:-2,2:]&inside[2:,:-2]&inside[2:,2:];inside=a
+        self._clearance=bands
+        return bands
 
     def update_obstacles(self,obstacles,robot_pose=None):
         """Replace the current live layer; static occupied/unknown cells never clear.
@@ -179,7 +188,7 @@ class GridPlanner:
         for x,y in self.overlay:current[y,x]=False
         if not np.array_equal(current,self.free):
             self.free=current;self.grid_revision+=1
-            self.masks.clear();self._rotations.clear();self._potential_cache.clear();self._refresh_clearance()
+            self.masks.clear();self._rotations.clear();self._lattice_sweeps.clear();self._potential_cache.clear();self._clearance=None
 
     def update_live_surface(self,scan,localization,now=None):
         """Opt-in ephemeral observed-floor layer; the original PGM never changes."""
@@ -234,38 +243,65 @@ class GridPlanner:
 
     def mask(self,heading,sweep_margin=0.):
         self._expire_live_surface()
-        import numpy as np
-        deadline=getattr(self,'_deadline',None)
-        if deadline is not None and time.monotonic()>=deadline:raise ValueError('地图搜索超时，请选择较近的目标再规划')
+        self._check_time()
         heading=round(heading%32,10);sweep_margin=round(sweep_margin,10)
         key=(heading,sweep_margin)
         if key in self.masks:return self.masks[key]
+        valid=self._mask_offsets(self._footprint_offsets(heading,sweep_margin))
+        self.masks[key]=valid;return valid
+
+    def _footprint_offsets(self,heading,sweep_margin):
         angle=heading*math.pi/16;c,s=math.cos(angle),math.sin(angle)
         # Separating-axis intersection, rather than a fixed extra margin for
         # every non-cardinal angle (which rejected even a 1-degree correction).
         halfx,halfy=CLEARANCE_HALF_LENGTH+sweep_margin,CLEARANCE_HALF_WIDTH+sweep_margin
         half=self.res/2;a,b=abs(c),abs(s)
         n=math.ceil((math.hypot(halfx,halfy)+self.res/math.sqrt(2))/self.res)
-        valid=self.free.copy()
         for dy in range(-n,n+1):
-            if deadline is not None and time.monotonic()>=deadline:raise ValueError('地图搜索超时，请选择较近的目标再规划')
             for dx in range(-n,n+1):
                 x,y=dx*self.res,-dy*self.res
                 if (abs(x)>halfx*a+halfy*b+half or abs(y)>halfx*b+halfy*a+half
                         or abs(c*x+s*y)>halfx+half*(a+b) or abs(-s*x+c*y)>halfy+half*(a+b)):continue
-                shifted=np.zeros_like(valid)
-                y0,y1=max(0,-dy),min(self.h,self.h-dy);x0,x1=max(0,-dx),min(self.w,self.w-dx)
-                if y1>y0 and x1>x0:shifted[y0:y1,x0:x1]=self.free[y0+dy:y1+dy,x0+dx:x1+dx]
-                valid &= shifted
-        self.masks[key]=valid;return valid
+                yield dx,dy
+
+    def _mask_offsets(self,offsets):
+        valid=self.free.copy()
+        for dx,dy in offsets:
+            self._check_time()
+            y0,y1=max(0,-dy),min(self.h,self.h-dy);x0,x1=max(0,-dx),min(self.w,self.w-dx)
+            if y0>=y1 or x0>=x1:
+                valid.fill(False);break
+            if dy:
+                if dy>0:valid[y1:]=False
+                else:valid[:y0]=False
+            if dx:
+                if dx>0:valid[:,x1:]=False
+                else:valid[:,:x0]=False
+            valid[y0:y1,x0:x1] &= self.free[y0+dy:y1+dy,x0+dx:x1+dx]
+        return valid
 
     def fits(self,x,y,h,sweep_margin=0.):return 0<=x<self.w and 0<=y<self.h and bool(self.mask(h,sweep_margin)[y,x])
 
     def rotation_fits(self,x,y,a,b):
+        self._expire_live_surface()
+        self._check_time()
         delta=math.atan2(math.sin(b-a),math.cos(b-a));steps=max(1,math.ceil(abs(delta)/(math.pi/36)))
+        sweep=math.hypot(CLEARANCE_HALF_LENGTH,CLEARANCE_HALF_WIDTH)*abs(delta)/(2*steps)
+        if not (0<=x<self.w and 0<=y<self.h):return False
+        # The lattice reuses the same swept footprint at thousands of cells.
+        # Erode the free grid once with the union of the original SAT masks.
+        lattice=math.pi/4;h=round(a/lattice);turn=1 if delta>0 else -1
+        if 0<=h<8 and a==h*lattice and b==(h+turn)*lattice:
+            key=(h,turn)
+            if key not in self._lattice_sweeps:
+                margin=round(sweep,10);offsets=set()
+                for i in range(steps+1):
+                    heading=round(((a+delta*i/steps)/(math.pi/16))%32,10)
+                    self._check_time();offsets.update(self._footprint_offsets(heading,margin))
+                self._lattice_sweeps[key]=self._mask_offsets(sorted(offsets))
+            return bool(self._lattice_sweeps[key][y,x])
         key=(x,y,round(a%(2*math.pi),9),round(delta,9))
         if key not in self._rotations:
-            sweep=math.hypot(CLEARANCE_HALF_LENGTH,CLEARANCE_HALF_WIDTH)*abs(delta)/(2*steps)
             self._rotations[key]=all(self.fits(x,y,(a+delta*i/steps)/(math.pi/16),sweep) for i in range(steps+1))
         return self._rotations[key]
 
@@ -344,6 +380,7 @@ class GridPlanner:
             d=np.full((self.h,self.w),math.inf);d[gy,gx]=0.
             self._potential_cache[key]=(d,np.zeros_like(self.free),[(0.,gx,gy)])
         d,closed,queue=self._potential_cache[key]
+        clearance=self.clearance
         def value(tx,ty):
             expansions=0
             while queue and not closed[ty,tx]:
@@ -353,7 +390,7 @@ class GridPlanner:
                 if closed[y,x] or cost!=d[y,x]:continue
                 closed[y,x]=True;expansions+=1
                 # Reverse edge charges the forward destination's clearance cost.
-                penalty=1+.18/max(.1,self.clearance[y,x])+self.soft_cost[y,x]
+                penalty=1+.18/max(.1,clearance[y,x])+self.soft_cost[y,x]
                 for dx,dy in ((1,0),(-1,0),(0,1),(0,-1),(1,1),(1,-1),(-1,1),(-1,-1)):
                     nx,ny=x+dx,y+dy
                     if not (0<=nx<self.w and 0<=ny<self.h and self.free[ny,nx]):continue
@@ -374,9 +411,10 @@ class GridPlanner:
 
     def _segment_cost(self,a,b):
         length=math.dist(a[:2],b[:2]);steps=max(1,math.ceil(length/self.res));total=0.
+        clearance=self.clearance
         for i in range(1,steps+1):
             x,y=self.cell(a[0]+(b[0]-a[0])*i/steps,a[1]+(b[1]-a[1])*i/steps)
-            total+=length/steps*(1+.18/max(.1,self.clearance[y,x])+self.soft_cost[y,x])
+            total+=length/steps*(1+.18/max(.1,clearance[y,x])+self.soft_cost[y,x])
         return total
 
     def _smooth(self,poses):
@@ -675,6 +713,7 @@ class GridPlanner:
         heuristic=self._potential(gx,gy);first=(sx,sy,sh);initial=heuristic(sx,sy)
         if not math.isfinite(initial):raise ValueError('目标与当前位置之间没有足够宽的已知通路；请检查门口、障碍或地图连通性')
         distance={first:0.};parent={};queue=[(initial,0.,first)];expanded=0;end=None
+        clearance=self.clearance
         directions=[(round(math.cos(h*math.pi/4)),-round(math.sin(h*math.pi/4))) for h in range(8)]
         while queue:
             _,cost,p=heapq.heappop(queue)
@@ -687,7 +726,7 @@ class GridPlanner:
             for offset,penalty in ((0,1.),(4,1.25),(-2,1.4),(2,1.4)):
                 dx,dy=directions[(h+offset)%8];nx,ny=x+dx,y+dy
                 if self.fits(nx,ny,h*4) and (not dx or not dy or self.fits(x+dx,y,h*4) and self.fits(x,y+dy,h*4)):
-                    moves.append(((nx,ny,h),penalty*math.hypot(dx,dy)*self.res*(1+.18/max(.1,self.clearance[ny,nx])+self.soft_cost[ny,nx])))
+                    moves.append(((nx,ny,h),penalty*math.hypot(dx,dy)*self.res*(1+.18/max(.1,clearance[ny,nx])+self.soft_cost[ny,nx])))
             for turn in [-1,1]:
                 if self.rotation_fits(x,y,h*math.pi/4,(h+turn)*math.pi/4):moves.append(((x,y,(h+turn)%8),.25))
             for nxt,step in moves:

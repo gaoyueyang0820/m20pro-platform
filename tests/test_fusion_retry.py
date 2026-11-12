@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+from bridge import root_actions
 from bridge.mapping_job import retry_context, worker
 from m20.map_formats import make_map_readable
 from m20.map_fusion import read_grid, read_pcd, voxel
@@ -12,6 +13,17 @@ from m20.map_refinement import _publish_refinement
 
 
 class FusionRetryTests(unittest.TestCase):
+    def test_map_switch_does_not_restart_a_new_vendor_localization_process(self):
+        with tempfile.TemporaryDirectory() as temp:
+            maps=Path(temp)/'maps';(maps/'candidate').mkdir(parents=True)
+            data=Path(temp)/'runtime';data.mkdir()
+            for started,expected_restarts in ((1200,0),(800,1)):
+                with self.subTest(started=started),patch('time.monotonic_ns',return_value=1_000_000), \
+                        patch.object(root_actions,'run',side_effect=lambda args:
+                            f'ActiveState=active\nExecMainStartTimestampMonotonic={started}\n' if args[1]=='show' else 'OK') as run:
+                    root_actions.execute(dict(action='apply',name='candidate'),maps,data)
+                self.assertEqual(sum(args.args[0][1]=='restart' for args in run.call_args_list),expected_restarts)
+
     def test_root_import_makes_regular_files_readable_without_following_links(self):
         with tempfile.TemporaryDirectory() as temp:
             folder=Path(temp)/'candidate';folder.mkdir(mode=0o700)

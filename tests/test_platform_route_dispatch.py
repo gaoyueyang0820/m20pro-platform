@@ -32,15 +32,25 @@ class PlatformRouteDispatchTests(unittest.TestCase):
         submitted=a.point_navigation.start.call_args.args[0]
         self.assertEqual(submitted['id'],route['id']);self.assertEqual(submitted['points'],route['points'])
         self.assertIsNone(self.planning[0]['yaw']);self.assertEqual(self.planning[0]['x'],-5.)
-    def test_operator_patrol_uses_gos_with_legacy_route_settings(self):
+    def test_operator_patrol_defaults_to_native_with_legacy_route_settings(self):
         a,route=self.prepare();a.demo=False
-        route['options']=dict(engine='native',disconnect_policy='finish',pause_at_point=True)
-        a._start_gos_route=Mock(return_value={'executor':'gos'})
+        route['options']=dict(engine='platform',disconnect_policy='finish',pause_at_point=True)
+        a.start_route=Mock(return_value={'executor':'native'})
         reply=a.navigation_request('start',dict(id=route['id'],engine='platform'))
-        self.assertEqual(reply['executor'],'gos')
-        self.assertEqual(a._start_gos_route.call_args.args[0]['disconnect_policy'],'stop')
-        self.assertEqual(a._start_gos_route.call_args.kwargs['route'],route)
+        self.assertEqual(reply['executor'],'native')
+        self.assertEqual(a.start_route.call_args.args[0]['disconnect_policy'],'stop')
+        self.assertEqual(a.start_route.call_args.kwargs['goal'],route)
         a.plan_goal.assert_not_called()
+    def test_explicit_gos_or_legacy_ball_station_dispatches_onboard(self):
+        a,route=self.prepare();a.demo=False
+        a._start_gos_route=Mock(return_value={'executor':'gos'})
+        route['options']=dict(explicit_execution=True,engine='gos')
+        a.navigation_request('start',dict(id=route['id']))
+        self.assertEqual(a._start_gos_route.call_args.args[0]['engine'],'gos')
+        route['options']={}
+        route['points'][0]['station_action']=dict(camera='ball',pan='left')
+        a.navigation_request('start',dict(id=route['id']))
+        self.assertEqual(a._start_gos_route.call_args.kwargs['route'],route)
     def test_operator_dock_route_uses_charging_workflow(self):
         a,route=self.prepare();a.demo=False;route['points'][-1]['type']=3
         a._start_gos_route=Mock();a.start_route=Mock(return_value={'ok':True})

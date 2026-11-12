@@ -13,8 +13,11 @@ import time
 import zlib
 
 from bridge.resident_mission import atomic
+from bridge.gos_exploration import GOSExploration, exploration_spec
 from bridge.task_collection import RouteCollection, collection_page
 from m20.map_catalog import read_json
+from m20.local_trajectory import TrajectoryFollower
+from m20.motion_response import MotionResponse
 from m20.navigation_disconnect import finite, identity, specification
 from m20.navigation_planner import GridPlanner
 from m20.patrol_actions import StationActions, station_spec
@@ -67,30 +70,60 @@ def unpack_grid(grid):
 class GOSPointNavigator(PointNavigator):
     async_observations = True
 
+    def _measured_response(self, scan, feedback, command):
+        if not command or not any(command[0]):
+            self.response_pose=None
+            return False
+        stamp=scan['stamp'];pose=scan['pose']
+        before=getattr(self,'response_pose',None)
+        if before and before[0]==command[1] and stamp-before[1]<.18:
+            return False
+        self.response_pose=(command[1],stamp,tuple(pose))
+        if not before or before[0]!=command[1] or stamp-before[1]>.6:
+            return False
+        dt=stamp-before[1];px,py,heading=before[2]
+        c,s=math.cos(heading),math.sin(heading)
+        dx,dy=pose[0]-px,pose[1]-py
+        delta=pose[2]-heading
+        observed=((c*dx+s*dy)/dt,(-s*dx+c*dy)/dt,math.atan2(math.sin(delta),math.cos(delta))/dt)
+        i=max(range(3),key=lambda j:abs(command[0][j]))
+        # The motion-status packet and the actual displacement must agree.
+        # An inhibited drive, localization jump or skid cannot tune a profile.
+        return observed[i]*feedback[i]>0. and abs(observed[i]-feedback[i])<(.20 if i==2 else .10)
+
+    def _trajectory_follower(self):
+        if not hasattr(self,'response_gains'):
+            with self.app.lock:
+                self.response_gains=self.app.motion_response.gains(self.motion_mode)
+        return TrajectoryFollower(motion_response=self.response_gains)
+
+    def _scan(self):
+        scan,yaw_rate=super()._scan()
+        if scan is None:return scan,yaw_rate
+        app=self.app
+        with app.lock:
+            link=app.link
+            if link is None or not self.current(self.run_id) or scan.get('_vendor_avoidance'):
+                self.response_pose=None
+                return scan,yaw_rate
+            record=link.record(1002,6);basic=record.get('items',{}).get('BasicStatus',{})
+            if (age_of(record)<.65 and basic.get('HES')==0 and basic.get('MotionState')==17
+                    and not basic.get('Sleep') and basic.get('Direction')==0 and basic.get('Gait')==0x3002
+                    and basic.get('ControlUsageMode')==self.motion_mode and basic.get('OOA')!=3):
+                command=getattr(link,'axis_run',lambda:None)()
+                feedback=[*scan['_velocity_body'],yaw_rate]
+                if self._measured_response(scan,feedback,command):
+                    app.motion_response.observe(self.motion_mode,command,scan.get('_motion_feedback_at'),feedback)
+            else:
+                self.response_pose=None
+        return scan,yaw_rate
+
     def current(self, token):
         return (self.active and self.run_id == token and self.app.nav is self.nav
                 and self.nav['status'] == 'running' and time.monotonic() < self.app.lease_until)
 
     def _prepare(self, token, map_):
-        app = self.app
-        self.check(token)
-        link = app.link_factory(app.aos)
-        with app.lock:
-            if not self.current(token):
-                link.close(stop=False)
-                self.check(token)
-            app.link = link
-        began = time.monotonic()
-        while time.monotonic() - began < 2:
-            self.check(token)
-            if stationary_feedback(link, began):
-                break
-            time.sleep(.04)
-        else:
-            raise ValueError('机内运控未确认停稳')
-        while time.monotonic() < app.axis_quiet_until:
-            self.check(token)
-            time.sleep(.04)
+        self.app.prepare_link(lambda: self.check(token))
         self._prepare_motion(token)
 
     def _fetch_scan(self, after_stamp):
@@ -117,6 +150,12 @@ class GOSNavigation:
     def __init__(self, data, sensors, *, aos=None, enabled=None, link_factory=RobotLink, actions=None):
         self.data = Path(data)
         self.path = self.data/'gos-navigation-job.json'
+        self.motion_response_path = self.data/'gos-motion-response.json'
+        try:
+            learned = read_json(self.motion_response_path, {})
+        except (OSError, ValueError):
+            learned = {}
+        self.motion_response = MotionResponse(learned)
         self.sensors = sensors
         self.aos = aos or os.environ.get('M20_GOS_AOS_IP', '')
         try:
@@ -149,9 +188,34 @@ class GOSNavigation:
 
     def capabilities(self):
         available = bool(self.enabled and importlib.util.find_spec('numpy') is not None)
+        with self.lock:
+            motion_learning = self.motion_response.status()
         return dict(ok=True, protocol=1, available=available, executor='gos',
                     policies=['stop'], station_actions=self.actions.capabilities(), collection_protocol=1, iot_task_protocol=1,
+                    motion_learning=motion_learning, exploration_protocol=1,
                     message='GOS 自主寻路已配置' if available else '请在连接中心更新并配置 GOS 导航服务')
+
+    def prepare_link(self, check):
+        check()
+        link = self.link_factory(self.aos)
+        with self.lock:
+            try:
+                check()
+            except Exception:
+                link.close(stop=False)
+                raise
+            self.link = link
+        began = time.monotonic()
+        while time.monotonic() - began < 2:
+            check()
+            if stationary_feedback(link, began):
+                break
+            time.sleep(.04)
+        else:
+            raise ValueError('机内运控未确认停稳')
+        while time.monotonic() < self.axis_quiet_until:
+            check()
+            time.sleep(.04)
 
     def _persist(self):
         saved = {key: copy.deepcopy(self.nav[key]) for key in
@@ -177,6 +241,14 @@ class GOSNavigation:
                         stop_confirmed=bool(nav.get('cancel_confirmed')), message=nav.get('message', ''),
                         station_results=copy.deepcopy(nav.get('station_results', [])),
                         plan=dict(path=visible, goal=copy.deepcopy(plan.get('goal'))) if visible else None)
+            if self.job.get('kind') == 'exploration':
+                capture_id = self.job['capture_id']
+                detail = (self.navigator.report() if self.navigator is not None else
+                          dict(active=False, state=nav['status'], message=nav['message'],
+                               capture_id=capture_id, map=None))
+                result.update(kind='exploration', capture_id=capture_id, exploration=detail)
+                if nav['status'] == 'running':
+                    result.update(stage=detail['state'], message=detail['message'])
             collected = self.collection.snapshot() if self.collection is not None else copy.deepcopy(nav.get('collection', []))
             if collected:
                 if nav['status'] in STOPPED or nav['status'] == 'interrupted':
@@ -196,7 +268,7 @@ class GOSNavigation:
         return navigation_observation(self.link, scan, self.job['id'])
 
     def set_velocity(self, request, autonomous=False, valid_until=None):
-        values = [request[k] for k in ('forward', 'side', 'yaw')]
+        values = [request.get(key, 0.) for key in ('forward', 'side', 'yaw')]
         if any(values):
             if self.done or time.monotonic() >= self.lease_until or self.nav['status'] != 'running':
                 raise ValueError('GOS 运动授权已到期')
@@ -206,6 +278,10 @@ class GOSNavigation:
                     or basic.get('Sleep') or basic.get('ControlUsageMode') not in (0,2)
                     or basic.get('Direction') != 0 or basic.get('Gait') != 0x3002):
                 raise ValueError('机内运控状态已变化')
+            if self.job.get('kind') == 'exploration':
+                native = self.link.record(1007, 1)
+                if age_of(native) >= 2. or native.get('items', {}).get('Status') not in (0, 4):
+                    raise ValueError('原厂导航活动或状态过期，已停止探索')
             valid_until = min(valid_until, self.lease_until)
         self.link.set_velocity(*values, valid_until=valid_until)
         self.velocity = values
@@ -230,6 +306,25 @@ class GOSNavigation:
         key = (identity(request.get('id')), identity(request.get('owner')))
         return self.job is not None and key == (self.job['id'], self.job['owner'])
 
+    def _start_slot(self, request, digest):
+        if self.done:
+            raise ValueError('GOS 服务正在关闭')
+        if request['id'] in self.revoked:
+            raise ValueError('本次启动已撤销')
+        if self.job and request['id'] == self.job['id']:
+            if not self._owned(request) or self.job['digest'] != digest:
+                raise ValueError('重复任务的内容或所有者已变化')
+            return self.status()
+        if self.nav['status'] not in STOPPED or self.watchdog and self.watchdog.is_alive():
+            raise ValueError('GOS 仍在执行任务或确认停车')
+        if self.navigator and self.navigator.worker and self.navigator.worker.is_alive():
+            raise ValueError('上一项作业正在收尾')
+        return None
+
+    def _start_watchdog(self):
+        self.watchdog = threading.Thread(target=self._watch, daemon=True, name='gos-navigation-lease')
+        self.watchdog.start()
+
     def preview(self, request):
         if not self.capabilities()['available']:
             raise ValueError('GOS 自主寻路尚未配置')
@@ -244,13 +339,14 @@ class GOSNavigation:
             raise ValueError('起点或目标坐标无效')
         yaw = finite(yaw) if yaw is not None else None
         planner = GridPlanner(raw, **options, soft_static_speckles=True)
+        gx,gy=planner.cell(*goal)
+        if not (0<=gx<planner.w and 0<=gy<planner.h):
+            raise ValueError('目标位于地图范围外')
         try:
             plan = planner.plan(start, goal, yaw, goal_tolerance=.65)
         except ValueError:
-            if planner.pose_fits(*start):
-                raise
-            # The preview has no local ground evidence. The onboard executor
-            # will plan from a fresh scan before issuing any velocity.
+            # A static preview is advisory. Actual start replans using a
+            # fresh paired scan before issuing any velocity.
             plan = dict(path=[], points=[], goal=dict(x=goal[0], y=goal[1], yaw=start[2] if yaw is None else yaw),
                         needs_local_plan=True, planner='gos_live_start')
         return dict(ok=True, plan=plan)
@@ -279,16 +375,9 @@ class GOSNavigation:
                 or any(grid[k] != spec['map'][k] for k in ('resolution', 'origin'))):
             raise ValueError('GOS 收到的栅格与 NOS 活动地图不一致')
         with self.lock:
-            if spec['id'] in self.revoked:
-                raise ValueError('本次启动已撤销')
-            if self._owned(request):
-                if self.job['digest'] != digest:
-                    raise ValueError('重复任务的内容已变化')
-                return self.status()
-            if self.nav['status'] not in STOPPED or self.watchdog and self.watchdog.is_alive():
-                raise ValueError('GOS 仍在执行任务或确认停车')
-            if self.navigator and self.navigator.worker and self.navigator.worker.is_alive():
-                raise ValueError('上一航点动作正在收尾')
+            existing = self._start_slot(spec, digest)
+            if existing is not None:
+                return existing
             self.actions.validate(spec['points'][start_index:])
             if collectors:
                 check_collectors(collectors, self.actions.capabilities())
@@ -318,9 +407,41 @@ class GOSNavigation:
                                     message='沿途采集无法启动')
                     self._persist()
                     raise ValueError('沿途采集无法启动') from None
-            self.watchdog = threading.Thread(target=self._watch, daemon=True, name='gos-navigation-lease')
-            self.watchdog.start()
+            self._start_watchdog()
             self.navigator._launch(token, dict(grid, id=spec['map']['name']), plan)
+            return self.status()
+
+    def start_exploration(self, request):
+        if not self.capabilities()['available']:
+            raise ValueError('GOS 自主探索尚未配置')
+        spec, prior = exploration_spec(request)
+        digest = hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()
+        with self.lock:
+            existing = self._start_slot(spec, digest)
+            if existing is not None:
+                return existing
+            previous = self.job, self.nav, self.navigator, self.collection
+            resume = self.navigator if self.nav['status'] in ('paused', 'cancelled', 'failed') else None
+            self.navigator = GOSExploration(self, spec, prior, previous=resume)
+            self.job = dict(id=spec['id'], owner=spec['owner'], digest=digest,
+                            kind='exploration', capture_id=spec['capture_id'])
+            self.nav = self.navigator.nav
+            self.collection = None
+            self.lease_until = time.monotonic() + GOS_LEASE_SECONDS
+            try:
+                self._persist()
+            except (OSError, ValueError):
+                self.job, self.nav, self.navigator, self.collection = previous
+                self.lease_until = 0.
+                raise ValueError('GOS 任务记录写入失败') from None
+            try:
+                self._start_watchdog()
+                self.navigator.launch()
+            except RuntimeError:
+                self.navigator.stop('failed', 'GOS 自主探索线程未能启动')
+                self.navigator.tick()
+                self._persist()
+                raise ValueError('GOS 自主探索线程未能启动') from None
             return self.status()
 
     def cancel(self, request):
@@ -354,12 +475,18 @@ class GOSNavigation:
             return self.preview(request)
         if path == '/missions/start':
             return dict(ok=True, mission=self.start(request))
+        if path == '/missions/exploration/start':
+            return dict(ok=True, mission=self.start_exploration(request))
         if path == '/missions/cancel':
             return self.cancel(request)
         if path == '/missions/pulse':
             with self.lock:
                 if not self._owned(request):
                     raise ValueError('任务或控制端身份不匹配')
+                if self.job.get('kind') == 'exploration' and request.get('capture_id') != self.job['capture_id']:
+                    if self.nav['status'] == 'running':
+                        self.navigator.stop('cancelled', '建图采集会话已变化，GOS 已请求停车')
+                    raise ValueError('建图采集会话不匹配')
                 if self.nav['status'] == 'running' and time.monotonic() < self.lease_until:
                     self.lease_until = time.monotonic() + GOS_LEASE_SECONDS
                 return dict(ok=True, mission=self.status())
@@ -382,6 +509,13 @@ class GOSNavigation:
                         self.link.close(stop=False)
                         self.link = None
                     self._persist()
+                    if self.motion_response.dirty:
+                        try:
+                            atomic(self.motion_response_path,self.motion_response.record())
+                        except (OSError,ValueError):
+                            pass  # Calibration is optional; it never blocks a new task.
+                        else:
+                            self.motion_response.dirty=False
                     return
             time.sleep(.05)
 

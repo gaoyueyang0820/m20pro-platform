@@ -40,10 +40,14 @@ test('browser shortcuts and composition do not start global motion',()=>{
 });
 
 test('single-goal preview and execution use the onboard planner',async()=>{
- const f=fixture();await f.c.refreshGoalPlan();await f.c.ui['go-goal']();
- assert.equal(f.requests[0].data.engine,'gos');
- assert.equal(f.requests.at(-1).path,'/api/nav/goal');assert.equal(f.requests.at(-1).data.engine,'gos');
- assert.equal(f.nodes.has('#point-navigation-engine'),false);
+ for(const engine of ['native','gos']){
+  const f=fixture();
+  if(engine==='gos')f.nodes.set('#route-navigation-engine',{value:engine});
+  await f.c.refreshGoalPlan();await f.c.ui['go-goal']();
+  assert.equal(f.requests[0].data.engine,engine);
+  assert.equal(f.requests.at(-1).path,'/api/nav/goal');assert.equal(f.requests.at(-1).data.engine,engine);
+  assert.equal(f.nodes.has('#point-navigation-engine'),false);
+ }
 });
 
 test('active platform navigation displays its updated route rather than the old preview',async()=>{

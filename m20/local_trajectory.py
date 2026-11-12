@@ -2,7 +2,7 @@
 
 Independent implementation of sampled-trajectory scoring, inspired by Nav2's
 path/obstacle critics (see reference/autonomy-v3-sources.md). This is not MPPI,
-nor a trained policy. Predictions are kinematic, never hardware calibration.
+nor a trained policy. Optional measured response ranks admissible commands.
 All candidate footprints stay on currently measured floor. No actuator I/O.
 """
 import math
@@ -11,6 +11,7 @@ import copy
 import threading
 from collections import OrderedDict
 import numpy as np
+from m20.motion_response import AXES
 from m20.robot_geometry import CLEARANCE_HALF_LENGTH, CLEARANCE_HALF_WIDTH, BODY_HALF_LENGTH, BODY_HALF_WIDTH
 
 RES=.2
@@ -111,6 +112,14 @@ class LocalSurface:
         self.sweeps[key]=(value,self.last_failure)
         return value
 
+    def forward_obstacle(self):
+        """Near edge of an obstacle in the straight travel lane, not side walls."""
+        lane=CLEARANCE_HALF_WIDTH+.04
+        if self.precise:
+            boxes=self.bounds
+            return min((max(0.,x0) for x0,y0,x1,y1 in boxes if x1>0 and y0<lane and y1>-lane),default=math.inf)
+        return min((max(0.,x*RES-RES/2) for x,y in self.blocked if x>0 and abs(y*RES)<lane+RES/2),default=math.inf)
+
     def _sweep_uncached(self,dx,dy,turn=0.):
         if turn:
             step=math.pi/36;radius=math.hypot(CLEARANCE_HALF_LENGTH,CLEARANCE_HALF_WIDTH)
@@ -138,7 +147,7 @@ def dense_polyline(path,spacing=.12):
 
 
 class TrajectoryFollower:
-    def __init__(self,forward_limit=.35,yaw_limit=.7):
+    def __init__(self,forward_limit=.35,yaw_limit=.7,*,motion_response=None):
         self.forward_limit=float(forward_limit);self.yaw_limit=float(yaw_limit)
         self.previous=np.zeros(3);self.gain=np.array([1.,1.,1.])
         self.path=np.empty((0,2));self.index=0;self.plan_key=None;self.last={}
@@ -146,6 +155,15 @@ class TrajectoryFollower:
         self.terminal=True;self.last_handoff_pose=None
         self.path_repair_stamp=None;self.path_repair_attempts=0;self.path_repair_anchor=None
         self.straight_clearance=None
+        self.motion_response=dict(motion_response or {})
+
+    def _response_preference(self,axes,direction,desired_yaw):
+        # A learned response may rank already validated choices. The original
+        # trajectory, footprint, braking model and axis limits are independent.
+        difference=[v*(self.motion_response.get(AXES[2*i+(v<0)],1.)-1.) for i,v in enumerate(axes)]
+        along=difference[0]*direction[0]+difference[1]*direction[1]
+        turning=math.copysign(1.,desired_yaw)*difference[2] if abs(desired_yaw)>.1 else 0.
+        return max(-.12,min(.12,.35*along+.12*turning))
 
     def set_path(self,path,*,terminal=True,start_pose=None):
         candidate=dense_polyline(path)
@@ -177,7 +195,7 @@ class TrajectoryFollower:
 
     def command(self,scan,yaw_rate=0.,goal_yaw=None,allowed_pose=None,*,fixed_heading=False):
         started=time.perf_counter();pose=np.asarray(scan['pose'],dtype=float)
-        self.last.update(zero_reason=None,terminal_path=self.terminal,needs_continuation=False,policy='sampled_trajectory')
+        self.last.update(zero_reason=None,terminal_path=self.terminal,needs_continuation=False,policy='sampled_trajectory',ahead_obstacle_m=None)
         if len(pose)!=3 or not np.isfinite(pose).all():raise ValueError('位姿无效')
         feedback=self._feedback(scan,yaw_rate)
         if feedback is None:return self._result([0,0,0],'waiting_feedback','等待新鲜运动反馈',[],started)
@@ -247,7 +265,11 @@ class TrajectoryFollower:
         surface=LocalSurface.cached(scan)
         f=self.forward_limit;t=self.yaw_limit
         terminal=remaining_path<.9
-        if not terminal and self.straight_clearance is not None:
+        if not terminal and abs(desired)<.30:
+            ahead=surface.forward_obstacle()
+            if ahead<min(1.5,max(1.0,.85+stopping+speed*.5)):
+                self.last['ahead_obstacle_m']=round(ahead,2)
+        if not terminal and self.straight_clearance is not None and self.last['ahead_obstacle_m'] is None:
             straight=self._straight_corridor(pose,feedback,local,arc,surface,remaining_path,reaction,deceleration)
             if straight is not None:
                 self.last.update(policy='straight_corridor',candidate_count=1,valid_candidates=1)
@@ -264,12 +286,15 @@ class TrajectoryFollower:
             f=min(self.forward_limit,max(minimum,allowed_speed/response))
             self.last['terminal_speed_limit_mps']=round(allowed_speed,3)
         side=min(.25,f);reverse=min(.25,f)
+        # Give the holonomic body a useful lateral pulse as an alternative
+        # to low axes inside its dead zone. It passes the same swept checks.
+        lateral=min(.42,self.forward_limit*1.25) if not terminal else side
         slow_f=max(min(.20,self.forward_limit),.7*f) if terminal else .7*f
         candidates=[(0.,0.,0.)]
         if not at_goal:
             yaw_candidates=(0.,) if fixed_heading else (0.,t,-t)
             for vx in list(dict.fromkeys([f,slow_f,0.,-reverse])):
-                for vy in [0.,side,-side]:
+                for vy in dict.fromkeys((0.,side,-side,lateral,-lateral) if vx==0 else (0.,side,-side)):
                     for wz in yaw_candidates:
                         if vx==0 and vy==0 and wz==0:continue
                         candidates.append((vx,vy,wz))
@@ -337,6 +362,7 @@ class TrajectoryFollower:
                 if not surface.valid(px,py,angle):valid[i]=False;continue
                 if allowed_pose is not None and not allowed_pose(pose[0]+c*px-s*py,pose[1]+s*px+c*py,wrap(pose[2]+angle)):
                     valid[i]=False
+        direction=target/max(.1,float(np.linalg.norm(target))) if self.motion_response else None
         for i in np.flatnonzero(valid):
             track=trajectories[i];last=track[-1]
             distances=np.linalg.norm(local-last[:2],axis=1);closest=int(np.argmin(distances))
@@ -349,6 +375,8 @@ class TrajectoryFollower:
             cost[i]=(3.2*float(np.linalg.norm(target-last[:2]))+1.4*distances[closest]-.8*progress
                      +(.95 if at_goal else .45)*align+clearance+.10*np.linalg.norm(candidates[i]-self.previous)
                      +(.12 if candidates[i,0]<0 else 0)+.08*abs(candidates[i,1]))
+            if direction is not None:
+                cost[i]-=self._response_preference(candidates[i],direction,desired)
         cost[~valid]=np.inf
         best=int(np.argmin(cost));self.last['candidate_count']=n;self.last['valid_candidates']=int(valid.sum())
         if not np.isfinite(cost[best]):
@@ -378,7 +406,8 @@ class TrajectoryFollower:
         length = speed*hold+speed**2/(2*deceleration)
         if length+.25 >= remaining:
             return None
-        end = min(len(local),int(np.searchsorted(arc,length+.25,side='left'))+1)
+        preview=max(length+.25,.65+abs(vx)*.8)
+        end = min(len(local),int(np.searchsorted(arc,preview,side='left'))+1)
         ahead = local[:end]
         if len(ahead)<2 or ahead[-1,0]<length or np.max(np.abs(ahead[:,1]))>.08 or np.any(np.diff(ahead[:,0])<-.01):
             return None
@@ -450,6 +479,8 @@ def exploration_step(explorer,follower,scan,yaw_rate=0.,*,new_scan=True):
     evidence. If no successor can be planned, the original terminal braking
     remains in force. This function issues no command itself.
     """
+    if follower.straight_clearance is None:
+        follower.straight_clearance=explorer.straight_clearance
     if (follower.path_repair_anchor is not None and scan.get('_speed_mps',0)>=.08
             and math.dist(scan['pose'][:2],follower.path_repair_anchor)>=.5):
         follower.path_repair_attempts=0;follower.path_repair_anchor=None

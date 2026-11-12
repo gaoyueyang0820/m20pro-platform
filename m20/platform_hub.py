@@ -77,7 +77,8 @@ class Hub:
             resident=getattr(self.app,'resident_navigation',None)
             if resident and resident.busy():raise ValueError('驻机任务或停车状态尚未确认')
             if getattr(self.app,"_greet_busy",False):raise ValueError("请先停止问候动作")
-            if getattr(self.app,'autonomy',None) and self.app.autonomy.active:raise ValueError('请先停止自主任务')
+            autonomy=getattr(self.app,'autonomy',None)
+            if autonomy and (autonomy.active or getattr(autonomy,'onboard_task',None)):raise ValueError('请先停止自主任务')
             if self.app.nav['status'] in ['running','cancelling'] or any(self.app.velocity) or self.app.sdk.get('armed'):
                 raise ValueError('请先停止运动并结束导航/关节控制')
 
@@ -497,6 +498,11 @@ class Hub:
         if path=='/api/maps/extensions':return dict(ok=True,plans=self.app.store.value.get('map_extensions',[]),native_extension_supported=False,platform_extension_supported=True,message='平台保留旧图，采集新轮次并配准融合为新版本；不调用会覆盖历史记录的隐藏 -c 参数')
         if path=='/api/maps/project':return self.remote_maps('/maps/project',dict(name=query.get('name',['active'])[0]))
         if path=='/api/nav/resident/capabilities':return self.app.resident_navigation.capabilities()
+        if path=='/api/tasks/advisor/context':
+            from m20.mission_advisor import mission_context
+            with self.app.lock:
+                return dict(ok=True,configured=False,
+                            context=mission_context(self.app.nav,self.app.autonomy.active))
         if path=='/api/tasks/collectors':
             from m20.task_collectors import collector_catalog
             return dict(ok=True, collectors=collector_catalog())

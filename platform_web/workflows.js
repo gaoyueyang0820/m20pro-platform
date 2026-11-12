@@ -290,9 +290,13 @@ function taskCollectorOptions() {
               ...Object.fromEntries([...row.querySelectorAll('[data-collector-field]')].map(field=>[field.dataset.collectorField,field.hasAttribute('data-iot-selection')?iotSelected(field):field.value]))}));
 }
 
+function patrolNeedsGos(rows,collectors=[]){
+ return rows.some(({station_action:a})=>a&&(!['front','rear'].includes(a.camera)||a.pan&&a.pan!=='none'||a.iot_device_id||a.iot_device_ids?.length))||
+  collectors.some(spec=>spec.kind!=='people_count'||!['front','rear'].includes(spec.camera));
+}
 function navigationIntent(){
  return points.length>1||points.some(point=>point.type===3||point.station_action)||
-        points.length===1&&(taskCollectorOptions().length||($('#route-navigation-engine')?.value||'gos')!=='gos'||($('#disconnect-policy')?.value||'stop')!=='stop')?'route':'goal';
+        points.length===1&&(taskCollectorOptions().length||($('#disconnect-policy')?.value||'stop')!=='stop')?'route':'goal';
 }
 function navigationActions(single){
  const run=single?btn('执行导航','go-goal','primary','play'):btn('执行巡检','start-nav','primary','play');
@@ -316,13 +320,13 @@ function routeEditorPage(){
     <div class="divider"></div>
     <h3 id="nav-target-title">导航目标</h3>
     <div id="goal-position" class="goal-position">尚未选择目标</div>
-    <label class="field">到达朝向<select id="goal-yaw-mode"><option value="auto">沿路径末段方向</option><option value="manual">指定朝向</option></select></label>
+    <label class="field">到达朝向<select id="goal-yaw-mode"><option value="auto">自动朝向</option><option value="manual">指定朝向</option></select></label>
     <div id="goal-yaw-field" hidden>${field('到达朝向 / 度','goal-yaw',0,'number')}</div>
     <div id="goal-plan-status" class="goal-plan-status">${single?'在地图上选定目标，自动规划可通行路径':'多个航点将按顺序执行；点击“执行巡检”开始。'}</div>
     <div class="divider"></div>
     ${field('路线名称','route-name',routeId?(S.routes.find(r=>r.id===routeId)?.name||'新路线'):'新路线')}
     <div class="form-grid">
-     ${select('寻路方式','route-navigation-engine',[['gos','GOS 机载寻路'],['native','原厂导航']])}
+     ${select('寻路方式','route-navigation-engine',[['native','原厂导航'],['gos','GOS 机载寻路']])}
      ${select('电脑断联后','disconnect-policy',[['stop','停车'],['finish','完成任务后停车'],['return','立即沿原路返回'],['finish_return','完成任务后沿原路返回']])}
     </div>
     <p id="disconnect-policy-help" class="help" role="status"></p>
@@ -356,7 +360,7 @@ ui['undo-waypoint']=()=>{points.pop();renderPoints();};
 function routeOptions(){
  return {nav_mode:+($('#nav-mode')?.value??1),speed:+($('#nav-speed')?.value??1),gait:$('#nav-gait')?.value||'flat',manner:+($('#nav-manner')?.value??0),
   pause_at_point:$('#route-arrival')?.value==='pause',collectors:taskCollectorOptions(),
-  engine:points.some(point=>point.type===3)?'native':$('#route-navigation-engine')?.value||'gos',
+  engine:points.some(point=>point.type===3)?'native':$('#route-navigation-engine')?.value||'native',
   disconnect_policy:$('#disconnect-policy')?.value||'stop',explicit_execution:true};
 }
 saveRoute=async function(){
@@ -471,9 +475,9 @@ render=function(){
   const options=S.routes.find(r=>r.id===routeId)?.options||{nav_mode:1,speed:1,gait:'flat',manner:0,pause_at_point:false};
   for(const [id,key,fallback] of [['nav-mode','nav_mode',1],['nav-speed','speed',1],['nav-gait','gait','flat'],['nav-manner','manner',0]])if($('#'+id))$('#'+id).value=String(options[key]??fallback);
   if($('#route-arrival'))$('#route-arrival').value=options.pause_at_point?'pause':'continue';
-  const native=options.explicit_execution&&options.engine==='native';
-  if($('#route-navigation-engine'))$('#route-navigation-engine').value=native?'native':'gos';
-  if($('#disconnect-policy'))$('#disconnect-policy').value=native?options.disconnect_policy||'stop':'stop';
+  const gos=options.explicit_execution&&options.engine==='gos';
+  if($('#route-navigation-engine'))$('#route-navigation-engine').value=gos?'gos':'native';
+  if($('#disconnect-policy'))$('#disconnect-policy').value=options.explicit_execution&&options.engine==='native'?options.disconnect_policy||'stop':'stop';
   refreshNavActions();paintGoalPlan();
  }
  if(page==='maps'){scanSequence=null;drawScan();}

@@ -1,5 +1,9 @@
 # M20 Pro 平台 API
 
+当前导航默认由原厂规划器执行。实机 `/api/nav/plan` 的原厂响应包含 `plan_on_start: true`、空 `path` 和目标回执；执行时由机器人计算路径。显式选择 `engine: "gos"` 时，路线预览和执行均在 GOS 计算。调用方可按 `plan_on_start` 区分这两种预览。
+
+`GET /api/tasks/advisor/context` 返回版本化的任务摘要和 `configured: false`。未来的模型适配器可实现 `m20.mission_advisor.MissionAdvisor`，根据任务摘要生成解释或任务建议。摘要不含地图、相机、设备密钥或控制指令。接口当前不调用模型。
+
 写接口均为 POST + application/json，同源请求。`--share` 在选定的私人网段免口令访问，不使用共享会话或控制权租约。旧版显式 token 启动方式仍兼容。失败返回 `{"ok":false,"err":"原因"}`。`delivery=sent` 和 `launched` 不代表硬件业务完成。
 
 耗时操作返回 `{ok:true,job_id}`，使用 `GET /api/operations?id=<job_id>` 查询。`jobs` 为单个任务，含 status、progress、message、result、error。传输/解析进度与厂商建图业务进度分开。
