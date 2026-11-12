@@ -113,7 +113,7 @@ class LatestObservationPump:
             else:self._publish(packet,generation)
             if stop.wait(delay):return
 
-    def read(self,generation=None,after_sequence=None):
+    def read(self,generation=None,after_sequence=None,*,fresh_only=False):
         """Nonblocking snapshot; caller checks run/context again before driving.
 
         state: waiting / fresh / cached / expired / invalidated / cancelled /
@@ -128,13 +128,15 @@ class LatestObservationPump:
             if self.latest is None:return dict(result,state=self.error_kind if self.error_kind in ['invalidated','context_changed'] else 'waiting')
             remaining=self.latest['_valid_until']-now
             if remaining<=0:return dict(result,state='expired')
+            state='fresh' if after_sequence is None or self.sequence>after_sequence else 'cached'
+            if fresh_only and state=='cached':
+                return dict(result,state=state,remaining_s=remaining,valid_until=self.latest['_valid_until'])
             packet=copy.deepcopy(self.latest)
             # Age derives from the unchanged 650 ms deadline. Never replace
             # _valid_until with now + a fresh duration, even on repeated reads.
             packet['age']=max(0.,.65-remaining)
             packet['_pump_generation']=self.generation;packet['_pump_sequence']=self.sequence
             packet['_cache_wait_ms']=max(0.,now-packet['_pump_received_monotonic'])*1000
-            state='fresh' if after_sequence is None or self.sequence>after_sequence else 'cached'
             return dict(result,state=state,remaining_s=remaining,observation=packet)
 
     def status(self):

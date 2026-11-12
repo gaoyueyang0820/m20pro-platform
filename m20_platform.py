@@ -582,10 +582,11 @@ class Platform:
             if collectors:
                 if any(p['type']==3 for p in clean):
                     raise ValueError('沿途采集与进桩请分别配置任务')
-                engine=options.get('engine','gos')
+                value['options']['collectors']=collectors
+                engine=options.get('engine','gos' if self._patrol_needs_gos(value) else 'native')
                 if requires_gos_collection(collectors) and (engine!='gos' or value['options']['disconnect_policy']!='stop'):
                     raise ValueError('外接球机和物联网采集请使用 GOS 自主寻路与断联停车')
-                value['options'].update(engine=engine,collectors=collectors)
+                value['options']['engine']=engine
             if options.get('explicit_execution') is True:
                 engine, policy = self._patrol_execution(value, value['options'])
                 value['options'].update(engine=engine, disconnect_policy=policy, explicit_execution=True)
@@ -643,7 +644,7 @@ class Platform:
         return result
 
     def plan_goal(self, req):
-        from m20.navigation_planner import GridPlanner,live_obstacles
+        from m20.navigation_planner import GridPlanner
         engine=req.get('engine','native')
         if engine not in ['native','platform','gos']:raise ValueError('未知导航执行器')
         x,y=number(req.get('x')),number(req.get('y'));yaw=None if req.get('yaw') is None else number(req['yaw'],-math.pi,math.pi)
@@ -680,20 +681,21 @@ class Platform:
             result=dict(remote['plan'],map_identity=verify_map(),execution='gos_trajectory',
                         guide_points_preview_only=True,obstacle_note='GOS 开始行走后使用机内雷达实时避障')
             return self._save_goal_plan(map_,source,fingerprint,start,result,generation,planning_link,planning_demo,engine)
-        obstacles=[];obstacle_note='实时避障由机器人执行';body_pose=None
-        if not self.demo and engine=='native':
-            try:
-                began=time.monotonic();packet=self.proxy('nos','/sensors/observation',timeout=1)
-                if packet.get('map_name')!=map_.get('robot_map_name'):raise ValueError('实时点云属于另一张活动地图')
-                obstacles=live_obstacles(packet,start,time.monotonic()-began);obstacle_note='已结合当前雷达障碍，行走中继续实时避障'
-                motion=self.link.record(1002,4) if self.link else {};values=motion.get('items',{}).get('MotionStatus',{})
-                stationary=age_of(motion)<.5 and all(abs(values.get(k,999))<limit for k,limit in [('LinearX',.08),('LinearY',.08),('OmegaZ',.12)])
-                pp=packet.get('pose',[])
-                if stationary and len(pp)==7 and math.dist(pp[:2],start[:2])<.05:
-                    qx,qy,qz,qw=pp[3:];pyaw=math.atan2(2*(qw*qz+qx*qy),1-2*(qy*qy+qz*qz))
-                    if abs(math.atan2(math.sin(pyaw-start[2]),math.cos(pyaw-start[2])))<.1:body_pose=start
-            except (ValueError,KeyError,TypeError):obstacle_note='当前无可用的实时障碍快照；按地图规划，行走中由机器人实时避障'
-        planner=GridPlanner(raw,map_['resolution'],map_['origin'],map_.get('negate',0),map_.get('free_thresh',.196),map_.get('occupied_thresh',.65),obstacles,robot_pose=body_pose,enable_live_surface=not self.demo and engine=='platform',soft_static_speckles=engine=='platform')
+        if not planning_demo and engine=='native':
+            # The onboard planner owns reachability. A stale desktop obstacle
+            # picture must not veto a goal that native navigation can reach.
+            x0,y0,_=map_['origin'];res=map_['resolution']
+            if not (x0<=x<x0+res*map_['width'] and y0<=y<y0+res*map_['height']):
+                raise ValueError('目标位于地图范围外')
+            heading=(math.atan2(y-start[1],x-start[0]) if math.dist((x,y),start[:2])>.001 else start[2]) if yaw is None else yaw
+            point=dict(x=x,y=y,yaw=heading,type=1)
+            result=dict(ok=True,goal=point,requested_goal=dict(x=x,y=y),points=[point],path=[],planner='native_onboard',
+                        execution='native_single_goal',plan_on_start=True,map_identity=verify_map(),
+                        obstacle_note='由机器人原厂规划器处理路径和避障')
+            return self._save_goal_plan(map_,source,fingerprint,start,result,generation,planning_link,planning_demo,engine)
+        obstacle_note='实时避障由机器人执行'
+        planner=GridPlanner(raw,map_['resolution'],map_['origin'],map_.get('negate',0),map_.get('free_thresh',.196),map_.get('occupied_thresh',.65),
+                            enable_live_surface=not planning_demo and engine=='platform',soft_static_speckles=engine=='platform')
         latest_surface=None
         if not self.demo and engine=='platform':
             deadline=time.monotonic()+2.5;seen=set();last_error=None
@@ -749,7 +751,7 @@ class Platform:
         if not planning_demo:map_identity=verify_map()
         result['map_identity']=map_identity
         if result.get('self_projection_ignored'):obstacle_note='已排除机身内部的新增投影；原图墙体和前方障碍保留，机器人实时避障保持开启'
-        result.update(live_obstacles=len(obstacles),obstacle_note=obstacle_note,
+        result.update(live_obstacles=0,obstacle_note=obstacle_note,
                       execution='platform_trajectory' if engine=='platform' else 'native_single_goal',guide_points_preview_only=engine!='platform',live_surface=planner.live_surface_status())
         return self._save_goal_plan(map_,source,fingerprint,start,result,generation,planning_link,planning_demo,engine)
 
@@ -802,7 +804,7 @@ class Platform:
         started=self.start_route(dict(nav_mode=1,speed=1,gait='flat',pause_at_point=False,disconnect_policy=req.get('disconnect_policy','stop'),_start_generation=intent),goal=route,client_intent=client_intent)
         with self.lock:
             if self.nav.get('route',{}).get('id')==route['id']:self.nav['plan']=result
-        message='正在确认模式与步态，完成后仅提交最终目标' if started.get('phase')=='preparing' else '已提交最终目标；预览路线供核对，机器人自主寻路并实时避障，终点自动结束'
+        message='正在准备原厂导航' if started.get('phase')=='preparing' else '已提交目标，机器人开始寻路'
         if self.demo:message='演示任务已开始；未向机器人发送指令'
         return dict(started,goal=point,planner=result['planner'],execution='native_single_goal',demo=self.demo,message=message)
 
@@ -878,9 +880,15 @@ class Platform:
                         message=nav['message'])
 
     @staticmethod
+    def _patrol_needs_gos(route):
+        return (any(station_requires_gos(p.get('station_action')) for p in route['points'])
+                or requires_gos_collection(route.get('options', {}).get('collectors', [])))
+
+    @staticmethod
     def _patrol_execution(route, options):
         from m20.navigation_disconnect import POLICIES
-        engine = options.get('engine', 'gos')
+        needs_gos = Platform._patrol_needs_gos(route)
+        engine = options.get('engine', 'gos' if needs_gos else 'native')
         policy = options.get('disconnect_policy', 'stop')
         if engine not in ('gos', 'native', 'platform') or policy not in POLICIES:
             raise ValueError('巡检寻路方式或断联策略无效')
@@ -894,7 +902,7 @@ class Platform:
                 raise ValueError('含充电航点的路线使用断联停车')
             engine = 'native'
         if engine != 'gos':
-            if any(station_requires_gos(p.get('station_action')) for p in route['points']) or requires_gos_collection(collectors):
+            if needs_gos:
                 raise ValueError('外接球机和物联网采集需要 GOS 机载寻路')
             if station_actions and (engine!='native' or policy!='stop'):
                 raise ValueError('前后视到点人数统计可选原厂导航与断联停车')
@@ -908,13 +916,15 @@ class Platform:
         return engine, policy
 
     def navigation_request(self, operation, req):
-        """Keep GOS as the default and honor explicitly configured patrol settings."""
+        """Use onboard native navigation unless a route selects or requires GOS."""
         with self.lock:
-            request=dict(req,engine='native' if self.demo else 'gos',disconnect_policy='stop',
+            request=dict(req,engine='native',disconnect_policy='stop',
                          _start_generation=self._nav_start_generation)
             demo = self.demo
-            if operation=='plan' and req.get('explicit_execution') is True:
-                engine = req.get('engine', 'gos')
+            if operation in ('plan','goal'):
+                engine = req.get('engine','native')
+                if engine not in ('native','gos','platform') or engine=='platform' and req.get('explicit_execution') is not True:
+                    raise ValueError('未知导航执行器')
                 request['engine'] = 'native' if demo and engine == 'gos' else engine
             if operation=='start':
                 if 'route' in req:
@@ -928,7 +938,8 @@ class Platform:
                 saved = route.get('options', {})
                 selected = req if req.get('explicit_execution') is True else saved
                 execution = dict(saved, **req)
-                for key, default in (('engine', 'gos'), ('disconnect_policy', 'stop')):
+                default_engine = 'gos' if self._patrol_needs_gos(route) else 'native'
+                for key, default in (('engine', default_engine), ('disconnect_policy', 'stop')):
                     execution[key] = selected.get(key, default) if selected.get('explicit_execution') is True else default
                 engine, policy = self._patrol_execution(route, execution)
                 request.update(engine='native' if demo and engine == 'gos' else engine, disconnect_policy=policy)

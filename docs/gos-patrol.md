@@ -1,14 +1,16 @@
 # GOS 自主寻路与到点作业
 
-单点导航和巡检默认使用 **GOS 机载寻路**。巡检也可选择原厂导航。GOS 接收活动栅格和任务，负责路线预览，并结合机内雷达计算和执行行进路线。电脑接收状态并维护任务授权。持续 5 秒未收到电脑心跳时，GOS 请求停车。外接球机和物联网采集使用 GOS。
+单点导航和普通巡检默认使用原厂导航。目标交给原厂规划器，电脑不会用另一套地图算法预先拦截。也可选择 **GOS 机载寻路**；GOS 接收活动栅格和任务，结合机内雷达规划并执行行进路线。电脑接收状态并维护任务授权。持续 5 秒未收到电脑心跳时，GOS 请求停车。外接球机和物联网采集使用 GOS。
 
 GOS 执行器使用敏捷平地步态和正向机身坐标。普通已保存路线可以直接执行。包含充电航点的路线自动使用专用回桩流程。
 
 点击「执行巡检」会执行当前航点和设置，并在任务中心留下执行记录。点击「保存路线」才会将草稿加入保存的路线或更新已保存的版本。
 
-全局规划先尝试二维通路导引和整段机身扫掠，再用航向搜索处理窄道。空旷直行复用地图区段，只需核对最新雷达下的前向及制动包络。障碍挡路时，先找可接回主路线的位置或重新规划通往目标的路线，再尝试局部绕行。此分层方式参考自动驾驶的参考路线、行为规划与速度约束。 [Autoware 行为规划](https://autowarefoundation.github.io/autoware_universe/main/planning/behavior_path_planner/autoware_behavior_path_planner/)
+全局规划先尝试二维通路导引和整段机身扫掠，再用航向搜索处理窄道。空旷直行复用地图区段，只需核对最新雷达下的前向及制动包络。遇到临时障碍时优先接回原路线或寻找短程绕行，持续受阻再重新全局寻路。暂时缺少同步定位时保留任务，等待新鲜观测后继续；任务时限和断联停车策略仍然生效。 [Nav2 分层规划](https://docs.nav2.org/behavior_trees/overview/detailed_behavior_tree_walkthrough.html)
 
 已处于原厂辅助模式时沿用该模式。原厂定位状态 `2002/1` 的 `ObsState` 和基础状态 `1002/6` 的 `OOA` 可在跟踪受阻时提前触发复核。 [定位回包](https://support.deeprobotics.cn/docs/#/259675879) · [辅助遥控](https://support.deeprobotics.cn/docs/#/259675901)
+
+GOS 从实际发令记录、运动反馈和定位位移学习直行、侧移和转向响应。常规模式和辅助模式分别积累样本。样本足够、近期预测误差低于默认估计时，下一次任务用学习结果给已确认可通行的动作排序。当前任务的避障、速度限制和停车逻辑保持独立。记录仅保存在本机 GOS；没有已知发令记录的手柄操作和原厂导航不参加此项学习。
 
 ## 沿途采集
 
@@ -58,11 +60,11 @@ GOS 执行器使用敏捷平地步态和正向机身坐标。普通已保存路�
 
 ## 接口
 
-- `POST /api/nav/plan`、`/api/nav/goal`、`/api/nav/start` 默认派发到 GOS。巡检可用 `explicit_execution: true` 随路线保存或在执行时提交 `engine` 和 `disconnect_policy`，也可在巡检预览时指定 `engine`。演示模式使用本地模拟，充电航点交给专用回桩流程。
+- `POST /api/nav/plan`、`/api/nav/goal`、`/api/nav/start` 默认使用原厂导航；需要机载采集的既有路线默认使用 GOS。单点可指定 `engine: "gos"`。巡检可用 `explicit_execution: true` 随路线保存或在执行时提交 `engine` 和 `disconnect_policy`。演示模式使用本地模拟，充电航点交给专用回桩流程。
 - `GET /api/iot/settings` 返回连接状态，`POST /api/iot/settings` 验证并保存连接。`GET /api/iot/devices?page=1&name=` 分页查询目录，`GET /api/iot/read?device_id=42` 读取当前值。
 - `POST /api/route/save` 的航点可带 `station_action: {camera, pan, iot_device_ids}`。`camera: "none"` 可用于单独读取设备，方向支持 `none`、`left`、`right`。已有 `iot_device_id` 继续兼容。
 - `GET /api/tasks/collectors` 返回采集项和字段定义。通过 `POST /api/route/save` 的 `options.collectors` 保存沿途采集配置，例如 `[{"kind":"people_count","camera":"front","interval_s":2},{"kind":"iot_readings","device_ids":["42","43"],"interval_s":5}]`。
 - `GET /api/tasks/collection?run_id=<任务执行编号>&offset=0` 读取当前或历史任务的采集记录，按响应的 `next_offset` 分页。记录包含采集类型、采集时间、采集请求时的航点索引及读数或错误。
-- `GET /api/nav/resident/capabilities` 的 `gos` 返回 GOS 可用性和作业能力。执行状态及 `station_results` 随导航状态同步。
+- `GET /api/nav/resident/capabilities` 的 `gos` 返回 GOS 可用性、作业能力和运动学习摘要 `motion_learning`。执行状态及 `station_results` 随导航状态同步。
 
 新增采集项可在 `m20/task_collectors.py` 的 `COLLECTORS` 中注册字段、可用性判断及采样类。采样类提供 `sample()` 和 `close()`，采样结果包含 `sampled_at` 和 `values`。路线编辑器使用字段定义生成表单，GOS 使用同一契约调度采集和保存记录。

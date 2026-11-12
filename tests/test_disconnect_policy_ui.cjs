@@ -8,6 +8,8 @@ function setup(gos,nos={},online=true){
   document:{addEventListener:(name,fn)=>events[name]=fn},
   text:(id,value)=>messages[id]=value,navigationPresentation:()=>null,render(){},update(){},
   api:async p=>{calls.push(p);return {...nos,gos};}});
+ const workflows=fs.readFileSync(path.join(__dirname,'../platform_web/workflows.js'),'utf8');
+ vm.runInContext(workflows.slice(workflows.indexOf('function patrolNeedsGos'),workflows.indexOf('function navigationIntent')),context);
  vm.runInContext(fs.readFileSync(path.join(__dirname,'../platform_web/disconnect_policy.js'),'utf8'),context);
  return {context,messages,calls,engine,policy,change:id=>events.change({target:{id,value:engine.value,matches:()=>true}})};
 }

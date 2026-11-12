@@ -10,8 +10,7 @@
   const docking=points.some(point=>point.type===3);
   const collectors=taskCollectorOptions();
   const stations=points.map(point=>point.station_action).filter(Boolean);
-  const actions=stations.some(action=>!['front','rear'].includes(action.camera)||action.pan&&action.pan!=='none'||action.iot_device_id||action.iot_device_ids?.length)
-   ||collectors.some(spec=>spec.kind!=='people_count'||!['front','rear'].includes(spec.camera));
+  const actions=patrolNeedsGos(points,collectors);
   const active=['running','cancelling'].includes(S?.nav?.status);
   const requiredEngine=docking?'native':actions?'gos':'';
   if(engineChoice){
@@ -27,7 +26,8 @@
    }
    engineChoice.disabled=!!requiredEngine||active;
   }
-  const engine=engineChoice?.value||'gos';
+  const engine=engineChoice?.value||'native';
+  const calibrated=Object.values(gos?.motion_learning?.modes||{}).flatMap(Object.values).filter(row=>row.gain!=null).length;
   const desktopStations=engine==='native'&&stations.length>0&&!actions;
   const nativeOptionsReady=($('#route-arrival')?.value||'continue')==='continue'&&($('#nav-mode')?.value||'1')==='1'&&
    ($('#nav-speed')?.value||'1')==='1'&&($('#nav-gait')?.value||'flat')==='flat'&&($('#nav-manner')?.value||'0')==='0';
@@ -40,7 +40,7 @@
   const status=S?.mode==='demo'?'本地演示':docking?'含充电航点 · 自动使用回桩流程':
    engine==='native'?(S?.online===false?'等待连接机器人':'原厂导航'):
    S?.online===false?'等待连接机器人':
-   gos?.available?'GOS 寻路服务已连接':gos?.message||'正在连接 GOS 寻路服务';
+   gos?.available?'GOS 寻路服务已连接'+(calibrated?' · 运动已适配 '+calibrated+' 项':''):gos?.message||'正在连接 GOS 寻路服务';
   text('navigation-executor-status',status);
   let help='';
   if(docking)help='回桩路线采用断联停车。';

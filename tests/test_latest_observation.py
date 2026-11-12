@@ -30,6 +30,8 @@ class PumpTests(unittest.TestCase):
         self.assertEqual(again['state'],'cached');self.assertAlmostEqual(again['remaining_s'],.1)
         self.assertEqual(again['observation']['_valid_until'],100.3)
         self.assertAlmostEqual(again['observation']['age'],.55)
+        hold=p.read(g,first['sequence'],fresh_only=True)
+        self.assertEqual((hold['state'],hold['observation'],hold['valid_until']),('cached',None,100.3))
         c[0]=100.31;self.assertEqual(p.read(g)['state'],'expired')
         self.assertIsNone(p.read(g)['observation'])
 

@@ -15,6 +15,8 @@ import zlib
 from bridge.resident_mission import atomic
 from bridge.task_collection import RouteCollection, collection_page
 from m20.map_catalog import read_json
+from m20.local_trajectory import TrajectoryFollower
+from m20.motion_response import MotionResponse
 from m20.navigation_disconnect import finite, identity, specification
 from m20.navigation_planner import GridPlanner
 from m20.patrol_actions import StationActions, station_spec
@@ -67,6 +69,54 @@ def unpack_grid(grid):
 class GOSPointNavigator(PointNavigator):
     async_observations = True
 
+    def _measured_response(self, scan, feedback, command):
+        if not command or not any(command[0]):
+            self.response_pose=None
+            return False
+        stamp=scan['stamp'];pose=scan['pose']
+        before=getattr(self,'response_pose',None)
+        if before and before[0]==command[1] and stamp-before[1]<.18:
+            return False
+        self.response_pose=(command[1],stamp,tuple(pose))
+        if not before or before[0]!=command[1] or stamp-before[1]>.6:
+            return False
+        dt=stamp-before[1];px,py,heading=before[2]
+        c,s=math.cos(heading),math.sin(heading)
+        dx,dy=pose[0]-px,pose[1]-py
+        delta=pose[2]-heading
+        observed=((c*dx+s*dy)/dt,(-s*dx+c*dy)/dt,math.atan2(math.sin(delta),math.cos(delta))/dt)
+        i=max(range(3),key=lambda j:abs(command[0][j]))
+        # The motion-status packet and the actual displacement must agree.
+        # An inhibited drive, localization jump or skid cannot tune a profile.
+        return observed[i]*feedback[i]>0. and abs(observed[i]-feedback[i])<(.20 if i==2 else .10)
+
+    def _trajectory_follower(self):
+        if not hasattr(self,'response_gains'):
+            with self.app.lock:
+                self.response_gains=self.app.motion_response.gains(self.motion_mode)
+        return TrajectoryFollower(motion_response=self.response_gains)
+
+    def _scan(self):
+        scan,yaw_rate=super()._scan()
+        if scan is None:return scan,yaw_rate
+        app=self.app
+        with app.lock:
+            link=app.link
+            if link is None or not self.current(self.run_id) or scan.get('_vendor_avoidance'):
+                self.response_pose=None
+                return scan,yaw_rate
+            record=link.record(1002,6);basic=record.get('items',{}).get('BasicStatus',{})
+            if (age_of(record)<.65 and basic.get('HES')==0 and basic.get('MotionState')==17
+                    and not basic.get('Sleep') and basic.get('Direction')==0 and basic.get('Gait')==0x3002
+                    and basic.get('ControlUsageMode')==self.motion_mode and basic.get('OOA')!=3):
+                command=getattr(link,'axis_run',lambda:None)()
+                feedback=[*scan['_velocity_body'],yaw_rate]
+                if self._measured_response(scan,feedback,command):
+                    app.motion_response.observe(self.motion_mode,command,scan.get('_motion_feedback_at'),feedback)
+            else:
+                self.response_pose=None
+        return scan,yaw_rate
+
     def current(self, token):
         return (self.active and self.run_id == token and self.app.nav is self.nav
                 and self.nav['status'] == 'running' and time.monotonic() < self.app.lease_until)
@@ -117,6 +167,12 @@ class GOSNavigation:
     def __init__(self, data, sensors, *, aos=None, enabled=None, link_factory=RobotLink, actions=None):
         self.data = Path(data)
         self.path = self.data/'gos-navigation-job.json'
+        self.motion_response_path = self.data/'gos-motion-response.json'
+        try:
+            learned = read_json(self.motion_response_path, {})
+        except (OSError, ValueError):
+            learned = {}
+        self.motion_response = MotionResponse(learned)
         self.sensors = sensors
         self.aos = aos or os.environ.get('M20_GOS_AOS_IP', '')
         try:
@@ -149,8 +205,11 @@ class GOSNavigation:
 
     def capabilities(self):
         available = bool(self.enabled and importlib.util.find_spec('numpy') is not None)
+        with self.lock:
+            motion_learning = self.motion_response.status()
         return dict(ok=True, protocol=1, available=available, executor='gos',
                     policies=['stop'], station_actions=self.actions.capabilities(), collection_protocol=1, iot_task_protocol=1,
+                    motion_learning=motion_learning,
                     message='GOS 自主寻路已配置' if available else '请在连接中心更新并配置 GOS 导航服务')
 
     def _persist(self):
@@ -244,13 +303,14 @@ class GOSNavigation:
             raise ValueError('起点或目标坐标无效')
         yaw = finite(yaw) if yaw is not None else None
         planner = GridPlanner(raw, **options, soft_static_speckles=True)
+        gx,gy=planner.cell(*goal)
+        if not (0<=gx<planner.w and 0<=gy<planner.h):
+            raise ValueError('目标位于地图范围外')
         try:
             plan = planner.plan(start, goal, yaw, goal_tolerance=.65)
         except ValueError:
-            if planner.pose_fits(*start):
-                raise
-            # The preview has no local ground evidence. The onboard executor
-            # will plan from a fresh scan before issuing any velocity.
+            # A static preview is advisory. Actual start replans using a
+            # fresh paired scan before issuing any velocity.
             plan = dict(path=[], points=[], goal=dict(x=goal[0], y=goal[1], yaw=start[2] if yaw is None else yaw),
                         needs_local_plan=True, planner='gos_live_start')
         return dict(ok=True, plan=plan)
@@ -382,6 +442,13 @@ class GOSNavigation:
                         self.link.close(stop=False)
                         self.link = None
                     self._persist()
+                    if self.motion_response.dirty:
+                        try:
+                            atomic(self.motion_response_path,self.motion_response.record())
+                        except (OSError,ValueError):
+                            pass  # Calibration is optional; it never blocks a new task.
+                        else:
+                            self.motion_response.dirty=False
                     return
             time.sleep(.05)
 

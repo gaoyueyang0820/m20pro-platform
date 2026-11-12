@@ -576,6 +576,7 @@ class Autonomy:
         sensing_lost=None;recovery_frames=0;recovery_stamp=None;ground_waiting=False;environment_waiting=False
         no_passage_since=None
         pump=None;pump_generation=None;pump_capture_id=None;consumed_sequence=None;last_cache_state=None;scanning=False
+        tracking_command=None
         captured_context=self.context
         source_role=self.app.hub.connections.value.get('sensor_source','nos')
         def fetch_observation(description,stop):
@@ -650,9 +651,21 @@ class Autonomy:
                         self.observation_pump=pump
                         pump_capture_id=self.capture_id
                         pump_generation=pump.start(dict(run_id=run_id,capture_id=self.capture_id))
-                cached=pump.read(pump_generation,consumed_sequence)
+                reuse=mode=='explore' and tracking_command is not None and sensing_lost is None and not ground_waiting
+                cached=pump.read(pump_generation,consumed_sequence,fresh_only=reuse)
                 if cached['state'] in ['context_changed','generation_changed']:
                     raise OperationCancelled(cached.get('error') or '自主感知连接代际已变化')
+                if reuse and cached['state']=='cached':
+                    # One certified trajectory per scan. Holding the command
+                    # between frames preserves its original observation lease.
+                    forward,side,yaw,deadline=tracking_command
+                    driven=self._drive(run_id,forward,yaw,min(deadline,cached['valid_until']),side=side)
+                    if driven is False:return
+                    if driven is None:
+                        tracking_command=None;completion.reset()
+                        sensing_lost=time.monotonic();recovery_frames=0;recovery_stamp=None
+                    time.sleep(.04);continue
+                tracking_command=None
                 scan=cached['observation']
                 if scan is None:
                     completion.reset()
@@ -663,7 +676,9 @@ class Autonomy:
                             if self.run_id==run_id:self.message='等待地面扫描恢复，恢复后自动继续'
                         time.sleep(.04);continue
                     sensing_lost=sensing_lost or time.monotonic();recovery_frames=0;recovery_stamp=None
-                    if self.state=='preparing' and now-waiting<20 or time.monotonic()-sensing_lost<5:
+                    transient=(mode=='explore' and (cached['state'] in ['waiting','expired']
+                               or cached.get('error_kind') in ['transport','sync_pending']))
+                    if transient or self.state=='preparing' and now-waiting<20 or time.monotonic()-sensing_lost<5:
                         if cached['state']!=last_cache_state:
                             if not self._drive(run_id,0,0):return
                         last_cache_state=cached['state']
@@ -682,8 +697,7 @@ class Autonomy:
                     if recovery_frames<2:
                         if not self._drive(run_id,0,0):return
                         time.sleep(.02);continue
-                    if ground_waiting:
-                        progress=MotionProgress();ground_waiting=False
+                    progress=MotionProgress();ground_waiting=False;sensing_lost=None
                 with self.app.lock:
                     if not self.active or self.run_id!=run_id:return
                     self.scan=scan;self.scan_timing=dict(scan.get('_timing',{}),cache_wait_ms=round(scan.get('_cache_wait_ms',0),1),
@@ -868,6 +882,10 @@ class Autonomy:
                     with self.app.lock:
                         if self.run_id==run_id:self.map_view=dict(explorer.view(),controller=trajectory_detail)
                 if driven is False:return
+                if (driven is True and mode=='explore' and trajectory_verified and trajectory_detail.get('state')=='tracking'
+                        and any([forward,side,yaw]) and valid_until is not None
+                        and explorer.recovery is None and not explorer.recovery_pending and not scanning):
+                    tracking_command=(forward,side,yaw,valid_until)
                 if driven is None:
                     completion.reset()
                     sensing_lost=sensing_lost or time.monotonic();recovery_frames=0;recovery_stamp=None

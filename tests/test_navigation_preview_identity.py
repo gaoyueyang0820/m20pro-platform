@@ -34,10 +34,14 @@ class PreviewIdentityTests(unittest.TestCase):
         with self.assertRaises(NavigationEvidenceError) as caught:a.plan_goal(dict(map_id='test',x=1,y=0))
         self.assertEqual(caught.exception.navigation['reason_code'],'active_grid_unverified')
     def test_valid_map_is_bound_to_the_returned_preview(self):
-        a=self.ready();p=a.plan_goal(dict(map_id='test',x=1,y=0))
+        a=self.ready()
+        with patch('m20.navigation_planner.GridPlanner',side_effect=AssertionError('native must plan onboard')):
+            p=a.navigation_request('plan',dict(map_id='test',x=1,y=0))
+        self.assertTrue(p['plan_on_start'])
+        self.assertEqual(p['path'],[])
         self.assertEqual(p['map_identity'],dict(map_name='test',grid_id=0))
         self.assertEqual(self.calls.count('/maps/list'),2);self.assertEqual(a.link.sent,[])
-    def test_operator_goal_previews_and_starts_on_gos_with_a_legacy_request(self):
+    def test_explicit_gos_goal_previews_and_starts_onboard(self):
         a=self.ready();previous=a.proxy
         goal=dict(x=1,y=0,yaw=0)
         def proxy(role,path,*args,**kwargs):
@@ -48,10 +52,12 @@ class PreviewIdentityTests(unittest.TestCase):
             return previous(role,path,*args,**kwargs)
         a.proxy=proxy
         with patch('m20.navigation_planner.GridPlanner',side_effect=AssertionError('preview must run on GOS')):
-            plan=a.navigation_request('plan',dict(map_id='test',x=1,y=0,engine='platform'))
+            plan=a.navigation_request('plan',dict(map_id='test',x=1,y=0,engine='gos'))
         self.assertEqual(plan['execution'],'gos_trajectory')
         a._start_gos_route=Mock(return_value={'ok':True})
-        a.navigation_request('goal',dict(map_id='test',plan_id=plan['plan_id'],engine='native'))
+        with self.assertRaisesRegex(ValueError,'寻路方式已改变'):
+            a.navigation_request('goal',dict(map_id='test',plan_id=plan['plan_id'],engine='native'))
+        a.navigation_request('goal',dict(map_id='test',plan_id=plan['plan_id'],engine='gos'))
         args=a._start_gos_route.call_args.args
         self.assertEqual(args[0]['disconnect_policy'],'stop')
         self.assertEqual(args[2]['points'][0]['x'],1)
@@ -59,7 +65,7 @@ class PreviewIdentityTests(unittest.TestCase):
     def test_map_switch_during_preview_does_not_publish_old_plan(self):
         a=self.ready();proxy=a.proxy
         def changed(role,path,*args,**kwargs):
-            if path=='/sensors/observation':self.library['active']='other-map'
+            if path=='/maps/list' and self.calls:self.library['active']='other-map'
             return proxy(role,path,*args,**kwargs)
         a.proxy=changed
         with self.assertRaises(NavigationEvidenceError):a.plan_goal(dict(map_id='test',x=1,y=0))

@@ -216,7 +216,13 @@ class PCDTests(unittest.TestCase):
 
 
 class ConnectionTests(unittest.TestCase):
-    def setUp(self):self.tmp=tempfile.TemporaryDirectory();self.connections=Connections(self.tmp.name)
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory()
+        self.connections=Connections(self.tmp.name)
+        # These fixtures exercise direct probes and local ssh-keyscan. AOS
+        # relay negotiation is covered separately by the onboarding tests.
+        for role in ('gos','nos'):
+            self.connections.value['targets'][role]['via_aos']=False
     def tearDown(self):self.connections.close();self.tmp.cleanup()
     def test_profile_persists_without_exposing_tokens(self):
         c=self.connections

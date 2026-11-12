@@ -16,10 +16,14 @@ from m20.local_trajectory import TrajectoryFollower,LocalSurface,wrap
 from m20.latest_observation import LatestObservationPump, ObservationContextChanged
 from m20.navigation_detour import plan_local_detour
 from m20.navigation_validation import poses_consistent
-from m20.observation_errors import GroundObservationPending
+from m20.observation_errors import GroundObservationPending, ObservationSyncPending
 from m20.navigation_planner import GridPlanner
 from m20.platform_core import age_of
 from m20.start_recovery_runtime import plan_with_recovery, TranslationRecovery
+
+
+class NavigationObservationPending(ValueError):
+    """Keep the goal while stopped and waiting for a fresh paired observation."""
 
 
 def stationary_feedback(link, after=0.):
@@ -79,6 +83,7 @@ class PointNavigator:
         self.last_sensor_stamp=None
         self.motion_mode=None
         self.observations=None
+        self.last_observation_sequence=None
         self.worker=None
 
     def current(self,token):
@@ -118,6 +123,7 @@ class PointNavigator:
         self.active = True
         self.context = context
         self.last_sensor_stamp = None
+        self.last_observation_sequence = None
         self.motion_mode = None
         self.client_intent = client_intent
         self.lease = time.monotonic()
@@ -189,11 +195,15 @@ class PointNavigator:
     def _join_waypoints(self,planner,plan,index):
         points=self.nav['route']['points'];joined=copy.deepcopy(plan)
         dense=list(plan.get('dense_path') or plan['path']);goals={index:dict(plan['goal'])};covered=index
+        # Bound speculative look-ahead as a whole. A long patrol starts on
+        # its ready prefix and plans later legs when approaching them.
+        deadline=time.monotonic()+.15
         for following in range(index+1,len(points)):
-            if self._stops_at(covered):break
+            budget=deadline-time.monotonic()
+            if budget<=0 or self._stops_at(covered):break
             previous=goals[covered];point=points[following]
             try:segment=planner.plan([previous['x'],previous['y'],previous.get('yaw') or 0.],
-                                     [point['x'],point['y']],point.get('yaw'),budget=.15,goal_tolerance=.65)
+                                     [point['x'],point['y']],point.get('yaw'),budget=budget,goal_tolerance=.65)
             except ValueError:break
             dense.extend((segment.get('dense_path') or segment['path'])[1:]);goals[following]=dict(segment['goal']);covered=following
         joined.update(dense_path=dense,path=[dict(x=p['x'],y=p['y']) for p in dense],route_through=covered)
@@ -275,7 +285,7 @@ class PointNavigator:
                 elif age_of(loc)>1:
                     reason='等待机内地图定位回报超时'
                 elif loc.get('items',{}).get('Location')!=0:
-                    raise ValueError('机内地图定位未就绪')
+                    reason='等待机内地图定位恢复'
                 elif age_of(native)>2:
                     if 'query' not in commands:commands['query']=time.monotonic();link.command(1007,1,{},'平台导航核对任务')
                 elif native.get('items',{}).get('Status') not in [0,4]:raise ValueError('原厂仍有活动导航任务')
@@ -324,31 +334,39 @@ class PointNavigator:
         if self.observations is None:
             result=self._fetch_scan(self.last_sensor_stamp)
         else:
-            current = self.observations.read()
+            current = self.observations.read(after_sequence=self.last_observation_sequence,fresh_only=True)
+            if current['state']=='cached':
+                # Transport retains the last command only until the unchanged
+                # observation deadline. Do not rescore or validate this scan.
+                return None,None
             result = current['observation']
             if result is None:
                 reason = current.get('error') or '等待新鲜雷达观测'
                 if current.get('error_kind') == 'ground_pending':
                     raise GroundObservationPending(reason, current['reason_code'])
+                if current.get('state') in ('waiting','expired') or current.get('error_kind') in ('sync_pending','transport'):
+                    raise NavigationObservationPending(reason)
                 raise ValueError(reason)
         rec=app.link.record(1002,4);v=rec.get('items',{}).get('MotionStatus',{})
         loc=app.link.record(1007,2)
-        if age_of(loc)>1 or loc.get('items',{}).get('Location')!=0:raise ValueError('定位丢失或过期')
-        if age_of(rec)>.25:raise ValueError('等待新鲜运动反馈')
+        if age_of(loc)>1 or loc.get('items',{}).get('Location')!=0:raise NavigationObservationPending('等待地图定位恢复')
+        if age_of(rec)>.25:raise NavigationObservationPending('等待新鲜运动反馈')
         vx,vy,omega=[v.get(k) for k in ['LinearX','LinearY','OmegaZ']]
         if not all(isinstance(value,(int,float)) and math.isfinite(value) for value in [vx,vy,omega]):raise ValueError('等待有效运动反馈')
         pp=loc['items'];sp=result.get('pose',[])
         age=max(0.,.65+time.monotonic()-result['_valid_until']) if '_valid_until' in result else float(result.get('age',0.))
         # Compare at a common time using measured motion. This is only a
         # residual check: never move the paired scan pose/cloud or its expiry.
-        if len(sp)!=3:raise ValueError(result.get('pose_error') or '雷达位姿无效')
+        if len(sp)!=3:raise NavigationObservationPending(result.get('pose_error') or '等待与雷达匹配的地图位姿')
         evidence=dict(age=age_of(loc),pose=[pp.get('PosX'),pp.get('PosY'),pp.get('Yaw')],velocity_body=[vx,vy],yaw_rate=omega,motion_age=age_of(rec))
         if not poses_consistent(sp,age,evidence):
-            raise ValueError('雷达与地图定位坐标不同步')
+            raise NavigationObservationPending('雷达与地图定位不同步，正在等待新观测')
         result['_velocity_body']=[vx,vy];result['_speed_mps']=math.hypot(vx,vy)
+        result['_motion_feedback_at']=rec.get('monotonic_at')
         avoidance=app.link.record(2002,1)
         result['_vendor_avoidance']=(age_of(avoidance)<1.35 and avoidance.get('items',{}).get('ObsState')==1)
         self.last_sensor_stamp=result.get('stamp')
+        self.last_observation_sequence=result.get('_pump_sequence')
         return result,omega
 
     def _drive(self,token,axes,scan):
@@ -363,6 +381,9 @@ class PointNavigator:
                 if time.monotonic()>=scan.get('_valid_until',0):axes=[0.,0.,0.]
             self.app.set_velocity(dict(zip(['forward','side','yaw'],axes)),autonomous=True,valid_until=scan.get('_valid_until'))
             return list(axes)
+
+    def _trajectory_follower(self):
+        return TrajectoryFollower()
 
     def _run(self,token,map_,plan):
         app=self.app
@@ -383,7 +404,7 @@ class PointNavigator:
                 initial_result=self._plan_from_local_observation(token,map_,planner,route['points'][self.nav['index']])
             preview_recovery=initial_result.get('recovery',{})
             initial_path=preview_recovery.get('global_plan',initial_result)
-            route_index=self.nav.get('index',0);route_goals={};covered=route_index;final_yaw=None;follower=TrajectoryFollower()
+            route_index=self.nav.get('index',0);route_goals={};covered=route_index;final_yaw=None;follower=self._trajectory_follower()
             follower.straight_clearance=planner.straight_clearance
             def install_path(new):
                 nonlocal covered,final_yaw,route_goals
@@ -423,12 +444,16 @@ class PointNavigator:
                 self.check(token);now=time.monotonic()
                 try:scan,yaw_rate=self._scan()
                 except (ValueError,TypeError) as exc:
-                    sensor_lost=sensor_lost or now;self._drive(token,[0,0,0],{})
+                    if sensor_lost is None:
+                        sensor_lost=now;self._drive(token,[0,0,0],{})
                     progress.observe_command([0.,0.,0.],now)
-                    self._update(token,message='等待感知恢复：'+str(exc),execution_state='waiting_progress')
-                    if now-sensor_lost>5 and not isinstance(exc,GroundObservationPending):raise
+                    self._update(token,message=str(exc)+'，恢复后继续原任务',execution_state='waiting_progress')
+                    if now-sensor_lost>5 and not isinstance(exc,(GroundObservationPending,ObservationSyncPending,NavigationObservationPending)):raise
                     time.sleep(.08);continue
-                self.check(token);sensor_lost=None
+                if scan is None:time.sleep(.025);continue
+                self.check(token)
+                if sensor_lost is not None:
+                    progress=MotionProgress();sensor_lost=None
                 if scan.get('stamp')==last_stamp:time.sleep(.025);continue
                 last_stamp=scan.get('stamp');pose=scan['pose']
                 while route_index<len(route['points'])-1 and not self._stops_at(route_index) and math.dist(pose[:2],[goal['x'],goal['y']])<.25:
@@ -479,33 +504,41 @@ class PointNavigator:
                             fresh=install_path(fresh);self._update(token,plan=fresh)
                     start_checked=True
                 if local_pending and recovery is None:
+                    candidate=None
+                    # Rejoin a proven route if it opened up, then look for a
+                    # short local bypass before repeating the full map search.
+                    if route_first and route_index<=covered and self._rejoin_live_route(planner,follower,scan,[goal['x'],goal['y']]):
+                        local_pending=False;route_first=False
+                        self._update(token,phase='tracking',message='已找到通往原路线的安全接续段')
+                        continue
+                    try_local_first=standing and route_index<=covered and len(local_tried)<2
+                    if try_local_first:
+                        candidate=plan_local_detour(scan,[goal['x'],goal['y']],tried=local_tried,avoid_axes=avoid_axes)
                     if route_first:
                         route_first=False;last_replan=now
-                        if route_index<=covered and self._rejoin_live_route(planner,follower,scan,[goal['x'],goal['y']]):
-                            local_pending=False
-                            self._update(token,phase='tracking',message='已找到通往原路线的安全接续段')
-                            continue
-                        update_dynamic(scan,now)
-                        try:
-                            new=plan_with_recovery(planner,pose,[goal['x'],goal['y']],goal['yaw'],
-                                                   projected,localization,standing,budget=.55)
-                        except ValueError:
-                            new=None
-                        self.check(token)
-                        if new:
-                            goal=dict(new['goal'])
-                            if new.get('recovery',{}).get('required'):
-                                recovery=TranslationRecovery(new['recovery'],now=time.monotonic())
-                            else:
-                                new=install_path(new)
-                            local_pending=False
-                            self._update(token,plan=new,phase='tracking',message='已按当前障碍调整通往目标的路线',
-                                         replans=self.nav.get('replans',0)+1)
-                            continue
-                    candidate=plan_local_detour(scan,[goal['x'],goal['y']],tried=local_tried,avoid_axes=avoid_axes) if standing else None
+                        if candidate is None:
+                            update_dynamic(scan,now)
+                            try:
+                                new=plan_with_recovery(planner,pose,[goal['x'],goal['y']],goal['yaw'],
+                                                       projected,localization,standing,budget=.55)
+                            except ValueError:
+                                new=None
+                            self.check(token)
+                            if new:
+                                goal=dict(new['goal'])
+                                if new.get('recovery',{}).get('required'):
+                                    recovery=TranslationRecovery(new['recovery'],now=time.monotonic())
+                                else:
+                                    new=install_path(new)
+                                local_pending=False
+                                self._update(token,plan=new,phase='tracking',message='已按当前障碍调整通往目标的路线',
+                                             replans=self.nav.get('replans',0)+1)
+                                continue
+                    if standing and not try_local_first:
+                        candidate=plan_local_detour(scan,[goal['x'],goal['y']],tried=local_tried,avoid_axes=avoid_axes)
                     self.check(token)
                     if candidate:
-                        local_plan=candidate;local_follower=TrajectoryFollower()
+                        local_plan=candidate;local_follower=self._trajectory_follower()
                         local_follower.set_path(candidate['path']);local_pending=False
                         self._update(token,phase='local_bypass',message='正在绕开当前障碍，目的地保持不变',
                                      recovery=dict(state='following_local_path',**candidate))
@@ -608,12 +641,19 @@ class PointNavigator:
             self.check(token)
             try:
                 scan, _ = self._scan()
+                if scan is None:
+                    raise NavigationObservationPending('等待新的雷达观测')
                 stamp=scan['stamp']
                 if stamp in seen or after_stamp is not None and stamp <= after_stamp:
                     raise ValueError('等待航点作业后的新雷达观测')
                 projected, localization = self.app.navigation_surface(map_['id'], scan)
                 surface=planner.update_live_surface(projected, localization)
                 seen.add(stamp)
+            except (NavigationObservationPending,GroundObservationPending,ObservationSyncPending) as exc:
+                if time.monotonic()>=deadline:
+                    self._update(token,phase='waiting_observation',execution_state='waiting_progress',message=str(exc))
+                time.sleep(.08)
+                continue
             except ValueError:
                 if time.monotonic() >= deadline:
                     raise

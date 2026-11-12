@@ -27,7 +27,7 @@ ROOT=Path(__file__).resolve().parents[1]
 MARKER='PORTABLE_WORKER_RESULT='
 GROUPS={
     'algorithms':['test_autonomy_recovery','test_exploration_frontiers','test_exploration_completion','test_exploration_control_v3',
-                  'test_local_trajectory','test_local_surface_cache','test_exploration_flow','test_follow_control','test_exploration_view',
+                  'test_local_trajectory','test_motion_response','test_local_surface_cache','test_exploration_flow','test_follow_control','test_exploration_view',
                   'test_recovery_issuance','test_precise_clearance.PreciseClearanceTests',
                   'test_control_clock','test_terrain_profiles','test_pose_monitor','test_greeting','test_greeting_cli'],
     'navigation':['test_navigation_planner','test_navigation_planning_v3','test_live_surface_localization',

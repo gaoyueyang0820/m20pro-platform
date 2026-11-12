@@ -6,6 +6,7 @@ they never become traversable. Costs use graph distance, not a straight line
 through walls. All coordinates here are integer world-grid cells.
 """
 from collections import deque
+from functools import lru_cache
 import heapq
 import math
 
@@ -27,6 +28,13 @@ def ray_cells(a,b):
         elif left<right:x+=sx;ix+=1
         else:y+=sy;iy+=1
         yield (x,y)
+
+
+@lru_cache(maxsize=16)
+def view_rays(reach):
+    """Relative ray cells are identical at every candidate viewpoint."""
+    ends=((round(reach*math.cos(i*2*math.pi/48)),round(reach*math.sin(i*2*math.pi/48))) for i in range(48))
+    return tuple(tuple(ray_cells((0,0),end)) for end in ends)
 
 
 def reachable(start,allowed,resolution):
@@ -89,17 +97,14 @@ class FrontierSelector:
     def information(self,p,free,obstacles,within,prior_kind=None):
         """Bounded occlusion-aware ray estimate in m² (not wall-clock scans)."""
         unknown=set();new_old_map=set();visible=set();reach=round(2.4/self.res)
-        for i in range(48):
-            angle=i*2*math.pi/48
-            end=(p[0]+round(reach*math.cos(angle)),p[1]+round(reach*math.sin(angle)))
-            for q in ray_cells(p,end):
+        x,y=p
+        for ray in view_rays(reach):
+            for dx,dy in ray:
+                q=(x+dx,y+dy)
                 if not within(q) or q in obstacles:break
-                if q in free:
-                    visible.add(q)
-                    if prior_kind and prior_kind(q)=='unknown':new_old_map.add(q)
-                else:
-                    unknown.add(q)
-                    if prior_kind and prior_kind(q)=='unknown':new_old_map.add(q)
+                if q in visible or q in unknown:continue
+                (visible if q in free else unknown).add(q)
+                if prior_kind and prior_kind(q)=='unknown':new_old_map.add(q)
         return len(unknown)*self.res**2,len(new_old_map)*self.res**2,visible
 
     def select(self,start,yaw,allowed,free,obstacles,within,now,prior_kind=None,possible=None,visited=()):

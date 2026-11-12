@@ -2,7 +2,7 @@
 
 Independent implementation of sampled-trajectory scoring, inspired by Nav2's
 path/obstacle critics (see reference/autonomy-v3-sources.md). This is not MPPI,
-nor a trained policy. Predictions are kinematic, never hardware calibration.
+nor a trained policy. Optional measured response ranks admissible commands.
 All candidate footprints stay on currently measured floor. No actuator I/O.
 """
 import math
@@ -11,6 +11,7 @@ import copy
 import threading
 from collections import OrderedDict
 import numpy as np
+from m20.motion_response import AXES
 from m20.robot_geometry import CLEARANCE_HALF_LENGTH, CLEARANCE_HALF_WIDTH, BODY_HALF_LENGTH, BODY_HALF_WIDTH
 
 RES=.2
@@ -138,7 +139,7 @@ def dense_polyline(path,spacing=.12):
 
 
 class TrajectoryFollower:
-    def __init__(self,forward_limit=.35,yaw_limit=.7):
+    def __init__(self,forward_limit=.35,yaw_limit=.7,*,motion_response=None):
         self.forward_limit=float(forward_limit);self.yaw_limit=float(yaw_limit)
         self.previous=np.zeros(3);self.gain=np.array([1.,1.,1.])
         self.path=np.empty((0,2));self.index=0;self.plan_key=None;self.last={}
@@ -146,6 +147,15 @@ class TrajectoryFollower:
         self.terminal=True;self.last_handoff_pose=None
         self.path_repair_stamp=None;self.path_repair_attempts=0;self.path_repair_anchor=None
         self.straight_clearance=None
+        self.motion_response=dict(motion_response or {})
+
+    def _response_preference(self,axes,direction,desired_yaw):
+        # A learned response may rank already validated choices. The original
+        # trajectory, footprint, braking model and axis limits are independent.
+        difference=[v*(self.motion_response.get(AXES[2*i+(v<0)],1.)-1.) for i,v in enumerate(axes)]
+        along=difference[0]*direction[0]+difference[1]*direction[1]
+        turning=math.copysign(1.,desired_yaw)*difference[2] if abs(desired_yaw)>.1 else 0.
+        return max(-.12,min(.12,.35*along+.12*turning))
 
     def set_path(self,path,*,terminal=True,start_pose=None):
         candidate=dense_polyline(path)
@@ -337,6 +347,7 @@ class TrajectoryFollower:
                 if not surface.valid(px,py,angle):valid[i]=False;continue
                 if allowed_pose is not None and not allowed_pose(pose[0]+c*px-s*py,pose[1]+s*px+c*py,wrap(pose[2]+angle)):
                     valid[i]=False
+        direction=target/max(.1,float(np.linalg.norm(target))) if self.motion_response else None
         for i in np.flatnonzero(valid):
             track=trajectories[i];last=track[-1]
             distances=np.linalg.norm(local-last[:2],axis=1);closest=int(np.argmin(distances))
@@ -349,6 +360,8 @@ class TrajectoryFollower:
             cost[i]=(3.2*float(np.linalg.norm(target-last[:2]))+1.4*distances[closest]-.8*progress
                      +(.95 if at_goal else .45)*align+clearance+.10*np.linalg.norm(candidates[i]-self.previous)
                      +(.12 if candidates[i,0]<0 else 0)+.08*abs(candidates[i,1]))
+            if direction is not None:
+                cost[i]-=self._response_preference(candidates[i],direction,desired)
         cost[~valid]=np.inf
         best=int(np.argmin(cost));self.last['candidate_count']=n;self.last['valid_candidates']=int(valid.sum())
         if not np.isfinite(cost[best]):

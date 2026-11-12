@@ -103,6 +103,7 @@ class RobotLink(original.M20Link):
         self._observation_deadline = None
         self._vel_monotonic=0.;self._zero_until=0.
         self.last_axis_send=0.
+        self._axis_run=None
         super().__init__(ip, port)
         threading.Thread(target=self._poll, daemon=True).start()
 
@@ -195,10 +196,17 @@ class RobotLink(original.M20Link):
         return True
 
     def _send_axis(self, f, s, y):
-        sent = super()._send_axis(f, s, y)
-        if sent:
-            self.last_axis_send = time.monotonic()
-        return sent
+        with self.drive_lock:
+            sent = super()._send_axis(f, s, y)
+            if sent:
+                at=time.monotonic();axes=(f,s,y);previous=self._axis_run
+                since=(previous[1] if previous and previous[0]==axes and at-previous[2]<=.12 else at)
+                self._axis_run=(axes,since,at)
+                self.last_axis_send=at
+            return sent
+
+    def axis_run(self):
+        with self.drive_lock:return self._axis_run
 
     def release_axis_stream(self):
         """Hand off an already stationary robot to its onboard controller."""

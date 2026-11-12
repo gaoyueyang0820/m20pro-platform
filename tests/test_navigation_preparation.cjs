@@ -16,6 +16,7 @@ function fixture(){
   goalSubmitting:false,goalReplanning:false,goalPlanBusy:false,goalPlanError:'',goalPlanDiagnostics:null,goalPlan:{plan_id:'OLD'},goalPlanKey:'',mapLibrary:{active:'room',maps:[{name:'room',grids:[0]}]},
   ui:{},$:s=>nodes.get(s),text:(id,value)=>{if(nodes.has('#'+id))nodes.get('#'+id).textContent=value;},
   goalKey:()=>[ctx.mapId,ctx.points[0]?.x,ctx.points[0]?.y,ctx.pointNavigationEngine].join('|'),navigationMapReady:()=>true,
+  goalNavigationEngine:()=>nodes.get('#route-navigation-engine')?.value||'native',
   routeOptions:()=>({nav_mode:1,speed:1}),invalidateGoalPlan:()=>{ctx.goalPlan=null;ctx.goalPlanKey='';},
   paintGoalPlan:()=>{nodes.get('[data-ui="go-goal"]').disabled=!ctx.goalPlan||!ctx.navigationMapReady();},drawMap(){},update(){},render(){},toast(){},fetchState:async()=>{},runRoute(){},
   window:{addEventListener:(event,fn)=>{(events[event]||=[]).push(fn);}},
@@ -35,6 +36,8 @@ function fixture(){
  };
  ctx.api=async(path,data,quiet,options)=>{calls.push({path,data,options});return responder(path,data,options);};
  ctx.fetch=async(path,options)=>{const data=JSON.parse(options.body);calls.push({path,data,options});const result=await responder(path,data,options);return {ok:true,json:async()=>result};};
+ const workflows=fs.readFileSync('platform_web/workflows.js','utf8');
+ vm.runInContext(workflows.slice(workflows.indexOf('function patrolNeedsGos'),workflows.indexOf('function navigationIntent')),ctx);
  vm.runInContext(fs.readFileSync('platform_web/navigation_preparation.js','utf8'),ctx);
  return {ctx,nodes,calls,events,setResponder:fn=>{const previous=responder;responder=(...args)=>fn(...args,previous);},emit:(name,target={})=>{for(const fn of events[name]||[])fn({target,code:target.code});}};
 }
@@ -50,7 +53,7 @@ test('painting, polling and selection do not initialize localization or start na
 test('explicit goal start recovers then uses a newly planned id, never the old preview',async()=>{
  const f=fixture();await f.ctx.ui['go-goal']();
  assert.deepEqual(paths(f),['/api/platform','/api/maps/localize-auto','/api/operations?id=recover','/api/platform','/api/nav/plan','/api/nav/goal']);
- assert.equal(f.calls.at(-1).data.plan_id,'NEW');assert.equal(f.calls.at(-1).data.engine,'gos');
+ assert.equal(f.calls.at(-1).data.plan_id,'NEW');assert.equal(f.calls.at(-1).data.engine,'native');
  assert.equal(f.ctx.window.M20NavigationPreparation.state,null);assert.equal(f.ctx.goalSubmitting,false);
 });
 test('ready or demo navigation still replans but does not start a localization operation',async()=>{
@@ -275,18 +278,18 @@ test('automatic localization recovery cannot late-start after cancellation',asyn
  const work=f.ctx.ui['go-goal']();await tick();await f.ctx.ui['cancel-nav']();gate.resolve({jobs:{status:'completed',result:{localized:true}}});await work;
  assert.equal(plans,1);assert.equal(started(f),false);
 });
-test('ordinary patrol previews its first leg and executes on GOS',async()=>{
+test('ordinary patrol prepares its first goal and executes on the native planner',async()=>{
  const f=fixture();f.ctx.S.pose.Location=0;f.ctx.S.routes[0].points=[{x:2,y:1,yaw:1,type:0},{x:3,y:2,yaw:2,type:1}];
  await f.ctx.runRoute('route');const plan=f.calls.find(r=>r.path==='/api/nav/plan'),start=f.calls.find(r=>r.path==='/api/nav/start');
- assert.equal(plan.data.engine,'gos');assert.equal(plan.data.yaw,null);
- assert.equal(start.data.engine,'gos');assert.equal(start.data.plan_id,undefined);
+ assert.equal(plan.data.engine,'native');assert.equal(plan.data.yaw,null);
+ assert.equal(start.data.engine,'native');assert.equal(start.data.plan_id,undefined);
 });
-test('a legacy native patrol uses GOS unless it contains a charging waypoint',async()=>{
+test('legacy patrol uses native navigation and bypasses preview for a charging waypoint',async()=>{
  for(const docking of [false,true]){
   const f=fixture();f.ctx.S.pose.Location=0;f.ctx.S.routes[0].options.engine=docking?'platform':'native';
   if(docking)f.ctx.S.routes[0].points.push({x:3,y:2,type:3});
   await f.ctx.runRoute('route');assert.equal(f.calls.some(r=>r.path==='/api/nav/plan'),!docking);
-  assert.equal(f.calls.at(-1).data.engine,docking?'native':'gos');assert.equal(f.calls.at(-1).data.plan_id,undefined);
+  assert.equal(f.calls.at(-1).data.engine,'native');assert.equal(f.calls.at(-1).data.plan_id,undefined);
  }
 });
 test('stored patrol keeps its first waypoint while same-map sync canonicalizes the cache id',async()=>{
@@ -300,7 +303,7 @@ test('stored patrol keeps its first waypoint while same-map sync canonicalizes t
  await f.ctx.runRoute('route');const first=f.calls.find(r=>r.path==='/api/nav/plan');
  assert.equal(first.data.map_id,'canonical');assert.equal(first.data.x,2);assert.equal(first.data.y,1);
  assert.equal(f.calls.at(-1).path,'/api/nav/start');assert.equal(f.calls.at(-1).data.id,'route');
- assert.equal(f.calls.at(-1).data.engine,'gos');
+ assert.equal(f.calls.at(-1).data.engine,'native');
 });
 test('cancel during same-map automatic sync cannot adopt a late map or start navigation',async()=>{
  const f=fixture();f.ctx.S.pose.Location=0;f.ctx.S.maps[0].verified_for_robot=false;f.ctx.navigationMapReady=()=>false;f.ctx.navigationMapCanPrepare=()=>true;let complete;
@@ -310,6 +313,7 @@ test('cancel during same-map automatic sync cannot adopt a late map or start nav
 });
 test('a recoverable patrol planning conflict is handled before the final route start',async()=>{
  const f=fixture();f.ctx.S.pose.Location=0;let planned=0;
+ f.ctx.S.routes[0].options={nav_mode:1,speed:1,engine:'gos',explicit_execution:true};
  f.setResponder((path,data,options,previous)=>{if(path==='/api/nav/plan'&&planned++===0)throw Object.assign(Error('map overlap'),{navigation:{recommended_action:'relocalize_and_replan'}});return previous(path);});
  await f.ctx.runRoute('route');assert.equal(planned,2);assert.equal(f.calls.filter(r=>r.path==='/api/maps/localize-auto').length,1);
  assert.equal(f.calls.at(-1).path,'/api/nav/start');assert.equal(f.calls.at(-1).data.engine,'gos');

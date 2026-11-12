@@ -28,7 +28,8 @@ document.addEventListener('click',async e=>{const b=e.target.closest('[data-lear
 let goalPlan=null,goalPlanKey='',goalPlanBusy=false,goalPlanError='',goalPlanGeneration=0,goalSubmitting=false;
 let goalPlanDiagnostics=null;
 let goalPlanRequest=null,goalReplanning=false;
-function goalKey(){if(page!=='navigation'||navIntent!=='goal'||points.length!==1)return '';return [mapId,points[0].x,points[0].y,$('#goal-yaw-mode')?.value,$('#goal-yaw')?.value].join('|');}
+function goalNavigationEngine(){return S.mode!=='demo'&&$('#route-navigation-engine')?.value==='gos'?'gos':'native';}
+function goalKey(){if(page!=='navigation'||navIntent!=='goal'||points.length!==1)return '';return [mapId,points[0].x,points[0].y,$('#goal-yaw-mode')?.value,$('#goal-yaw')?.value,goalNavigationEngine()].join('|');}
 function validGoalPlan(){return !!(goalKey()&&goalPlan&&goalKey()===goalPlanKey&&performance.now()-goalPlan.received<55000);}
 function invalidateGoalPlan(){
  goalPlanGeneration++;goalPlan=null;goalPlanKey='';goalPlanError='';goalPlanDiagnostics=null;$('#goal-plan-preview')?.remove();$('#goal-recovery-preview')?.remove();
@@ -42,7 +43,7 @@ async function refreshGoalPlan(){
  const request={controller:new AbortController(),timedOut:false};goalPlanRequest=request;
  request.timer=setTimeout(()=>{request.timedOut=true;request.controller.abort();},15000);
  try{const manual=$('#goal-yaw-mode')?.value==='manual',degrees=+($('#goal-yaw')?.value||0);const yaw=manual?(((degrees+180)%360+360)%360-180)*Math.PI/180:null;
-  const r=await api('/api/nav/plan',{map_id:mapId,x:points[0].x,y:points[0].y,yaw,engine:S.mode==='demo'?'native':'gos'},true,{signal:request.controller.signal});if(generation===goalPlanGeneration&&goalKey()===key)goalPlan={...r,received:performance.now()};
+  const r=await api('/api/nav/plan',{map_id:mapId,x:points[0].x,y:points[0].y,yaw,engine:goalNavigationEngine()},true,{signal:request.controller.signal});if(generation===goalPlanGeneration&&goalKey()===key)goalPlan={...r,received:performance.now()};
  }catch(err){if(generation===goalPlanGeneration&&goalKey()===key){goalPlanError=request.timedOut?'规划请求超时，请检查平台连接后点击“重新规划”':err.message;goalPlanDiagnostics=err.navigation||null;}}
  finally{clearTimeout(request.timer);if(goalPlanRequest===request){goalPlanRequest=null;goalPlanBusy=false;paintGoalPlan();drawMap();}}
 }
@@ -80,10 +81,10 @@ function paintGoalPlan(){
  if(page!=='navigation'||navIntent!=='goal')return;const key=goalKey();
  const valid=validGoalPlan(),ready=navigationMapReady(),active=['running','cancelling'].includes(S.nav.status);
  const reason=!ready?'请先同步当前活动地图':goalSubmitting?'正在提交导航，请稍候':goalReplanning?'正在重新规划，请稍候':active?'当前导航尚未结束':!key?'请先选定目标':goalPlanBusy?'正在规划，请稍候':!valid?goalPlanError||'请等待有效路线或重新规划':'';
- const b=$('[data-ui="go-goal"]');if(b){const disabled=!!reason;if(b.disabled!==disabled)b.disabled=disabled;b.title=reason||'沿预览路径执行导航';}
+ const b=$('[data-ui="go-goal"]');if(b){const disabled=!!reason;if(b.disabled!==disabled)b.disabled=disabled;b.title=reason||'前往所选目标';}
  const replan=$('[data-ui="goal-replan"]');if(replan){replan.disabled=!key||goalReplanning||goalSubmitting;replan.title=!key?'请先选择目标':goalReplanning?'正在重新规划':'重新计算当前目标的路线';}
- const description=goalPlan?.needs_local_plan?'GOS 将先用机内雷达核对起点，再规划通路':valid?goalPlan.length_m+' 米 · '+Math.max(0,goalPlan.points.length-1)+' 个参考折点 · 到达朝向 '+(goalPlan.goal.yaw*180/Math.PI).toFixed(0)+'°':'等待规划';
- const message=!key?'在地图上选定目标，自动规划预览路径':goalPlanBusy?'正在检查通路与转弯空间…':goalPlanError||description;
+ const description=goalPlan?.plan_on_start?'目标已选定':goalPlan?.needs_local_plan?'GOS 将用机内雷达规划通路':valid?goalPlan.length_m+' 米 · '+Math.max(0,goalPlan.points.length-1)+' 个参考折点 · 到达朝向 '+(goalPlan.goal.yaw*180/Math.PI).toFixed(0)+'°':'等待规划';
+ const message=!key?'在地图上选定目标':goalPlanBusy?'正在准备目标…':goalPlanError||description;
  const recovery=valid&&goalPlan.recovery?.required?` · 起点先平移退让 ${Math.round(goalPlan.recovery.recovery_distance_m*100)} 厘米再执行导航`:'';
  text('goal-plan-status',message+recovery+(valid&&S.mode==='live'?' · '+goalPlan.obstacle_note:''));
  paintGoalDiagnostics();
@@ -107,12 +108,12 @@ ui['go-goal']=async()=>{
  if(!navigationMapReady())throw Error('请先同步当前活动地图');
  if(['running','cancelling'].includes(S.nav.status))throw Error('请先结束当前导航');
  goalSubmitting=true;paintGoalPlan();
- try{const r=await api('/api/nav/goal',{map_id:mapId,plan_id:goalPlan.plan_id,engine:S.mode==='demo'?'native':'gos',disconnect_policy:'stop'});await fetchState();toast(r.message);}finally{goalSubmitting=false;paintGoalPlan();}
+ try{const r=await api('/api/nav/goal',{map_id:mapId,plan_id:goalPlan.plan_id,engine:goalNavigationEngine(),disconnect_policy:'stop'});await fetchState();toast(r.message);}finally{goalSubmitting=false;paintGoalPlan();}
 };
 const plannedDraw=drawMap;drawMap=function(){plannedDraw();$('#goal-plan-preview')?.remove();$('#goal-recovery-preview')?.remove();if(page!=='navigation'||navIntent!=='goal')return;const m=selectedMap(),svg=$('#nav-map');if(!m||!svg)return;
  const p=(S?.nav?.engine==='platform'||S?.nav?.executor==='gos')&&S.nav.status==='running'?S.nav.plan:goalKey()&&goalKey()===goalPlanKey?goalPlan:null;if(!p?.path?.length)return;
  const line=document.createElementNS('http://www.w3.org/2000/svg','polyline');line.id='goal-plan-preview';line.setAttribute('points',p.path.map(v=>[(v.x-m.origin[0])/m.resolution,m.height-(v.y-m.origin[1])/m.resolution].join(',')).join(' '));line.setAttribute('fill','none');line.setAttribute('stroke','#2d9675');line.setAttribute('stroke-width','3');line.setAttribute('stroke-linejoin','round');line.setAttribute('pointer-events','none');svg.append(line);
  if(p.recovery?.required&&p.recovery.prefix?.length){const prefix=document.createElementNS('http://www.w3.org/2000/svg','polyline');prefix.id='goal-recovery-preview';prefix.setAttribute('points',p.recovery.prefix.map(v=>[(v.x-m.origin[0])/m.resolution,m.height-(v.y-m.origin[1])/m.resolution].join(',')).join(' '));prefix.setAttribute('fill','none');prefix.setAttribute('stroke','#c78b26');prefix.setAttribute('stroke-width','4');prefix.setAttribute('stroke-dasharray','5 3');prefix.setAttribute('pointer-events','none');svg.append(prefix);}
 };
-document.addEventListener('change',e=>{if(['goal-yaw','goal-yaw-mode'].includes(e.target.id)){if($('#goal-yaw-field'))$('#goal-yaw-field').hidden=$('#goal-yaw-mode').value!=='manual';invalidateGoalPlan();paintGoalPlan();drawMap();}});
+document.addEventListener('change',e=>{if(['goal-yaw','goal-yaw-mode','route-navigation-engine'].includes(e.target.id)){if($('#goal-yaw-field'))$('#goal-yaw-field').hidden=$('#goal-yaw-mode').value!=='manual';invalidateGoalPlan();paintGoalPlan();drawMap();}});
 setInterval(()=>{if(document.hidden||goalReplanning)return;const key=goalKey();if(key&&!goalPlanBusy&&(key!==goalPlanKey||goalPlan&&performance.now()-goalPlan.received>55000)&&!['running','cancelling'].includes(S?.nav?.status))refreshGoalPlan();},300);

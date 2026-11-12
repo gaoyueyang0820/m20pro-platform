@@ -213,15 +213,17 @@ class Explorer:
     def plan(self):
         start = cell(*self.last_pose[:2])
         support=body_offsets(self.last_pose[2],True);footprint=body_offsets(self.last_pose[2])
-        allowed = {p for p in self.free if all((p[0]+dx,p[1]+dy) in self.free for dx,dy in support)
-                   and not any((p[0]+dx,p[1]+dy) in self.obstacles for dx,dy in footprint)
-                   and math.hypot(p[0]*RESOLUTION-self.origin[0],p[1]*RESOLUTION-self.origin[1]) <= self.radius}
+        within=lambda p: math.hypot(p[0]*RESOLUTION-self.origin[0],p[1]*RESOLUTION-self.origin[1])<=self.radius
+        def is_allowed(p):
+            return (p in self.free and within(p)
+                    and all((p[0]+dx,p[1]+dy) in self.free for dx,dy in support)
+                    and not any((p[0]+dx,p[1]+dy) in self.obstacles for dx,dy in footprint))
         if self.prior:
             self.prior.bind(self.initial_pose)
             # Old occupancy guides what to revisit, not whether a currently
             # measured corridor exists. Live floor/obstacles decide traversal;
             # permanent map changes still require the separate evidence policy.
-        if start not in allowed:
+        if not is_allowed(start):
             self.path=[]
             self.plan_state='recovering' if self._recovery_available() else 'blocked';return self.plan_state
         can_forward=clearance(self.current_scan,.1,0)[0]
@@ -233,10 +235,10 @@ class Explorer:
             f,s=self._translation(error)
             return self._inside_bound(f,s) and clearance(self.current_scan,f,0,side=s)[0]
         existing_heading=math.atan2(self.path[min(2,len(self.path)-1)][1]*RESOLUTION-self.last_pose[1],self.path[min(2,len(self.path)-1)][0]*RESOLUTION-self.last_pose[0]) if self.path else 0
-        if self.goal in allowed and self.goal not in self.visited and self.path and all(p in allowed for p in self.path) and possible(existing_heading):
+        if self.path and self.goal is not None and self.goal not in self.visited and is_allowed(self.goal) and all(map(is_allowed,self.path)) and possible(existing_heading):
             self.plan_state='planned';return 'planned'
         self.replans += 1
-        within=lambda p: math.hypot(p[0]*RESOLUTION-self.origin[0],p[1]*RESOLUTION-self.origin[1])<=self.radius
+        allowed={p for p in self.free if is_allowed(p)}
         prior_kind=(lambda p:self.prior.kind(p[0]*RESOLUTION,p[1]*RESOLUTION)) if self.prior else None
         selected=self.frontiers.select(start,self.last_pose[2],allowed,self.free,self.obstacles,within,
                     self.last_stamp if self.last_stamp is not None else time.monotonic(),prior_kind,possible,self.visited)
