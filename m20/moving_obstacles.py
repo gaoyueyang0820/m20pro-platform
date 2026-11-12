@@ -127,7 +127,8 @@ class MovingObstacles:
             cleared = {world(p) for p in scan['floor']} if sample_due or not valid_stamp else set()
         cleared = cleared-current
         if not valid_stamp:
-            return ObstacleObservation(current, set(), set(), cleared)
+            # Without timing there is no evidence that an object moved.
+            return ObstacleObservation(current, current, set(), cleared)
         if stamp != self.last_stamp:
             self.last_stamp, self.pose, self.context = stamp, (x,y,yaw), context
         for track in self.tracks:
@@ -158,7 +159,7 @@ class MovingObstacles:
                 track.samples.append((stamp, *center))
                 track.current = footprint
                 moving, stationary = track.motion()
-                track.moving |= moving
+                track.moving = track.moving or bool(moving)
                 if track.moving:
                     track.pending.clear()
                 elif stationary:
@@ -175,4 +176,4 @@ class MovingObstacles:
             if track.moving:
                 temporary.update(track.current)
         return ObstacleObservation(current, confirmed, temporary, cleared,
-                                   sum(track.moving for track in self.tracks))
+                                   sum(bool(track.moving) for track in self.tracks))
