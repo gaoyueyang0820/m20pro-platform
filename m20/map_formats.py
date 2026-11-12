@@ -195,6 +195,16 @@ def unpack_package(path,destination,name):
     return dict(ok=True,name=name,activated=False,files=info['files'])
 
 
+def make_map_readable(folder):
+    """Give the NOS service access to a newly staged map, without following links."""
+    for directory,_,files in os.walk(folder,followlinks=False):
+        path=Path(directory)
+        path.chmod(stat.S_IMODE(path.stat().st_mode)|0o055)
+        for name in files:
+            file=path/name;mode=file.lstat().st_mode
+            if stat.S_ISREG(mode):file.chmod(stat.S_IMODE(mode)|0o044)
+
+
 def pack_map(folder,output):
     folder=Path(folder).resolve()
     if not (folder/'full_cloud.pcd').is_file() or not (folder/'occ_grid.pgm').is_file():

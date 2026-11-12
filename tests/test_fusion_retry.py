@@ -6,8 +6,9 @@ from unittest.mock import patch
 
 import numpy as np
 from bridge.mapping_job import retry_context, worker
-from bridge.root_actions import _map_readable
-from m20.map_fusion import voxel
+from m20.map_formats import make_map_readable
+from m20.map_fusion import read_grid, read_pcd, voxel
+from m20.map_refinement import _publish_refinement
 
 
 class FusionRetryTests(unittest.TestCase):
@@ -17,7 +18,7 @@ class FusionRetryTests(unittest.TestCase):
             cloud=folder/'full_cloud.pcd';cloud.touch(mode=0o600)
             private=Path(temp)/'outside';private.touch(mode=0o600)
             (folder/'link').symlink_to(private)
-            _map_readable(folder)
+            make_map_readable(folder)
             self.assertEqual(folder.stat().st_mode&0o777,0o755)
             self.assertEqual(cloud.stat().st_mode&0o777,0o644)
             self.assertEqual(private.stat().st_mode&0o777,0o600)
@@ -26,6 +27,26 @@ class FusionRetryTests(unittest.TestCase):
         points=np.empty((0,4),np.float32)
         with patch('numpy.unique',side_effect=ValueError('cannot reshape array of size 0 into shape (0,newaxis)')):
             self.assertEqual(voxel(points).shape,(0,4))
+
+    def test_refinement_with_only_confirmed_grid_changes_keeps_existing_cloud(self):
+        from test_map_fusion import fixture
+        with tempfile.TemporaryDirectory() as temp:
+            base=Path(temp)/'base';candidate=Path(temp)/'candidate'
+            old=np.array([[.2,.3,.1,25.],[.5,.6,.1,10.]],np.float32)
+            fixture(base,old)
+            grid=read_grid(base)
+            evidence=dict(points=np.empty((0,3),np.float32),image=np.full((2,2),254,np.uint8),
+                          free_updated=1,occupied_added=0,latest_stamp=50,origin=[0,0,0],
+                          confirmed_cells=[],old_offset=[0,0])
+            with patch('m20.map_refinement.collect_evidence',return_value=evidence), \
+                    patch('m20.map_refinement.validate_refinement_structure',return_value={}), \
+                    patch('m20.map_visibility.confirmed_surface_removals',return_value=(np.zeros(len(old),bool),{})), \
+                    patch('numpy.unique',side_effect=AssertionError('empty geometry should not be deduplicated')):
+                result=_publish_refinement(base,Path(temp),candidate,0,'fixture',[],[],grid,old,{})
+            self.assertEqual(result['map'],'candidate')
+            np.testing.assert_array_equal(read_pcd(candidate/'full_cloud.pcd'),old)
+            self.assertEqual(read_grid(candidate)['image'][0,0],254)
+            self.assertEqual(read_grid(base)['image'][0,0],0)
 
     def test_retry_uses_retained_input_and_never_calls_vendor_stop(self):
         with tempfile.TemporaryDirectory() as temp:
