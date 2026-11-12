@@ -145,6 +145,7 @@ class TrajectoryFollower:
         self.path_arc=np.empty(0);self.progress_pose=None;self.goal_braking=False
         self.terminal=True;self.last_handoff_pose=None
         self.path_repair_stamp=None;self.path_repair_attempts=0;self.path_repair_anchor=None
+        self.straight_clearance=None
 
     def set_path(self,path,*,terminal=True,start_pose=None):
         candidate=dense_polyline(path)
@@ -176,7 +177,7 @@ class TrajectoryFollower:
 
     def command(self,scan,yaw_rate=0.,goal_yaw=None,allowed_pose=None):
         started=time.perf_counter();pose=np.asarray(scan['pose'],dtype=float)
-        self.last.update(zero_reason=None,terminal_path=self.terminal,needs_continuation=False)
+        self.last.update(zero_reason=None,terminal_path=self.terminal,needs_continuation=False,policy='sampled_trajectory')
         if len(pose)!=3 or not np.isfinite(pose).all():raise ValueError('位姿无效')
         feedback=self._feedback(scan,yaw_rate)
         if feedback is None:return self._result([0,0,0],'waiting_feedback','等待新鲜运动反馈',[],started)
@@ -243,6 +244,11 @@ class TrajectoryFollower:
         surface=LocalSurface.cached(scan)
         f=self.forward_limit;t=self.yaw_limit
         terminal=remaining_path<.9
+        if not terminal and self.straight_clearance is not None:
+            straight=self._straight_corridor(pose,feedback,local,arc,surface,remaining_path,reaction,deceleration)
+            if straight is not None:
+                self.last.update(policy='straight_corridor',candidate_count=1,valid_candidates=1)
+                return self._result([f,0.,0.],'tracking','沿通路直行',straight,started)
         if terminal:
             # Solve v*T + v^2/(2*a) <= available distance, using a 2x input
             # response floor until the measured gain is known. Preserve useful
@@ -356,6 +362,29 @@ class TrajectoryFollower:
         elif abs(axes[1])>.05:reason='侧移绕开障碍'
         elif axes[2]:reason='沿弧线转向' if axes[0] else '转向下一段通路'
         return self._result(axes,state,reason,trajectories[best].tolist(),started)
+
+    def _straight_corridor(self, pose, feedback, local, arc, surface, remaining, reaction, deceleration):
+        vx,vy,yaw_rate = feedback
+        if vx<-.02 or abs(vy)>.04 or abs(yaw_rate)>.06:
+            return None
+        speed = max(vx,self.forward_limit*self.gain[0])
+        # A command may live through one observation lease. Certify that
+        # translation plus its braking envelope as a single swept rectangle.
+        hold = .65+reaction
+        length = speed*hold+speed**2/(2*deceleration)
+        if length+.25 >= remaining:
+            return None
+        end = min(len(local),int(np.searchsorted(arc,length+.25,side='left'))+1)
+        ahead = local[:end]
+        if len(ahead)<2 or ahead[-1,0]<length or np.max(np.abs(ahead[:,1]))>.08 or np.any(np.diff(ahead[:,0])<-.01):
+            return None
+        radius = math.hypot(CLEARANCE_HALF_LENGTH,CLEARANCE_HALF_WIDTH)
+        margin = .02+abs(vy)*hold+(length+radius)*abs(yaw_rate)*hold
+        if not surface.valid(length/2,0.,0.,padding=(length/2+margin,margin)):
+            return None
+        if not self.straight_clearance(pose,length,margin):
+            return None
+        return [[0.,0.,0.],[float(length),0.,0.]]
 
     def _result(self,axes,state,reason,trajectory,started):
         if not any(axes) and self.last.get('zero_reason') is None:

@@ -126,6 +126,7 @@ class GridPlanner:
         self.static_speckles.update(planning_cells=int(self.soft_cells.sum()),cost_radius_m=round(rings*self.res,3))
         self.overlay=set();self.grid_revision=0
         self.masks={};self._rotations={};self._potential_cache={}
+        self._straight_certificate=None
         self.occupied_thresh=occupied_thresh;self.free_thresh=free_thresh
         self.self_projection_ignored=0;self._deadline=None;self._potential_expanded=0
         self.live_surface=None;self._live_revision=0;self._planning_revision=None
@@ -291,6 +292,29 @@ class GridPlanner:
     def pose_fits(self,x,y,yaw):
         return self._rectangle_free(x,y,yaw,CLEARANCE_HALF_LENGTH,CLEARANCE_HALF_WIDTH)
 
+    def straight_clearance(self, pose, length, margin):
+        self._expire_live_surface()
+        x,y,yaw=pose
+        c,s=math.cos(yaw),math.sin(yaw)
+        centre=(x+length/2*c,y+length/2*s)
+        halfx,halfy=CLEARANCE_HALF_LENGTH+length/2+margin,CLEARANCE_HALF_WIDTH+margin
+        previous=self._straight_certificate
+        if previous and previous[0]==self.grid_revision:
+            _,px,py,angle,hx,hy=previous
+            dx,dy=centre[0]-px,centre[1]-py
+            along=dx*math.cos(angle)+dy*math.sin(angle)
+            across=-dx*math.sin(angle)+dy*math.cos(angle)
+            a,b=abs(math.cos(yaw-angle)),abs(math.sin(yaw-angle))
+            if abs(along)+halfx*a+halfy*b<=hx and abs(across)+halfx*b+halfy*a<=hy:
+                return True
+        # Extend the checked map rectangle forward a little so the next few
+        # control updates can reuse it. The live envelope is checked separately.
+        cx,cy=centre[0]+.25*c,centre[1]+.25*s
+        if self._rectangle_free(cx,cy,yaw,halfx+.25,halfy+.015):
+            self._straight_certificate=(self.grid_revision,cx,cy,yaw,halfx+.25,halfy+.015)
+            return True
+        return self._rectangle_free(*centre,yaw,halfx,halfy)
+
     def segment_fits(self,a,b,yaw=None):
         """Continuous swept body; not a point/ray test and never through unknown."""
         dx,dy=b[0]-a[0],b[1]-a[1];length=math.hypot(dx,dy)
@@ -323,10 +347,11 @@ class GridPlanner:
         def value(tx,ty):
             expansions=0
             while queue and not closed[ty,tx]:
+                # Leave the frontier intact when a bounded search is retried.
+                if expansions%256==0:self._check_time()
                 cost,x,y=heapq.heappop(queue)
                 if closed[y,x] or cost!=d[y,x]:continue
                 closed[y,x]=True;expansions+=1
-                if expansions%256==0:self._check_time()
                 # Reverse edge charges the forward destination's clearance cost.
                 penalty=1+.18/max(.1,self.clearance[y,x])+self.soft_cost[y,x]
                 for dx,dy in ((1,0),(-1,0),(0,1),(0,-1),(1,1),(1,-1),(-1,1),(-1,-1)):
@@ -443,6 +468,119 @@ class GridPlanner:
                     seen.add((nx,ny));todo.append((nx,ny))
         return sorted(result)
 
+    def _wide_corridor(self, start, goal, yaw, budget):
+        """A fast 2-D guide followed by checks of complete body sweeps."""
+        import numpy as np
+        if self.h*self.w>650_000:
+            return None
+        until=min(self._deadline,time.monotonic()+min(.4,.35*float(budget)))
+        first=self.cell(*start[:2]);last=self.cell(*goal)
+        for stride in (2,1):
+            h,w=self.h//stride,self.w//stride
+            begin=(first[0]//stride,first[1]//stride);end=(last[0]//stride,last[1]//stride)
+            if max(begin[0],end[0])>=w or max(begin[1],end[1])>=h:
+                continue
+            # A coarse block is free only when every underlying cell is free.
+            # Its guide never tunnels through a thin wall between samples.
+            coarse=self.free[:h*stride,:w*stride].reshape(h,stride,w,stride).all(axis=(1,3))
+            clearance=self.clearance[:h*stride:stride,:w*stride:stride]
+            soft=self.soft_cost[:h*stride:stride,:w*stride:stride]
+            weights=(1+.12/np.maximum(clearance,.1)+soft).tolist()
+            reference=None
+            for width in (0.,.4,.5,.6):
+                free=coarse&(clearance>=width)
+                if not (free[begin[1],begin[0]] and free[end[1],end[0]]):
+                    continue
+                guide=self._grid_guide(begin,end,free.tolist(),weights,until,self.res*stride)
+                if guide is None:
+                    break
+                cells,expanded=guide
+                points=[tuple(start[:2]),*(self.world(x*stride,y*stride) for x,y in cells[1:-1]),tuple(goal)]
+                if reference is None:
+                    reference=sum(math.dist(a,b) for a,b in zip(points,points[1:]))
+                checked=self._corridor_poses(start,goal,yaw,points,until)
+                if checked is None:
+                    continue
+                poses,chords=checked
+                length=sum(math.dist(a[:2],b[:2]) for a,b in zip(poses,poses[1:]))
+                if length<=reference*1.08+.25:
+                    return poses,expanded,chords
+        return None
+
+    def _grid_guide(self, first, last, free, weights, until, step_size):
+        gx,gy=last
+        h,w=len(free),len(free[0])
+        lower=min(min(row) for row in weights)*step_size
+        diagonal=math.sqrt(2)-1
+        distance={first:0.};parent={}
+        queue=[(0.,0.,first)];expanded=0
+        moves=[(dx,dy,math.hypot(dx,dy)*step_size)
+               for dx in (-1,0,1) for dy in (-1,0,1) if dx or dy]
+        while queue:
+            if time.monotonic()>=until:
+                return None
+            _,negative,node=heapq.heappop(queue)
+            cost=-negative
+            if cost!=distance.get(node):
+                continue
+            expanded+=1
+            if node==last:
+                break
+            x,y=node
+            for dx,dy,step in moves:
+                nx,ny=x+dx,y+dy
+                if not (0<=nx<w and 0<=ny<h and free[ny][nx]):
+                    continue
+                if dx and dy and not (free[y][nx] and free[ny][x]):
+                    continue
+                candidate=cost+step*weights[ny][nx];neighbor=(nx,ny)
+                if candidate>=distance.get(neighbor,math.inf):
+                    continue
+                distance[neighbor]=candidate;parent[neighbor]=node
+                a,b=abs(gx-nx),abs(gy-ny)
+                heuristic=(max(a,b)+diagonal*min(a,b))*lower
+                heapq.heappush(queue,(candidate+heuristic,-candidate,neighbor))
+        else:
+            return None
+        cells=[last]
+        while cells[-1]!=first:
+            cells.append(parent[cells[-1]])
+        cells.reverse()
+        return cells,expanded
+
+    def _corridor_poses(self, start, goal, yaw, points, until):
+        prefix=[0.]
+        for a,b in zip(points,points[1:]):
+            prefix.append(prefix[-1]+math.dist(a,b)+self._segment_soft_cost(a,b))
+        poses=[tuple(start)];index=0;heading=start[2];chords=0
+        while index<len(points)-1:
+            if time.monotonic()>=until:
+                return None
+            a=points[index]
+            # Try longer chords first. The fallback lattice retains the exact
+            # footprint search for corners with less turning space.
+            choices=list(range(min(len(points)-1,index+64),index+1,-4))+[index+1]
+            for target in choices:
+                b=points[target];length=math.dist(a,b)
+                if length<1e-8:
+                    index=target
+                    break
+                angle=math.atan2(b[1]-a[1],b[0]-a[0])
+                if (length+self._segment_soft_cost(a,b)>1.04*(prefix[target]-prefix[index])+.02
+                        or not self.segment_fits(a,b,angle)
+                        or not self.world_rotation_fits(a,heading,angle)):
+                    continue
+                poses.extend([(*a,angle),(*b,angle)])
+                index=target;heading=angle;chords+=1
+                break
+            else:
+                return None
+        if yaw is not None:
+            if not self.world_rotation_fits(goal,heading,yaw):
+                return None
+            poses.append((*goal,yaw))
+        return poses,chords
+
     def plan(self,start,goal,yaw=None,budget=3.,*,goal_tolerance=None):
         with self.planning_snapshot():
             return self._plan_with_snapshot(start,goal,yaw,budget,goal_tolerance=goal_tolerance)
@@ -492,13 +630,27 @@ class GridPlanner:
         if not self.free[gy,gx]:raise ValueError('目标落在障碍、未知区域或边界，请选择附近已知空地')
         if not self.pose_fits(*start):raise ValueError('机器人起点过于靠近障碍，无法规划当前姿态；请核对定位或移到空地')
         line_yaw=math.atan2(goal[1]-start[1],goal[0]-start[0]) if math.dist(start[:2],goal)>.001 else start[2]
-        final_yaw=line_yaw if yaw is None else yaw
         soft_direct=self._segment_soft_cost(start,goal)>.01
-        if (not soft_direct and self.segment_fits(start,goal,line_yaw) and self.world_rotation_fits(start,start[2],line_yaw)
-                and self.world_rotation_fits(goal,line_yaw,final_yaw)):
-            self._check_time()
-            return self._result([tuple(start),(start[0],start[1],line_yaw),(goal[0],goal[1],line_yaw),
-                                 (goal[0],goal[1],final_yaw)],goal,0,dict(method='continuous_direct',shortcuts=1,planning_ms=round((time.monotonic()-began)*1000,2)))
+        if not soft_direct:
+            length=math.dist(start[:2],goal)
+            choices=[]
+            for reverse,heading in ((False,line_yaw),(True,line_yaw+math.pi)):
+                final=heading if yaw is None else yaw
+                turns=sum(abs(math.atan2(math.sin(v),math.cos(v))) for v in (heading-start[2],final-heading))
+                choices.append((length*(1.25 if reverse else 1.)+turns/math.pi,reverse,heading,final))
+            for _,reverse,heading,final in sorted(choices):
+                if (self.segment_fits(start,goal,heading) and self.world_rotation_fits(start,start[2],heading)
+                        and self.world_rotation_fits(goal,heading,final)):
+                    self._check_time()
+                    return self._result([tuple(start),(start[0],start[1],heading),(goal[0],goal[1],heading),
+                                         (goal[0],goal[1],final)],goal,0,
+                                        dict(method='continuous_reverse' if reverse else 'continuous_direct',
+                                             shortcuts=1,planning_ms=round((time.monotonic()-began)*1000,2)))
+        wide=self._wide_corridor(start,goal,yaw,budget)
+        if wide is not None:
+            poses,expanded,chords=wide
+            return self._result(poses,goal,expanded,dict(method='wide_corridor',shortcuts=chords,
+                              planning_ms=round((time.monotonic()-began)*1000,2)))
         gh=None if yaw is None else round(yaw/(math.pi/4))%8
         candidates=[h for h in range(8) if self.fits(gx,gy,h*4) and (gh is None or gh==h and self.rotation_fits(gx,gy,h*math.pi/4,yaw))]
         if not candidates:raise GoalSpaceError('目标周围空间不足以容纳机器人，请离墙或障碍远一些')

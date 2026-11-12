@@ -3,7 +3,7 @@ import json
 import os
 from urllib.request import Request,urlopen
 from urllib.error import HTTPError,URLError
-from m20.observation_errors import sync_error
+from m20.observation_errors import BridgeTransportError,sync_error
 
 
 class SensorClient:
@@ -18,7 +18,7 @@ class SensorClient:
             pending=sync_error(payload,path,data)
             if pending:raise pending
             raise ValueError(message)
-        except (URLError,OSError):raise ValueError('只读感知服务尚未就绪，请更新 NOS/GOS 平台服务')
+        except (URLError,OSError):raise BridgeTransportError('只读感知服务暂时未响应')
         if not result.get('ok'):
             pending=sync_error(result,path,data)
             if pending:raise pending

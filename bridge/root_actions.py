@@ -24,6 +24,9 @@ def run(argv):
 def _execute(req,maps,data):
     action=req.get('action')
     if action in ['apply','mapping','extend_mapping','localize_auto']:
+        from bridge.resident_mission import held_map_lease
+        if held_map_lease(data):
+            raise ValueError('GOS 导航正在使用活动地图，请先结束任务')
         resident=read_json(data/'resident-mission.json',{})
         if resident.get('job') and resident.get('phase') not in ['completed','cancelled','failed','idle']:
             raise ValueError('驻机导航任务或停车状态尚未确认，请先结束任务再切图、建图或重定位')

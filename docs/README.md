@@ -9,6 +9,7 @@
 - [自主作业与地图更新](autonomous-operations.md)：探索、原图续建、日常行走更新、人员跟随。
 - [地图管理](map-library.md)：搜索、改名、版本启用、恢复和删除。
 - [导航断联策略](disconnected-navigation.md)：后台任务与机器人驻机执行。
+- 机内导航、云台动作、人数和设备读数。 [GOS 自主寻路与到点作业](gos-patrol.md)
 - [打招呼](greeting.md)：页面操作和独立命令行。
 
 ## 开发与维护

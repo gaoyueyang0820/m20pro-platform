@@ -100,23 +100,27 @@ class MapService:
         return dict(ok=True,maps=result,active=active.name if active.is_dir() else None,management_version=1,catalog_integrity_protocol=1,activation_handoff_protocol=1,permanent_delete_supported=True,trash_count=len(catalog.trash_list()),
                     disk=dict(total=usage.total,free=usage.free),demo=self.demo)
 
-    def grid(self,name='active',grid_id=0):
+    def grid_files(self,name='active',grid_id=0):
         if not isinstance(grid_id,int) or isinstance(grid_id,bool) or not 0<=grid_id<=999:raise ValueError('栅格编号无效')
         folder=self.path(name)
         stem='occ_grid'+('_'+str(grid_id) if grid_id else '')
         if grid_id==0 and not (folder/(stem+'.pgm')).is_file():stem='occ_grid_0'
-        yaml=(folder/(stem+'.yaml')).read_text()
+        return folder, folder/(stem+'.pgm'), folder/(stem+'.yaml')
+
+    def grid(self,name='active',grid_id=0):
+        folder,pgm,yaml_file=self.grid_files(name,grid_id)
+        yaml_bytes=yaml_file.read_bytes()
+        yaml=yaml_bytes.decode()
         resolution=re.search(r'^resolution:\s*([\d.eE+-]+)',yaml,re.M)
         origin=re.search(r'^origin:\s*\[([^\]]+)\]',yaml,re.M)
         if not resolution or not origin:raise ValueError('地图配置缺少分辨率或原点')
-        pgm=folder/(stem+'.pgm')
         if pgm.stat().st_size>12_000_000:raise ValueError('栅格超过 12 MB，请先降采样后编辑')
         return dict(ok=True,name=MapCatalog(self.maps).labels().get(folder.name,folder.name),robot_map_name=folder.name,grid_id=grid_id,
                     negate=int(re.search(r'^negate:\s*([01])',yaml,re.M)[1]) if re.search(r'^negate:\s*([01])',yaml,re.M) else 0,
                     free_thresh=float(re.search(r'^free_thresh:\s*([\d.]+)',yaml,re.M)[1]) if re.search(r'^free_thresh:\s*([\d.]+)',yaml,re.M) else .196,
                     occupied_thresh=float(re.search(r'^occupied_thresh:\s*([\d.]+)',yaml,re.M)[1]) if re.search(r'^occupied_thresh:\s*([\d.]+)',yaml,re.M) else .65,
                     resolution=float(resolution.group(1)),origin=[float(x) for x in origin.group(1).split(',')],
-                    pgm=base64.b64encode(pgm.read_bytes()).decode(),yaml_sha256=hashlib.sha256((folder/(stem+'.yaml')).read_bytes()).hexdigest(),active=folder==(self.maps/'active').resolve())
+                    pgm=base64.b64encode(pgm.read_bytes()).decode(),yaml_sha256=hashlib.sha256(yaml_bytes).hexdigest(),active=folder==(self.maps/'active').resolve())
 
     def privileged(self,action,req):
         payload=dict(action=action,**req)

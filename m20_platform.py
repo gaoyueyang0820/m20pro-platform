@@ -37,6 +37,9 @@ from m20.vision_models import ModelChecks, catalog as vision_catalog, default_pa
 from m20.ppe_runtime import SharedPPEDetector
 from m20.map_learning_runtime import MapLearning
 from m20.people_counting import PeopleCounter
+from m20.patrol_actions import station_spec
+from m20.point_navigation import PointNavigator, navigation_observation, stationary_feedback
+from m20.task_collectors import collector_catalog, collector_specs
 
 if not os.environ.get('M20_PPE_MODEL'):
     original.PPE_MODEL_PATH=str(default_path('ppe'))
@@ -154,7 +157,6 @@ class Platform:
         self.add_log('system', '平台已启动，当前为演示模式。运动、遥测和训练曲线为模拟数据。')
         self.hub=Hub(self)
         self.autonomy=Autonomy(self)
-        from m20.point_navigation import PointNavigator
         self.point_navigation=PointNavigator(self)
         self.model_checks=ModelChecks(self.store.path.parent)
         self.map_learning=MapLearning(self)
@@ -260,6 +262,7 @@ class Platform:
 
     def stop(self, estop=False):
         self.cancel_greeting()
+        gos_owns_axes=self.resident_navigation.gos_busy()
         if self.resident_navigation.busy():self.resident_navigation.cancel()
         self.invalidate_navigation_start()
         self.autonomy.pause()
@@ -278,7 +281,7 @@ class Platform:
             except ValueError as exc:
                 failures.append(str(exc))
         if self.link:
-            self.link.set_velocity(0, 0, 0)
+            if not gos_owns_axes:self.link.set_velocity(0, 0, 0)
             if self.nav.get('engine')=='platform':pass
             elif self.nav['status']=='running' and self.nav.get('phase') in ['validating','preparing']:
                 self.nav.update(status='cancelled',phase='stopped',execution_state='cancelled')
@@ -410,6 +413,8 @@ class Platform:
         self.greeting.cancel(reason)
 
     def set_velocity(self, req, autonomous=False, valid_until=None):
+        if self.resident_navigation.gos_busy() and not any(req.get(k,0) for k in ('forward','side','yaw')):
+            return dict(ok=True)
         if not autonomous and self.resident_navigation.busy() and any(req.get(k,0) for k in ('forward','side','yaw')):
             self.resident_navigation.cancel()
             raise ValueError('已请求驻机任务停车，停止确认前暂不可移动')
@@ -547,14 +552,19 @@ class Platform:
                               type=integer(p.get('type', 1), 0, 3)))
             if clean[-1]['type'] not in [0, 1, 3]:
                 raise ValueError('航点类型无效')
+            action=station_spec(p.get('station_action'))
+            if action:
+                if clean[-1]['type']==3:raise ValueError('充电航点不可同时执行人数统计')
+                clean[-1]['station_action']=action
             x0,y0,_ = map_['origin']
             if not (x0 <= clean[-1]['x'] <= x0+map_['width']*map_['resolution'] and
                     y0 <= clean[-1]['y'] <= y0+map_['height']*map_['resolution']):
                 raise ValueError('航点必须位于当前地图范围内')
         value = dict(id=req.get('id') or uuid.uuid4().hex[:10], name=name, points=clean,
                      map_id=map_['id'], updated=time.time())
-        if 'options' in req:
-            options=req['options']
+        previous=next((r.get('options',{}) for r in self.store.value['routes'] if r['id']==value['id']), {})
+        if 'options' in req or previous.get('collectors') or previous.get('explicit_execution'):
+            options=req.get('options',previous)
             if not isinstance(options,dict) or not isinstance(options.get('pause_at_point',False),bool):raise ValueError('路线参数无效')
             gait=options.get('gait','flat')
             if gait not in ['flat','stair']:raise ValueError('路线步态无效')
@@ -563,8 +573,18 @@ class Platform:
             from m20.navigation_disconnect import POLICIES
             if value['options']['disconnect_policy'] not in POLICIES:raise ValueError('断联策略无效')
             if 'engine' in options:
-                if options['engine'] not in ['platform','native']:raise ValueError('未知寻路方式')
+                if options['engine'] not in ['platform','native','gos']:raise ValueError('未知寻路方式')
                 value['options']['engine']=options['engine']
+            collectors=collector_specs(options.get('collectors',previous.get('collectors')))
+            if collectors:
+                if any(p['type']==3 for p in clean):
+                    raise ValueError('沿途采集与进桩请分别配置任务')
+                if options.get('engine','gos')!='gos' or value['options']['disconnect_policy']!='stop':
+                    raise ValueError('沿途采集请使用 GOS 自主寻路与断联停车')
+                value['options'].update(engine='gos',collectors=collectors)
+            if options.get('explicit_execution') is True:
+                engine, policy = self._patrol_execution(value, value['options'])
+                value['options'].update(engine=engine, disconnect_policy=policy, explicit_execution=True)
         if persist:
             self.store.value['routes'] = [r for r in self.store.value['routes'] if r['id'] != value['id']] + [value]
             self.store.save()
@@ -613,22 +633,19 @@ class Platform:
         """Pair an observed floor frame with actual independent control feedback."""
         link=self.link
         if self.demo or not link:raise ValueError('实时通行层需要实机连接')
-        scan=copy.deepcopy(scan if scan is not None else self.autonomy.scan_now(False))
-        record=link.record(1007,2);pose=record.get('items',{})
+        scan=scan if scan is not None else self.autonomy.scan_now(False)
+        result=navigation_observation(link,scan,'%s:%s:%s'%(map_id,self._plan_generation,id(link)))
         if self.link is not link:raise ValueError('连接已改变，丢弃旧扫描')
-        if '_valid_until' in scan:scan['age']=max(0.,.65+time.monotonic()-scan['_valid_until'])
-        loc=dict(normal=pose.get('Location')==0,confidence=pose.get('Confidence',0),age=age_of(record),
-                 pose=[pose.get('PosX'),pose.get('PosY'),pose.get('Yaw')],epoch='%s:%s:%s'%(map_id,self._plan_generation,id(link)))
-        motion_record=link.record(1002,4);motion=motion_record.get('items',{}).get('MotionStatus',{})
-        loc.update(velocity_body=[motion.get('LinearX'),motion.get('LinearY')],yaw_rate=motion.get('OmegaZ',0),motion_age=age_of(motion_record))
-        return scan,loc
+        return result
 
     def plan_goal(self, req):
         from m20.navigation_planner import GridPlanner,live_obstacles
         engine=req.get('engine','native')
-        if engine not in ['native','platform']:raise ValueError('未知导航执行器')
+        if engine not in ['native','platform','gos']:raise ValueError('未知导航执行器')
         x,y=number(req.get('x')),number(req.get('y'));yaw=None if req.get('yaw') is None else number(req['yaw'],-math.pi,math.pi)
         with self.lock:
+            if req.get('_start_generation',self._nav_start_generation)!=self._nav_start_generation:
+                raise ValueError('连接已改变，请重新规划')
             generation=self._plan_generation;planning_link=self.link;planning_demo=self.demo
             map_=copy.deepcopy(next((m for m in self.maps() if m['id']==req.get('map_id')),None))
             if not map_:raise ValueError('请选择地图')
@@ -652,6 +669,13 @@ class Platform:
             if updated['id']!=map_['id']:raise ValueError('地图已更新，请重新选择目标')
             map_=copy.deepcopy(updated)
         raw=source.read_bytes();fingerprint=hashlib.sha256(raw).hexdigest()
+        if engine=='gos':
+            if planning_demo:raise ValueError('GOS 寻路需要已连接的实机服务')
+            from bridge.gos_navigation import pack_grid
+            remote=self.proxy('gos','/missions/preview',dict(grid=pack_grid(raw,map_),start=start,goal=[x,y],yaw=yaw),timeout=6)
+            result=dict(remote['plan'],map_identity=verify_map(),execution='gos_trajectory',
+                        guide_points_preview_only=True,obstacle_note='GOS 开始行走后使用机内雷达实时避障')
+            return self._save_goal_plan(map_,source,fingerprint,start,result,generation,planning_link,planning_demo,engine)
         obstacles=[];obstacle_note='实时避障由机器人执行';body_pose=None
         if not self.demo and engine=='native':
             try:
@@ -723,6 +747,9 @@ class Platform:
         if result.get('self_projection_ignored'):obstacle_note='已排除机身内部的新增投影；原图墙体和前方障碍保留，机器人实时避障保持开启'
         result.update(live_obstacles=len(obstacles),obstacle_note=obstacle_note,
                       execution='platform_trajectory' if engine=='platform' else 'native_single_goal',guide_points_preview_only=engine!='platform',live_surface=planner.live_surface_status())
+        return self._save_goal_plan(map_,source,fingerprint,start,result,generation,planning_link,planning_demo,engine)
+
+    def _save_goal_plan(self,map_,source,fingerprint,start,result,generation,planning_link,planning_demo,engine):
         key=uuid.uuid4().hex
         with self.lock:
             if generation!=self._plan_generation or self.link is not planning_link or self.demo!=planning_demo:
@@ -735,6 +762,7 @@ class Platform:
     def start_goal(self, req):
         with self.lock:
             intent=self._nav_start_generation
+            if req.get('_start_generation',intent)!=intent:raise ValueError('导航启动已取消')
             client_intent=self.navigation_intents.register(req,self.instance_id,self._plan_generation)
         if not req.get('plan_id'):req=dict(req,plan_id=self.plan_goal(req)['plan_id'])
         return self._start_planned_goal(req,intent,client_intent)
@@ -760,8 +788,10 @@ class Platform:
             else:route=copy.deepcopy(route_override)
             route.update(preview_start=list(plan['start']),preview_source=plan['source'],preview_fingerprint=plan['fingerprint'],preview_path=result['path'])
         engine=req.get('engine','native')
-        if engine not in ['native','platform']:raise ValueError('未知导航执行器')
+        if engine not in ['native','platform','gos']:raise ValueError('未知导航执行器')
         if req.get('disconnect_policy','stop')!='stop' and engine!='native':raise ValueError('断联执行需使用机器人端寻路，请重新规划')
+        if engine=='gos':
+            return self._start_gos_route(dict(req,_start_generation=intent),client_intent,route,start_index)
         if engine=='platform':
             if start_index:return self.point_navigation.start(route,plan,intent,client_intent,start_index=start_index)
             return self.point_navigation.start(route,plan,intent,client_intent)
@@ -796,10 +826,117 @@ class Platform:
         plan_id=req['plan_id'] if reusable else self.plan_goal(query)['plan_id']
         return self._start_planned_goal(dict(query,plan_id=plan_id),intent,client_intent,route,start_index)
 
+    def _start_gos_route(self, req, client_intent=None, route=None, start_index=0, station_results=()):
+        with self.lock:
+            if self.demo:
+                raise ValueError('GOS 寻路需要已连接的实机服务')
+            if req.get('_start_generation', self._nav_start_generation) != self._nav_start_generation:
+                raise ValueError('导航启动已取消')
+            if client_intent is None:
+                client_intent = self.navigation_intents.register(req, self.instance_id, self._plan_generation)
+            self.navigation_intents.check(client_intent, self.instance_id, self._plan_generation)
+            self.live_ready()
+            self.hub.normal_mode()
+            self.hub.idle()
+            if self.mapping or self.reverse or self.estopped or self._reported_active_navigation():
+                raise ValueError('请结束当前任务并核对正向行走状态')
+            if any(self.velocity) or not stationary_feedback(self.link):
+                raise ValueError('请先停稳再开始 GOS 导航')
+            route = copy.deepcopy(route or next((r for r in self.store.value['routes'] if r['id']==req.get('id')), None))
+            if not route or not 0 <= start_index < len(route['points']):
+                raise ValueError('路线不存在或没有待执行航点')
+            if any(p.get('type',1) == 3 for p in route['points']):
+                raise ValueError('充电航点请使用原厂导航')
+            saved = route.get('options', {})
+            pause = req.get('pause_at_point', saved.get('pause_at_point', False))
+            if type(pause) is not bool:
+                raise ValueError('到点选项无效')
+            policy = req.get('disconnect_policy', saved.get('disconnect_policy', 'stop'))
+            if policy != 'stop':
+                raise ValueError('GOS 自主寻路目前支持断联停车')
+            selected = next((m for m in self.maps() if m['id'] == route['map_id']), None)
+            if not selected or not selected.get('verified_for_robot') or selected.get('robot_ip') != self.link.ip:
+                raise ValueError('请先同步当前活动地图')
+            nav = dict(status='running', route=route, index=start_index, completed=start_index,
+                       progress=start_index/len(route['points']), started=time.time(), pause_at_point=pause,
+                       options=dict(NavMode=1, Gait=0x3002, Speed=1, ObsMode=0, Manner=0),
+                       disconnect_policy=policy, station_results=list(station_results))
+            nav.update(self.navigation_intents.nav_fields(client_intent))
+            quiet_until = self.link.release_axis_stream()
+            previous = self.nav
+            self.nav = nav
+            try:
+                self.resident_navigation.prepared(nav, executor='gos', axis_quiet_until=quiet_until)
+            except Exception:
+                self.nav = previous
+                raise
+            return dict(ok=True, engine='resident', executor='gos', phase=nav['phase'],
+                        message=nav['message'])
+
+    @staticmethod
+    def _patrol_execution(route, options):
+        from m20.navigation_disconnect import POLICIES
+        engine = options.get('engine', 'gos')
+        policy = options.get('disconnect_policy', 'stop')
+        if engine not in ('gos', 'native', 'platform') or policy not in POLICIES:
+            raise ValueError('巡检寻路方式或断联策略无效')
+        docking = any(point.get('type') == 3 for point in route['points'])
+        actions = route.get('options', {}).get('collectors') or any(point.get('station_action') for point in route['points'])
+        if docking:
+            if actions:
+                raise ValueError('巡检采集与进桩请分别配置任务')
+            if policy != 'stop':
+                raise ValueError('含充电航点的路线使用断联停车')
+            engine = 'native'
+        if actions and engine != 'gos':
+            raise ValueError('到点任务和沿途采集需要 GOS 机载寻路')
+        if policy != 'stop':
+            if engine != 'native':
+                raise ValueError('断联后继续或返程需要原厂导航')
+            if (options.get('pause_at_point') or options.get('nav_mode', 0) != 1
+                    or options.get('gait', 'flat') != 'flat' or options.get('speed', 1) != 1
+                    or options.get('manner', 0) != 0):
+                raise ValueError('断联后继续或返程需要自动接续、原厂自主导航、低速敏捷平地及正向行走')
+        return engine, policy
+
+    def navigation_request(self, operation, req):
+        """Keep GOS as the default and honor explicitly configured patrol settings."""
+        with self.lock:
+            request=dict(req,engine='native' if self.demo else 'gos',disconnect_policy='stop',
+                         _start_generation=self._nav_start_generation)
+            demo = self.demo
+            if operation=='plan' and req.get('explicit_execution') is True:
+                engine = req.get('engine', 'gos')
+                request['engine'] = 'native' if demo and engine == 'gos' else engine
+            if operation=='start':
+                route=copy.deepcopy(next((r for r in self.store.value['routes'] if r['id']==req.get('id')),None))
+                if not route:raise ValueError('路线不存在，请先保存路线')
+                saved = route.get('options', {})
+                selected = req if req.get('explicit_execution') is True else saved
+                execution = dict(saved, **req)
+                for key, default in (('engine', 'gos'), ('disconnect_policy', 'stop')):
+                    execution[key] = selected.get(key, default) if selected.get('explicit_execution') is True else default
+                engine, policy = self._patrol_execution(route, execution)
+                request.update(engine='native' if demo and engine == 'gos' else engine, disconnect_policy=policy)
+        if operation=='plan':return self.plan_goal(request)
+        if operation=='goal':return self.start_goal(request)
+        if policy != 'stop':
+            capabilities = self.resident_navigation.capabilities()
+            if capabilities.get('available') is not True or policy not in capabilities.get('policies', []):
+                raise ValueError('NOS 驻机导航服务尚未就绪，请选择断联停车')
+        if request['engine']=='gos':return self._start_gos_route(request,route=route)
+        if request['engine']=='platform':return self._start_platform_route(request,route=route)
+        return self.start_route(request,goal=route)
+
     def start_route(self, req, goal=None,client_intent=None):
-        if goal is None and 'engine' not in req:
+        if goal is None:
             with self.lock:stored=next((r for r in self.store.value['routes'] if r['id']==req.get('id')),None)
-            if stored and stored.get('options',{}).get('engine'):req=dict(req,engine=stored['options']['engine'])
+            if stored and 'engine' not in req and stored.get('options',{}).get('engine'):
+                req=dict(req,engine=stored['options']['engine'])
+            if req.get('engine')=='gos':
+                return self._start_gos_route(req,client_intent)
+            if stored and (stored.get('options',{}).get('collectors') or any(p.get('station_action') for p in stored['points'])):
+                raise ValueError('带采集作业的巡检路线请选择 GOS 自主寻路')
         if goal is None and req.get('engine')=='platform':
             with self.lock:stored=next((r for r in self.store.value['routes'] if r['id']==req.get('id')),None)
             policy=req.get('disconnect_policy',(stored or {}).get('options',{}).get('disconnect_policy','stop'))
@@ -1087,15 +1224,21 @@ class Platform:
         else:
             self._send_point()
 
-    def _record_route_completion(self):
-        if self.nav.get('history_saved'):return
-        self.nav['history_saved']=True;self.nav['ended']=time.time()
+    def _record_route_completion(self, nav=None):
+        nav=self.nav if nav is None else nav
+        if nav.get('history_saved'):return
+        nav['history_saved']=True;nav['ended']=time.time()
         self.add_log('navigation','路线已结束，停止请求已确认')
-        self.store.value['history'].append(copy.deepcopy(self.nav))
+        self.store.value['history'].append(copy.deepcopy(nav))
         self.store.value['history']=self.store.value['history'][-50:];self.store.save()
 
     def resume_route(self):
-        if self.nav.get('engine')=='resident':raise ValueError('驻机任务停止后请重新核对状态并开始新任务')
+        if self.nav.get('engine')=='resident':
+            if self.nav.get('executor')=='gos' and self.nav.get('status')=='paused':
+                return self._start_gos_route(dict(pause_at_point=self.nav.get('pause_at_point',False)),
+                                             route=self.nav['route'],start_index=self.nav['index'],
+                                             station_results=self.nav.get('station_results',[]))
+            raise ValueError('驻机任务停止后请重新核对状态并开始新任务')
         if self._greet_busy:raise ValueError('请先停止问候动作，再继续导航')
         if self.nav.get('engine')=='platform':
             if self.nav.get('status')!='paused':raise ValueError('任务不在暂停状态')
@@ -1411,6 +1554,7 @@ class Platform:
                         estopped=self.estopped,joints=joints,sdk=sdk,nav=self.nav,faults=self.faults,
                         events=self.events,audit=self.audit[:100],maps=self.maps(),routes=self.store.value['routes'],
                         poses=self.store.value['poses'],task_history=self.store.value['history'],history=self.history,
+                        task_collectors=collector_catalog(),
                         config={role:self.hub.connections.endpoint(role)[0] if self.hub.connections.value['targets'][role]['enabled'] else self.config.get(role,'') for role in ['sdk','nos','gos','train']}, mapping=self.mapping,server_time=now,
                         raw=self.raw,
                         greeting=self.greeting.snapshot(),cameras=self.cameras.status(),autonomy=self.autonomy.snapshot(),map_learning=self.map_learning.snapshot(),vision_models=vision_catalog(),people_counts=self.people.status(),
@@ -1623,10 +1767,9 @@ class Handler(original.Handler):
                 return self._json(APP.hub.operations.submit('model-check',lambda progress:APP.model_checks.run(req.get('kind','ppe'),progress)))
             if p=='/api/maps/refinement':return self._json(APP.map_learning.control(req))
             if p=='/api/people':return self._json(APP.people.control(req))
-            if p=='/api/nav/plan':return self._json(APP.plan_goal(req))
-            if p=='/api/nav/goal':return self._json(APP.start_goal(req))
+            if p in ['/api/nav/plan','/api/nav/goal','/api/nav/start']:
+                return self._json(APP.navigation_request(p.rsplit('/',1)[-1],req))
             if p=='/api/nav/lease':return self._json(APP.point_navigation.renew(req.get('run_id')))
-            if p=='/api/nav/start':return self._json(APP.start_route(req))
             if p=='/api/nav/intent/cancel':return self._json(APP.cancel_navigation_intent(req))
             if p=='/api/nav/resume':return self._json(APP.resume_route())
             result=APP.autonomy.post(p,req)
@@ -1677,15 +1820,18 @@ class Handler(original.Handler):
                     if APP.nav['status'] in ['running','cancelling']: raise ValueError('任务运行中不能删除路线')
                     APP.store.value['routes']=[r for r in APP.store.value['routes'] if r['id']!=req.get('id')]
                     APP.store.save();result=dict(ok=True)
-                elif p=='/api/nav/goal': result=APP.start_goal(req)
                 elif p in ['/api/nav/cancel','/api/nav/pause']:
-                    result=APP.stop()
                     after='paused' if p.endswith('pause') else 'cancelled'
-                    if APP.nav.get('engine')=='platform':
-                        if APP.nav['status']=='cancelling':APP.point_navigation.after_stop=after
-                        else:APP.nav.update(status=after,phase=after,execution_state=after)
-                    elif APP.nav['status']=='cancelling': APP.nav['after_cancel']=after
-                    else: APP.nav['status']=after
+                    if APP.resident_navigation.gos_busy():
+                        APP.resident_navigation.cancel(after)
+                        result=dict(ok=True,delivery='pending',message='正在等待 GOS 确认停车')
+                    else:
+                        result=APP.stop()
+                        if APP.nav.get('engine')=='platform':
+                            if APP.nav['status']=='cancelling':APP.point_navigation.after_stop=after
+                            else:APP.nav.update(status=after,phase=after,execution_state=after)
+                        elif APP.nav['status']=='cancelling': APP.nav['after_cancel']=after
+                        else: APP.nav['status']=after
                 elif p=='/api/maps/import': result=APP.import_map(req)
                 elif p=='/api/pose/save':
                     pose=dict(id=uuid.uuid4().hex[:10],name=str(req.get('name','新姿态'))[:80],positions=list(APP.positions))

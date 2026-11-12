@@ -19,15 +19,25 @@ const roleNames={nos:'NOS · 地图与建图',sdk:'SDK · 模式与关节',train
 const connectionNames={idle:'尚未连接',connecting:'正在连接',ready:'服务在线',waiting_service:'服务无响应',unreachable:'网络未接通',stopped:'已停止',needs_setup:'需要首次配置'};
 
 function operationPanel(){return '<div class="operation-box" id="hub-operation" hidden><div><strong id="hub-op-label">后台任务</strong><span id="hub-op-percent">0%</span></div><div class="progress"><span id="hub-op-bar" style="width:0%"></span></div><p id="hub-op-message">准备中</p></div>';}
-function setOperation(label,progress,message){$('#hub-operation')?.removeAttribute('hidden');text('hub-op-label',label);text('hub-op-percent',Math.round(progress*100)+'%');text('hub-op-message',message);const bar=$('#hub-op-bar');if(bar)bar.style.width=(progress*100)+'%';}
+function setOperation(label,progress,message,status){
+ $('#hub-operation')?.removeAttribute('hidden');
+ text('hub-op-label',label);
+ text('hub-op-percent',status==='failed'?'失败':status==='completed'?'已完成':Math.round(progress*100)+'%');
+ text('hub-op-message',message);
+ const bar=$('#hub-op-bar');
+ if(bar){bar.parentElement.hidden=status==='failed';bar.style.width=(progress*100)+'%';}
+}
 async function waitJob(start,label,isCurrent=()=>true,quiet=false){
  if(!start.job_id)return isCurrent()?start:null;
+ const waitingSince=Date.now();
  for(;;){
   if(!isCurrent())return null;
   const response=await api('/api/operations?id='+encodeURIComponent(start.job_id),undefined,quiet);
   if(!isCurrent())return null;
   const job=response.jobs;
-  setOperation(label,job.progress,job.error||job.message);
+  let message=job.error||job.message;
+  if(job.status==='running'&&job.kind?.startsWith('deploy-'))message+=` · 已等待 ${Math.floor((Date.now()-waitingSince)/1000)} 秒`;
+  setOperation(label,job.progress,message,job.status);
   if(job.status==='failed')throw Error(job.error||'后台操作失败');
   if(job.status==='completed')return job.result;
   await new Promise(resolve=>setTimeout(resolve,500));
@@ -75,8 +85,9 @@ ui['connect-modal']=()=>navigate('settings');
 ui['hub-connect']=async()=>{if($('#connections-profile-form'))await api('/api/connections/save',readConnections());await api('/api/connections/connect',{mode:'live'});session=null;await fetchState();toast('正在连接机器人');};
 ui['hub-demo']=async()=>{await api('/api/connections/connect',{mode:'demo'});session=null;await fetchState();toast('已切换演示环境');};
 let setupInstallIntent=null,setupDeployBusy=false;
-function setupConnectionScope(role){const t=connections?.targets?.[role];return JSON.stringify([S?.server_instance,S?.connection_generation,connections?.aos_ip,t?.host,t?.ssh_port,t?.via_aos]);}
-function setupInstallCurrent(token){return setupInstallIntent===token&&setupGeneration===token.generation&&setupConnectionScope(token.role)===token.scope&&page===token.page&&$('#modal')?.open!==false&&(token.dialog===null||typeof mapDialogGeneration==='undefined'||mapDialogGeneration===token.dialog);}
+function setupConnectionScope(role){const t=connections?.targets?.[role];return JSON.stringify([S?.server_instance,S?.connection_generation,connections?.aos_ip,t?.host,t?.ssh_port]);}
+function setupDeviceCurrent(token){return page===token.page&&setupConnectionScope(token.role)===token.scope;}
+function setupInstallCurrent(token){return setupInstallIntent===token&&setupGeneration===token.generation&&setupDeviceCurrent(token)&&$('#modal')?.open!==false&&(token.dialog===null||typeof mapDialogGeneration==='undefined'||mapDialogGeneration===token.dialog);}
 async function setupWizard(role,{reinstall=false}={}){
  if($('#connections-profile-form')){await api('/api/connections/save',readConnections());await loadConnections();}
  const t=connections.targets[role];if(!t?.host)throw Error('尚未找到设备地址，请先自动查找机器人');
@@ -88,18 +99,26 @@ async function setupWizard(role,{reinstall=false}={}){
 }
 ui['setup-deploy']=async()=>{
  const token=setupInstallIntent;if(!token||!setupInstallCurrent(token))throw Error('连接设置已变化，请重新打开首次连接');if(setupDeployBusy)return;
- const req={role:token.role,password:$('#setup-password').value,admin_password:$('#setup-admin-password').value,confirmed:true};
+ const password=$('#setup-password'),adminPassword=$('#setup-admin-password');
+ const req={role:token.role,password:password.value,admin_password:adminPassword.value,confirmed:true};
  const button=$('[data-ui="setup-deploy"]');setupDeployBusy=true;if(button)button.disabled=true;
+ text('setup-message','');
  try{
   const user=$('#setup-user').value.trim();if(!user)throw Error('请输入设备账号');
   if($('#connections-profile-form')){const input=$('#'+token.role+'-user');if(input)input.value=user;if(token.role==='sdk'&&connections.targets.sdk.follows_aos&&$('#hub-aos-ssh-user')){$('#hub-aos-ssh-user').value=user;if(typeof paintSDKAddressFollow==='function')paintSDKAddressFollow();}await api('/api/connections/save',readConnections());}
   if(!setupInstallCurrent(token))return;
   if($('#setup-calibration')?.files[0])req.calibration=JSON.parse(await $('#setup-calibration').files[0].text());
   if(!setupInstallCurrent(token))return;
-  const result=await job('/api/connections/deploy',req,'安装并连接设备',()=>setupInstallCurrent(token));
-  if(!result||!setupInstallCurrent(token))return;
-  $('#setup-password').value='';$('#setup-admin-password').value='';$('#modal').close();setupInstallIntent=null;
-  await loadConnections(true);toast(result.message||'连接服务已就绪');
+  const result=await job('/api/connections/deploy',req,token.reinstall?'更新连接服务':'安装并连接设备',()=>setupDeviceCurrent(token));
+  if(!result||!setupDeviceCurrent(token))return;
+  const dialogOpen=setupInstallCurrent(token);
+  password.value='';adminPassword.value='';
+  if(dialogOpen)$('#modal').close();
+  if(setupInstallIntent===token)setupInstallIntent=null;
+  await loadConnections(dialogOpen);toast(result.message||'连接服务已就绪');
+ }catch(error){
+  if(setupInstallCurrent(token))text('setup-message',error.message);
+  throw error;
  }finally{setupDeployBusy=false;if(button?.isConnected!==false)button.disabled=false;}
 };
 
