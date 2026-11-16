@@ -16,6 +16,7 @@ from m20.local_trajectory import TrajectoryFollower,LocalSurface,wrap
 from m20.latest_observation import LatestObservationPump, ObservationContextChanged
 from m20.moving_obstacles import MovingObstacles
 from m20.navigation_detour import plan_local_detour
+from m20.bypass_planner import BypassPlanner
 from m20.navigation_validation import poses_consistent
 from m20.observation_errors import GroundObservationPending, ObservationSyncPending
 from m20.navigation_planner import GridPlanner
@@ -70,6 +71,25 @@ def simulated_scan(planner,pose,stamp=None):
             floor.add(q)
     measured=list(floor);floor-=obstacles;obstacles=sorted(obstacles)
     return dict(pose=list(pose),floor=list(floor),obstacles=obstacles,obstacle_bounds=[bounds[q] for q in obstacles],geometry_version=2,measured_floor=measured,stamp=stamp or time.monotonic(),demo=True,age=0)
+
+
+def bypass_margin(scan, follower):
+    """Free straight-lane distance minus the validated stopping distance.
+
+    None means the scan cannot certify a margin, so the caller must stop.
+    """
+    try:
+        from m20.local_trajectory import LocalSurface
+        ahead = LocalSurface.cached(scan).forward_obstacle()
+    except (ValueError, TypeError, KeyError):
+        return None
+    if not isinstance(ahead, (int, float)) or not math.isfinite(ahead):
+        return None
+    try:
+        stopping = float(follower.last.get('stopping_distance_m') or 0.)
+    except (TypeError, ValueError):
+        return None
+    return float(ahead) - stopping
 
 
 class PointNavigator:
@@ -410,7 +430,7 @@ class PointNavigator:
 
     def _run(self,token,map_,plan):
         app=self.app
-        pump=None
+        pump=None;bypass_planner=None
         try:
             self._prepare(token,map_);self.check(token)
             route=self.nav['route']
@@ -444,6 +464,7 @@ class PointNavigator:
             from m20.autonomy_runtime import MotionProgress
             progress=MotionProgress();last_stamp=None
             obstacle_tracks=MovingObstacles();obstacle_memory={};applied_obstacles=set()
+            bypass_planner=BypassPlanner();bypass_at=0.
             local_follower=None;local_plan=None;local_pending=False;local_tried=[];avoid_axes=None;route_first=False
             vendor_rechecked=False;last_lookahead=-math.inf
             def apply_obstacles(cells,pose):
@@ -453,13 +474,17 @@ class PointNavigator:
                     planner.update_obstacles([(x*resolution,y*resolution) for x,y in cells],robot_pose=pose)
                     applied_obstacles=cells
             def request_local(reason,failed=None,prefer_route=False):
-                nonlocal local_follower,local_plan,local_pending,avoid_axes,blocked_at,route_first
+                nonlocal local_follower,local_plan,local_pending,avoid_axes,blocked_at,route_first,bypass_at
                 if local_plan:
                     local_tried.append((local_plan['goal']['x'],local_plan['goal']['y']))
                     del local_tried[:-16]
                 local_follower=None;local_plan=None;local_pending=True;avoid_axes=failed;blocked_at=None
                 route_first=prefer_route
-                progress.recovery_started();self._drive(token,[0,0,0],scan)
+                progress.recovery_started()
+                # Prepare the bypass while the current validated command is
+                # still valid. Only a missing stopping margin forces a stop.
+                bypass_planner.submit(scan,[goal['x'],goal['y']],tried=local_tried,
+                                      avoid_axes=failed,pose=pose)
                 self._update(token,phase='finding_bypass',execution_state='waiting_progress',message=reason,
                              recovery=dict(state='choosing_local_path',original_goal=dict(goal)))
             while not app.done:
@@ -542,7 +567,7 @@ class PointNavigator:
                             fresh=install_path(fresh);self._update(token,plan=fresh)
                     start_checked=True
                 if local_pending and recovery is None:
-                    candidate=None
+                    candidate=bypass_planner.poll(pose=pose)
                     # Rejoin a proven route if it opened up, then look for a
                     # short local bypass before repeating the full map search.
                     if route_first and route_index<=covered and self._rejoin_live_route(planner,follower,scan,[goal['x'],goal['y']]):
@@ -581,14 +606,23 @@ class PointNavigator:
                         self._update(token,phase='local_bypass',message='正在绕开当前障碍，目的地保持不变',
                                      recovery=dict(state='following_local_path',**candidate))
                     else:
-                        self._drive(token,[0,0,0],scan);progress.observe_command([0.,0.,0.],now)
-                        self._update(token,phase='waiting_space',execution_state='waiting_progress',message='正在等待可通行空间，通路恢复后继续',
-                                     recovery=dict(state='waiting_for_space',original_goal=dict(goal)))
-                        # Recheck the original route as well: a person may have
-                        # moved away while the short local maneuver was pending.
-                        if now-last_replan>1.5:
-                            route_first=True
-                        time.sleep(.04);continue
+                        margin=bypass_margin(scan,follower)
+                        moving=math.hypot(*(scan.get('_velocity_body') or [0.,0.]))>.05
+                        if standing or not moving or margin is None or margin<.15:
+                            self._drive(token,[0,0,0],scan);progress.observe_command([0.,0.,0.],now)
+                            self._update(token,phase='waiting_space',execution_state='waiting_progress',message='正在等待可通行空间，通路恢复后继续',
+                                         recovery=dict(state='waiting_for_space',original_goal=dict(goal)))
+                            # Recheck the original route as well: a person may
+                            # have moved away while the bypass was pending.
+                            if now-last_replan>1.5:
+                                route_first=True
+                            time.sleep(.04);continue
+                        # Enough validated stopping room: keep tracking while the
+                        # worker finishes. Refresh its request as the scene moves.
+                        if now-bypass_at>.5:
+                            bypass_planner.submit(scan,[goal['x'],goal['y']],tried=local_tried,
+                                                  avoid_axes=avoid_axes,pose=pose)
+                            bypass_at=now
                 if recovery is not None:
                     result=recovery.command(planner,projected,localization,yaw_rate,standing=standing)
                     self.check(token)
@@ -678,6 +712,8 @@ class PointNavigator:
                     after='failed' if self.nav.get('phase')=='station_action' else 'paused'
                     self.stop(after,str(exc))
         finally:
+            if bypass_planner is not None:
+                bypass_planner.cancel()
             if pump is not None:
                 pump.cancel()
                 with app.lock:
