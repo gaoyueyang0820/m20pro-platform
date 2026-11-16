@@ -3,7 +3,7 @@ import hashlib,json,sys,tempfile,unittest
 from pathlib import Path
 import numpy as np
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from m20.map_fusion import read_pcd,write_pcd,pose_matrix,transform,fuse_grid,read_grid,fuse_maps,validate_alignment
+from m20.map_fusion import read_pcd,write_pcd,pose_matrix,transform,fuse_grid,read_grid,fuse_maps,validate_alignment,multi_frame_registration,fuse_frame_estimates,later_frame_indices
 from bridge.mapping_job import mapping_phase
 
 def fixture(folder,points,origin=(0,0),grid=None):
@@ -203,5 +203,55 @@ class NativeSessionChangeTests(unittest.TestCase):
         from m20.map_refinement import session_evidence
         poses=np.array([[100,0,0,.55,0,0,0,1],[99,0,0,.55,0,0,0,1],[101,0,0,.55,0,0,0,1]],float)
         with self.assertRaisesRegex(ValueError,'时间非单调'):session_evidence(self.root/'not-read',poses,np.eye(4),{})
+
+    def multi_fixture(self,folder,points,frames=4):
+        folder.mkdir();write_pcd(folder/'full_cloud.pcd',points)
+        session=folder/'.sessions/session_0';(session/'lidar_cloud').mkdir(parents=True)
+        for index in range(frames):write_pcd(session/'lidar_cloud'/('%d.pcd'%index),points)
+        (session/'poses.txt').write_text('\n'.join('%d 0 0 0 0 0 0 1'%(index+1) for index in range(frames))+'\n')
+        (folder/'.optimizers/optimizer_0').mkdir(parents=True);(folder/'.optimizers/optimizer_0/loops.txt').write_text('0 0 0 0 0 0 0 0 1\n')
+        image=np.array([[0,254],[254,254]],dtype=np.uint8)
+        (folder/'occ_grid.pgm').write_bytes(b'P5\n2 2\n255\n'+image.tobytes())
+        (folder/'occ_grid.yaml').write_text('image: occ_grid.pgm\nresolution: 1\norigin: [0,0,0]\n')
+        (folder/'occ_grid_id_map.toml').write_text('path = "old"\n[[grids]]\nid=0\nname="occ_grid"\n')
+        return folder
+
+    def test_later_frames_never_include_the_occluded_start(self):
+        self.assertEqual(later_frame_indices(1),[])
+        self.assertEqual(later_frame_indices(10),[4,6,9])
+        self.assertNotIn(0,later_frame_indices(4))
+
+    def test_frame_estimates_keep_only_the_agreeing_majority(self):
+        agreed=np.eye(4);shifted=np.eye(4);shifted[0,3]=.05
+        outlier=np.eye(4);outlier[0,3]=1.
+        delta,report=fuse_frame_estimates([(1,agreed),(5,shifted),(9,outlier)])
+        # The estimate is the agreeing consensus, never the outlier.
+        self.assertLessEqual(abs(delta[0,3]),.06)
+        self.assertEqual(report['agreeing'],2)
+        with self.assertRaisesRegex(ValueError,'不一致'):
+            fuse_frame_estimates([(1,np.eye(4)),(5,outlier)])
+        with self.assertRaisesRegex(ValueError,'不足'):
+            fuse_frame_estimates([(1,np.eye(4))])
+
+    def test_a_covered_start_is_recovered_from_later_frames(self):
+        rng=np.random.default_rng(3)
+        x,y=np.meshgrid(np.linspace(-3,3,30),np.linspace(-3,3,30))
+        floor=np.column_stack([x.ravel(),y.ravel(),np.full(x.size,-.55),np.ones(x.size)]).astype(np.float32)
+        yy,zz=np.meshgrid(np.linspace(-2,2,30),np.linspace(-.2,1.4,15))
+        wall=np.column_stack([np.full(yy.size,2.),yy.ravel(),zz.ravel(),np.ones(yy.size)]).astype(np.float32)
+        points=np.vstack([wall,floor])
+        base=self.multi_fixture(self.root/'base',points)
+        poses=np.loadtxt(base/'.sessions/session_0/poses.txt',ndmin=2)
+        calls={'n':0}
+        def registration(source,target):
+            calls['n']+=1
+            return np.eye(4)
+        delta,quality,merged=multi_frame_registration(base,poses,np.eye(4),points,registration,ValueError('起点被门扇遮挡'))
+        np.testing.assert_allclose(delta,np.eye(4))
+        self.assertEqual(quality['multi_frame']['agreeing'],2)
+        self.assertGreaterEqual(len(merged),len(points))
+        self.assertLessEqual(len(merged),len(points)*2)
+        self.assertEqual(calls['n'],2)
+
 
 if __name__=='__main__':unittest.main()

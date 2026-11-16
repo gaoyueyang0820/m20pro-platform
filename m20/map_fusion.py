@@ -294,6 +294,83 @@ def refine_slam_structure(old,session,poses,T,grid):
     return independently_validated_correction(frames)
 
 
+def later_frame_indices(total, count=3):
+    """Frames spread across a capture, never the occluded first frame."""
+    if total < 2:
+        return []
+    span = (.35, .65, .9)
+    return sorted({max(1, min(total - 1, int(round(total * fraction)))) for fraction in span[:count]})
+
+
+def fuse_frame_estimates(estimates, *, max_deviation_m=.35, max_deviation_yaw=.10, min_agreement=2):
+    """One rigid transform from several independently registered frames.
+
+    A frame that disagrees is dropped, not averaged into the answer. Fewer than
+    min_agreement agreeing frames is a refusal, never a guess.
+    """
+    import numpy as np
+    rows = []
+    for index, matrix in estimates:
+        matrix = np.asarray(matrix, dtype=float)
+        if matrix.shape != (4, 4) or not np.isfinite(matrix).all():
+            continue
+        rows.append((index, matrix, matrix[:3, 3].copy(), math.atan2(matrix[1, 0], matrix[0, 0])))
+    if len(rows) < min_agreement:
+        raise ValueError('多帧配准可用帧不足 %d 帧' % min_agreement)
+    translations = np.array([row[2] for row in rows])
+    turns = np.array([row[3] for row in rows])
+    center = np.median(translations, axis=0)
+    turn_center = math.atan2(float(np.median(np.sin(turns))), float(np.median(np.cos(turns))))
+    keep = []
+    for index, matrix, translation, turn in rows:
+        deviation = float(np.linalg.norm(translation - center))
+        turn_deviation = abs(math.atan2(math.sin(turn - turn_center), math.cos(turn - turn_center)))
+        if deviation <= max_deviation_m and turn_deviation <= max_deviation_yaw:
+            keep.append((deviation, turn_deviation, index, matrix))
+    if len(keep) < min_agreement:
+        raise ValueError('多帧配准结果不一致：%d 帧中仅 %d 帧一致' % (len(rows), len(keep)))
+    keep.sort(key=lambda row: (row[0] + row[1], row[2]))
+    deviation, turn_deviation, index, matrix = keep[0]
+    report = dict(frames=len(rows), agreeing=len(keep), selected_frame=index,
+                  translation_spread_m=round(max(row[0] for row in keep), 3),
+                  yaw_spread_rad=round(max(row[1] for row in keep), 4))
+    return matrix, report
+
+
+def multi_frame_registration(session, poses, anchor_T, target, registration, original_error):
+    """Recover a saved-map join from later overlapping frames.
+
+    The first frame is exactly what a person or an open door can occlude. When
+    it cannot be registered, later frames of the same capture still overlap the
+    saved map; they are registered independently and only agreeing estimates
+    are accepted.
+    """
+    import numpy as np
+    session = Path(session)
+    estimates = []
+    clouds = []
+    for index in later_frame_indices(len(poses)):
+        try:
+            body = read_pcd(session/'.sessions/session_0/lidar_cloud'/('%d.pcd' % index))
+            frame = voxel(transform(body, anchor_T @ pose_matrix(poses[index, 1:])), .15, 14000)
+            delta = registration(frame, target)
+            validate_alignment(frame, target, delta)
+        except (OSError, ValueError):
+            continue
+        estimates.append((index, delta))
+        clouds.append(frame)
+    if not estimates:
+        raise ValueError('起点帧与后续帧都无法与原图配准，原始扫描已保留') from original_error
+    try:
+        delta, report = fuse_frame_estimates(estimates)
+        merged = np.vstack(clouds)
+        quality = validate_alignment(merged, target, delta)
+    except ValueError as exc:
+        raise ValueError(str(exc) + '，原始扫描已保留') from original_error
+    quality.update(multi_frame=report)
+    return delta, quality, merged
+
+
 def fuse_maps(base,session,destination,anchor,grid_id=0,registration=register_pcl):
     import numpy as np
     from m20.map_formats import make_map_readable
@@ -314,11 +391,17 @@ def fuse_maps(base,session,destination,anchor,grid_id=0,registration=register_pc
     local=old[((old[:,:3]>=lo)&(old[:,:3]<=hi)).all(axis=1)]
     if len(local)<100:raise ValueError('初始定位附近没有足够原图结构，请重新定位')
     target=voxel(local,.12,60000)
-    try:delta=registration(source,target);quality=validate_alignment(source,target,delta);T=delta@guess
+    try:delta=registration(source,target);quality=validate_alignment(source,target,delta)
     except ValueError as exc:
-        report=dict(stage='registration',decision=dict(allowed=False,status='registration_failed',reason=str(exc)))
-        report.update(capture_continuation(base,session,poses,grid_id))
-        raise FusionDecisionError(report) from exc
+        # The start of a capture is the frame a person or a door most easily
+        # occludes. Later frames of the same capture still overlap the saved
+        # map, so recover the join from them instead of failing the save.
+        try:delta,quality,source=multi_frame_registration(session,poses,anchor_T,target,registration,exc)
+        except ValueError as recovered:
+            report=dict(stage='registration',decision=dict(allowed=False,status='registration_failed',reason=str(recovered)))
+            report.update(capture_continuation(base,session,poses,grid_id))
+            raise FusionDecisionError(report) from exc
+    T=delta@guess
     old_grid=read_grid(base,grid_id)
     correction,structural_correction=refine_slam_structure(old,session,poses,T,old_grid)
     if structural_correction['applied']:
