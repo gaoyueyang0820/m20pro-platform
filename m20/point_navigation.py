@@ -92,6 +92,49 @@ def bypass_margin(scan, follower):
     return float(ahead) - stopping
 
 
+# One operator-facing stage per navigation run. Internal phases stay for
+# control decisions; the UI should need only these strings.
+STAGE_OF_PHASE = {
+    'preparing': 'preparing',
+    'preparing_recovery': 'preparing',
+    'recovering_start': 'retreating',
+    'finding_bypass': 'planning_bypass',
+    'local_bypass': 'bypassing',
+    'waiting_space': 'waiting_for_space',
+    'waiting_observation': 'waiting_for_sensor',
+    'tracking': 'driving',
+    'station_parking': 'stopping',
+    'station_action': 'working',
+    'stopping': 'stopping',
+    'cancel_unconfirmed': 'stopping',
+    'completed': 'completed',
+    'cancelled': 'cancelled',
+    'paused': 'paused',
+    'failed': 'failed',
+}
+STAGE_TEXT = {
+    'preparing': '正在核对地图与运控状态',
+    'retreating': '正在从当前位置退让接续',
+    'planning_bypass': '正在准备绕行路线',
+    'bypassing': '正在绕开障碍',
+    'waiting_for_space': '正在等待可通行空间',
+    'waiting_for_sensor': '正在等待雷达与定位恢复',
+    'driving': '正在前往目标',
+    'stopping': '正在确认停车',
+    'working': '正在执行到点作业',
+    'completed': '已到达并确认停车',
+    'cancelled': '已停止',
+    'paused': '已暂停',
+    'failed': '任务失败',
+}
+STAGE_NEXT = {
+    'waiting_for_space': '保持等待，或手动驾车让出通道',
+    'waiting_for_sensor': '等待定位恢复；必要时在导航页恢复定位',
+    'failed': '查看失败原因后重新选点',
+    'paused': '可继续任务或手动接管',
+}
+
+
 class PointNavigator:
     async_observations = False
 
@@ -177,8 +220,20 @@ class PointNavigator:
         self.nav.update(status='cancelling',phase='stopping',execution_state='stopping',message=message)
         self.tick()
 
+    def _refresh_stage(self):
+        """Publish one operator stage, detail and next action for this run."""
+        nav=self.nav
+        if not isinstance(nav,dict):return
+        phase=nav.get('phase')
+        stage=STAGE_OF_PHASE.get(phase,phase if isinstance(phase,str) and phase else 'idle')
+        nav['stage']=stage
+        nav['detail']=nav.get('message') or ''
+        nav['stage_text']=STAGE_TEXT.get(stage,'')
+        nav['next_action']=STAGE_NEXT.get(stage,'')
+
     def tick(self):
         if self.nav is not self.app.nav:return
+        self._refresh_stage()
         if self.active and time.monotonic()>self.deadline:
             self.stop('paused','本轮时间已到，已请求停车');return
         if self.stop_at is None:return
