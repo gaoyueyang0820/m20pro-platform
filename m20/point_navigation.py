@@ -460,6 +460,7 @@ class PointNavigator:
             with app.lock:
                 self.check(token);self.planner=planner;self.follower=follower;self.nav['plan']=self._display_plan(initial_path)
             goal=initial_result['goal'];last_replan=0.;blocked_at=None;sensor_lost=None;initial=None
+            lost_pose=None;recovered_after_jump=False;scan=None
             recovery=None;start_checked=False;start_wait=time.monotonic()
             from m20.autonomy_runtime import MotionProgress
             progress=MotionProgress();last_stamp=None
@@ -492,7 +493,9 @@ class PointNavigator:
                 try:scan,yaw_rate=self._scan()
                 except (ValueError,TypeError) as exc:
                     if sensor_lost is None:
-                        sensor_lost=now;self._drive(token,[0,0,0],{})
+                        sensor_lost=now
+                        lost_pose=list(scan['pose']) if scan is not None else None
+                        self._drive(token,[0,0,0],{})
                     progress.observe_command([0.,0.,0.],now)
                     self._update(token,message=str(exc)+'，恢复后继续原任务',execution_state='waiting_progress')
                     if now-sensor_lost>5 and not isinstance(exc,(GroundObservationPending,ObservationSyncPending,NavigationObservationPending)):raise
@@ -500,7 +503,11 @@ class PointNavigator:
                 if scan is None:time.sleep(.025);continue
                 self.check(token)
                 if sensor_lost is not None:
-                    progress=MotionProgress();sensor_lost=None
+                    # A localization re-initialization can move the reported
+                    # pose. The old route may no longer connect to it.
+                    recovered_after_jump=(lost_pose is not None
+                                          and math.dist(scan['pose'][:2],lost_pose[:2])>.6)
+                    progress=MotionProgress();sensor_lost=None;lost_pose=None
                 if scan.get('stamp')==last_stamp:time.sleep(.025);continue
                 last_stamp=scan.get('stamp');pose=scan['pose']
                 while route_index<len(route['points'])-1 and not self._stops_at(route_index) and math.dist(pose[:2],[goal['x'],goal['y']])<.25:
@@ -520,6 +527,21 @@ class PointNavigator:
                     basic_record=app.link.record(1002,6);basic=basic_record.get('items',{}).get('BasicStatus',{})
                     standing=age_of(basic_record)<.5 and basic.get('MotionState')==17 and basic.get('HES')==0 and not basic.get('Sleep')
                     vendor_avoidance |= age_of(basic_record)<.65 and basic.get('ControlUsageMode')==2 and basic.get('OOA')==3
+                if recovered_after_jump:
+                    # Do not keep a route or an obstacle layer that was fitted
+                    # to the pre-recovery pose. Rebuild from the actual one.
+                    recovered_after_jump=False
+                    self._update(token,message='定位已恢复，正在从实际位置重新接续任务')
+                    applied_obstacles=set();planner.update_obstacles(set(),robot_pose=pose)
+                    try:renewed=planner.plan(pose,[goal['x'],goal['y']],goal['yaw'],budget=.5)
+                    except ValueError:renewed=None
+                    self.check(token)
+                    if renewed is not None:
+                        renewed=install_path(renewed)
+                        local_pending=False;local_follower=None;local_plan=None;initial=None
+                        self._update(token,plan=renewed,phase='tracking',message='定位已恢复，已从实际位置接回原任务')
+                    else:
+                        local_pending=True;route_first=True
                 if app.demo or surface.get('accepted'):
                     observed=obstacle_tracks.observe(projected,epoch=localization.get('epoch'))
                     for p in observed.cleared:obstacle_memory.pop(p,None)
