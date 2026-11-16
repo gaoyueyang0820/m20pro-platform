@@ -24,6 +24,34 @@ from m20.exploration_view import PausedExplorationView
 # Mapping phase is diagnostic for the local control loop. A read that is slow
 # or unavailable must not be mistaken for "the capture ended".
 BUILD_STATUS_STALE_SECONDS = 5.
+# Exploration during mapping runs in the SLAM session frame. On the real robot
+# that frame had drifted 1.7 m from the localized map pose, so every live
+# obstacle was compared against the wrong part of the saved map.
+MAX_EXPLORATION_POSE_GAP_M = .8
+
+
+def exploration_pose_consistency(odom, slam, now=None, *, max_age_s=3., max_gap_m=MAX_EXPLORATION_POSE_GAP_M):
+    """Explain why mapping-frame exploration must not start yet.
+
+    Returns a refusal message or None. A missing or stale SLAM pose is not
+    judged here: the capture has not started yet and its frame is unknown.
+    """
+    now=time.time() if now is None else float(now)
+    if not isinstance(odom,dict) or not odom:return '缺少地图定位输出，请先恢复定位'
+    try:
+        age=now-float(odom.get('received_at',0))
+        if not math.isfinite(age) or age>max_age_s:
+            return '地图定位输出已 %.0f 秒未更新，请先恢复定位'%max(0.,age)
+        if not isinstance(slam,dict) or not slam:return None
+        slam_age=now-float(slam.get('received_at',0))
+        if not math.isfinite(slam_age) or slam_age>max_age_s:return None
+        gap=math.hypot(float(odom.get('PosX',0))-float(slam.get('PosX',0)),
+                       float(odom.get('PosY',0))-float(slam.get('PosY',0)))
+    except (TypeError,ValueError):return '定位输出无法解析'
+    if not math.isfinite(gap):return '定位输出无法解析'
+    if gap>max_gap_m:
+        return '建图坐标系与地图定位相差 %.1f 米，请先重置建图坐标系或恢复定位后再开始' % gap
+    return None
 
 
 class PersonVision:
@@ -392,6 +420,14 @@ class Autonomy:
             else:
                 if self.app.mapping and not req.get('use_current'):raise ValueError('当前已有建图采集，请选择继续当前采集，或先结束并保存')
                 if not self.app.mapping and req.get('use_current'):raise ValueError('当前没有建图采集，请选择新建或续建')
+                if not self.app.demo:
+                    try:
+                        role=self.app.hub.connections.value.get('sensor_source','nos')
+                        status=self.app.proxy(role,'/sensors/status',timeout=2)
+                    except (ValueError,KeyError,AttributeError):
+                        status={}
+                    refusal=exploration_pose_consistency((status or {}).get('odom'),(status or {}).get('slam_odom'))
+                    if refusal:raise ValueError(refusal)
                 self.target=None;self.explorer=Explorer(radius,forward,yaw,expand=scope=='map')
             self.generation+=1;self._save_token=None;self.context=self.app.hub.context()
             self.capture_id=None
@@ -599,7 +635,7 @@ class Autonomy:
                   if explorer else None)
         trajectory_key=None;trajectory_detail={}
         last_plan=0;last_vision=None;blocked_attempts=0;waiting=time.monotonic();completion=ExplorationCompletion();progress=MotionProgress()
-        last_yaw=None;scan_sweep=0.;scan_started=None
+        last_yaw=None;scan_sweep=0.;scan_started=None;people_wait_since=None
         sensing_lost=None;recovery_frames=0;recovery_stamp=None;ground_waiting=False;environment_waiting=False
         no_passage_since=None
         pump=None;pump_generation=None;pump_capture_id=None;consumed_sequence=None;last_cache_state=None;scanning=False
@@ -850,6 +886,20 @@ class Autonomy:
                         trajectory_detail=exploration_step(explorer,follower,scan,yaw_rate,new_scan=new_scan)
                         if trajectory_detail.get('needs_recovery'):
                             reason=trajectory_detail.get('reason','当前通路受阻')
+                            # A person or another mover in the lane is a
+                            # temporary block. Hold with a bounded renewal
+                            # instead of retreating into the same obstacle.
+                            if explorer.moving_tracks>0:
+                                if people_wait_since is None:people_wait_since=now
+                                if now-people_wait_since<=6.:
+                                    self._drive(run_id,0,0)
+                                    progress.last_at=now
+                                    with self.app.lock:
+                                        if self.run_id==run_id:
+                                            self.message='前方有移动目标，正在等待其通过'
+                                            self.map_view=dict(explorer.view(),controller=trajectory_detail)
+                                    time.sleep(.05);continue
+                            people_wait_since=None
                             if explorer.request_recovery(progress.failed_axes(),reason):progress.recovery_started()
                             else:
                                 explorer.note_blocked(reason);last_plan=0
