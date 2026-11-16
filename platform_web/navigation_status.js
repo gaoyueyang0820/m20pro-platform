@@ -12,6 +12,12 @@ function navigationPresentation(nav){
  if(nav.status==='failed')return {label:'任务未完成',title:phase==='validation_failed'||phase==='validation_timeout'||phase==='preparation_failed'?'导航尚未开始':'导航未完成',detail:nav.error||nav.message||'请查看具体反馈',severity:'error'};
  if(nav.status==='completed')return {label:'已完成',title:'全部目标已完成',detail:'导航已结束，停止状态已确认',severity:'normal'};
  if(nav.status==='cancelled')return {label:'已取消',title:'任务已取消',detail:'没有继续执行的导航任务',severity:'normal'};
+ // The backend publishes one operator stage. Prefer it over internal phase
+ // names, but only after the safety-critical stop/failure branches above.
+ if(nav.status==='running'&&nav.stage&&nav.stage_text){
+  const waiting=nav.stage==='waiting_for_space'||nav.stage==='waiting_for_sensor';
+  return {label:nav.stage_text,title:nav.stage_text,detail:[nav.message,nav.next_action].filter(Boolean).join(' · ')||nav.stage_text,severity:waiting?'waiting':'normal'};
+ }
  if(nav.engine==='platform'&&nav.status==='running')return {label:'平台自主寻路',title:'正在根据实时扫描跟踪通路',detail:`${nav.message||'正在跟踪通路'} · 距目标 ${nav.distance_remaining??'—'} 米 · 已重规划 ${nav.replans||0} 次`,severity:'normal'};
  return null;
 }

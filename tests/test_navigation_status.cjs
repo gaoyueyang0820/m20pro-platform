@@ -40,3 +40,14 @@ test('platform executor reports trajectory progress and measured stop instead of
  assert.equal(n.label,'平台自主寻路');assert.match(n.detail,/2.3 米.*1 次/);assert.match(n.detail,/侧移/);
  const s=p({engine:'platform',status:'cancelling'});assert.match(s.detail,/实际停稳/);assert.doesNotMatch(s.detail,/对应回包/);
 });
+test('the operator stage replaces internal phase names when published',()=>{
+ const r=p({status:'running',stage:'planning_bypass',stage_text:'正在准备绕行路线',message:'正在更换行进方向'});
+ assert.equal(r.label,'正在准备绕行路线');assert.equal(r.severity,'normal');
+ assert.match(r.detail,/更换行进方向/);
+});
+test('waiting stages surface the next action and a waiting severity',()=>{
+ const space=p({status:'running',stage:'waiting_for_space',stage_text:'正在等待可通行空间',message:'前方被挡住',next_action:'保持等待，或手动驾车让出通道'});
+ assert.equal(space.severity,'waiting');assert.match(space.detail,/手动驾车/);
+ const sensor=p({status:'running',stage:'waiting_for_sensor',stage_text:'正在等待雷达与定位恢复',next_action:'等待定位恢复'});
+ assert.equal(sensor.severity,'waiting');
+});
