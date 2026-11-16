@@ -369,6 +369,7 @@ class PointNavigator:
         result['_vendor_avoidance']=(age_of(avoidance)<1.35 and avoidance.get('items',{}).get('ObsState')==1)
         self.last_sensor_stamp=result.get('stamp')
         self.last_observation_sequence=result.get('_pump_sequence')
+        self._observe_motion(result,omega)
         return result,omega
 
     def _drive(self,token,axes,scan):
@@ -385,7 +386,27 @@ class PointNavigator:
             return list(axes)
 
     def _trajectory_follower(self):
+        # Only pass a measured model when a controller mode is actually known;
+        # test doubles and preparation failures keep the plain constructor.
+        model=getattr(self.app,'motion_response',None)
+        mode=getattr(self,'motion_mode',None)
+        if model is not None and mode in (0,2):
+            return TrajectoryFollower(motion_model=model,motion_mode=mode)
         return TrajectoryFollower()
+
+    def _motion_learning_ready(self,scan):
+        """Override to require a specific controller state before training."""
+        return True
+
+    def _observe_motion(self,scan,omega):
+        """Read-only learning from paired command and feedback.
+
+        It never alters the command path, footprint checks or braking model;
+        it only feeds the shared per-axis response model.
+        """
+        if self.app.demo:return
+        from m20.motion_response import track
+        track(self,self.app,scan,omega,ready=self._motion_learning_ready(scan))
 
     def _run(self,token,map_,plan):
         app=self.app

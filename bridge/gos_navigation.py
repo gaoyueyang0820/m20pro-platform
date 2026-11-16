@@ -70,53 +70,27 @@ def unpack_grid(grid):
 class GOSPointNavigator(PointNavigator):
     async_observations = True
 
-    def _measured_response(self, scan, feedback, command):
-        if not command or not any(command[0]):
-            self.response_pose=None
-            return False
-        stamp=scan['stamp'];pose=scan['pose']
-        before=getattr(self,'response_pose',None)
-        if before and before[0]==command[1] and stamp-before[1]<.18:
-            return False
-        self.response_pose=(command[1],stamp,tuple(pose))
-        if not before or before[0]!=command[1] or stamp-before[1]>.6:
-            return False
-        dt=stamp-before[1];px,py,heading=before[2]
-        c,s=math.cos(heading),math.sin(heading)
-        dx,dy=pose[0]-px,pose[1]-py
-        delta=pose[2]-heading
-        observed=((c*dx+s*dy)/dt,(-s*dx+c*dy)/dt,math.atan2(math.sin(delta),math.cos(delta))/dt)
-        i=max(range(3),key=lambda j:abs(command[0][j]))
-        # The motion-status packet and the actual displacement must agree.
-        # An inhibited drive, localization jump or skid cannot tune a profile.
-        return observed[i]*feedback[i]>0. and abs(observed[i]-feedback[i])<(.20 if i==2 else .10)
-
     def _trajectory_follower(self):
         if not hasattr(self,'response_gains'):
             with self.app.lock:
                 self.response_gains=self.app.motion_response.gains(self.motion_mode)
+        if self.motion_mode in (0,2):
+            return TrajectoryFollower(motion_response=self.response_gains,
+                                      motion_model=self.app.motion_response,
+                                      motion_mode=self.motion_mode)
         return TrajectoryFollower(motion_response=self.response_gains)
 
-    def _scan(self):
-        scan,yaw_rate=super()._scan()
-        if scan is None:return scan,yaw_rate
+    def _motion_learning_ready(self,scan):
+        """Only learn while this GOS run still owns a settled, normal gait."""
         app=self.app
+        if not self.current(self.run_id):return False
         with app.lock:
             link=app.link
-            if link is None or not self.current(self.run_id) or scan.get('_vendor_avoidance'):
-                self.response_pose=None
-                return scan,yaw_rate
+            if link is None or scan.get('_vendor_avoidance'):return False
             record=link.record(1002,6);basic=record.get('items',{}).get('BasicStatus',{})
-            if (age_of(record)<.65 and basic.get('HES')==0 and basic.get('MotionState')==17
+            return (age_of(record)<.65 and basic.get('HES')==0 and basic.get('MotionState')==17
                     and not basic.get('Sleep') and basic.get('Direction')==0 and basic.get('Gait')==0x3002
-                    and basic.get('ControlUsageMode')==self.motion_mode and basic.get('OOA')!=3):
-                command=getattr(link,'axis_run',lambda:None)()
-                feedback=[*scan['_velocity_body'],yaw_rate]
-                if self._measured_response(scan,feedback,command):
-                    app.motion_response.observe(self.motion_mode,command,scan.get('_motion_feedback_at'),feedback)
-            else:
-                self.response_pose=None
-        return scan,yaw_rate
+                    and basic.get('ControlUsageMode')==self.motion_mode and basic.get('OOA')!=3)
 
     def current(self, token):
         return (self.active and self.run_id == token and self.app.nav is self.nav

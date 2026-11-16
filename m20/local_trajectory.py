@@ -147,7 +147,7 @@ def dense_polyline(path,spacing=.12):
 
 
 class TrajectoryFollower:
-    def __init__(self,forward_limit=.35,yaw_limit=.7,*,motion_response=None):
+    def __init__(self,forward_limit=.35,yaw_limit=.7,*,motion_response=None,motion_model=None,motion_mode=None):
         self.forward_limit=float(forward_limit);self.yaw_limit=float(yaw_limit)
         self.previous=np.zeros(3);self.gain=np.array([1.,1.,1.])
         self.path=np.empty((0,2));self.index=0;self.plan_key=None;self.last={}
@@ -156,6 +156,23 @@ class TrajectoryFollower:
         self.path_repair_stamp=None;self.path_repair_attempts=0;self.path_repair_anchor=None
         self.straight_clearance=None
         self.motion_response=dict(motion_response or {})
+        # Optional measured motion model. It only shifts prediction, braking
+        # distance and the start floor inside already validated limits.
+        self.motion_model=motion_model
+        self.motion_mode=motion_mode if motion_mode in (0,2) else None
+
+    def _learned(self,kind,default,low,high):
+        model=self.motion_model
+        if model is None or self.motion_mode is None:return default
+        try:
+            if kind=='decel':value=model.braking_decel(self.motion_mode,default)
+            elif kind=='latency':value=model.latency(self.motion_mode,default)
+            elif kind=='start':value=model.deadband(self.motion_mode,'forward',default)
+            else:return default
+            value=float(value)
+        except (AttributeError,TypeError,ValueError):return default
+        if not math.isfinite(value):return default
+        return min(high,max(low,value))
 
     def _response_preference(self,axes,direction,desired_yaw):
         # A learned response may rank already validated choices. The original
@@ -221,13 +238,16 @@ class TrajectoryFollower:
         if travelled>=float(self.path_arc[-1])-.001:remaining_path=max(remaining_path,distance)
         speed=float(np.linalg.norm(feedback[:2]));angular_speed=abs(float(feedback[2]))
         age=float(scan.get('_timing',{}).get('age_ms',float(scan.get('age',0.))*1000))/1000
-        reaction=.15+min(.65,max(0.,age));deceleration=.5
+        base_reaction=self._learned('latency',.15,.15,.35)
+        deceleration=self._learned('decel',.5,.35,.8)
+        reaction=base_reaction+min(.65,max(0.,age))
         stopping=speed*reaction+speed*speed/(2*deceleration)
         at_goal=distance<.18 and remaining_path<.18
         heading_error=0. if goal_yaw is None else abs(wrap(goal_yaw-pose[2]))
         still=speed<.08 and angular_speed<.12
         self.last.update(remaining_path_m=round(remaining_path,3),stopping_distance_m=round(stopping,3),
-                         arrival_tolerance_m=.18,stopping_model=dict(deceleration_min=deceleration,reaction_s=reaction,hardware_calibrated=False))
+                         arrival_tolerance_m=.18,stopping_model=dict(deceleration_min=deceleration,reaction_s=reaction,
+                         measured_model=self.motion_mode is not None,hardware_calibrated=False))
         continuation_window=max(.55,min(1.1,stopping+.25))
         self.last.update(needs_continuation=not self.terminal and remaining_path<=continuation_window and distance<=continuation_window,
                          continuation_window_m=round(continuation_window,3))
@@ -282,7 +302,9 @@ class TrajectoryFollower:
             available=max(0.,remaining_path-.10)
             allowed_speed=max(0.,math.sqrt((deceleration*reaction)**2+2*deceleration*available)-deceleration*reaction)
             response=max(2.,float(np.max(self.gain[:2])))
-            minimum=min(.20,self.forward_limit)
+            floor=min(.20,self.forward_limit)
+            floor=max(floor,self._learned('start',floor,.05,.35))
+            minimum=min(self.forward_limit,floor)
             f=min(self.forward_limit,max(minimum,allowed_speed/response))
             self.last['terminal_speed_limit_mps']=round(allowed_speed,3)
         side=min(.25,f);reverse=min(.25,f)

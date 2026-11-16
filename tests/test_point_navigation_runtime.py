@@ -86,7 +86,9 @@ class PointNavigationRuntimeTests(unittest.TestCase):
     @staticmethod
     def follower(sequence):
         class Stub:
-            def __init__(self):self.calls=0
+            # Accept constructor options so the executor can pass a measured
+            # motion model; this stub still owns the observable behaviour.
+            def __init__(self,*args,**kwargs):self.calls=0
             def set_path(self,path):self.path=path
             def command(self,scan,yaw_rate,goal_yaw,allowed_pose=None,*,fixed_heading=False):
                 if not fixed_heading:assert allowed_pose(*scan['pose'])

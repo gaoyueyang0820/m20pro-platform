@@ -587,7 +587,16 @@ class Autonomy:
         from m20.follow_control import FollowControl
         follow_controller=FollowControl() if mode=='follow' else None
         follow_request=(0.,0.)
-        follower=TrajectoryFollower(explorer.forward_limit,explorer.yaw_limit) if explorer else None
+        motion_model=getattr(self.app,'motion_response',None)
+        motion_mode=getattr(self,'motion_mode',None)
+        if motion_model is not None and motion_mode not in (0,2):
+            # Exploration has no joystick mode of its own; use the controller
+            # mode reported for the active robot, defaulting to normal.
+            try:motion_mode=int(getattr(self.app,'basic',{}).get('ControlUsageMode',0))
+            except (TypeError,ValueError):motion_mode=None
+        follower=(TrajectoryFollower(explorer.forward_limit,explorer.yaw_limit,
+                                     motion_model=motion_model,motion_mode=motion_mode)
+                  if explorer else None)
         trajectory_key=None;trajectory_detail={}
         last_plan=0;last_vision=None;blocked_attempts=0;waiting=time.monotonic();completion=ExplorationCompletion();progress=MotionProgress()
         last_yaw=None;scan_sweep=0.;scan_started=None
@@ -745,6 +754,11 @@ class Autonomy:
                         velocity=[measured.get('LinearX'),measured.get('LinearY')]
                         if all(isinstance(v,(int,float)) and math.isfinite(v) for v in velocity):
                             scan['_velocity_body']=velocity;scan['_speed_mps']=math.hypot(*velocity)
+                            scan['_motion_feedback_at']=motion.get('monotonic_at')
+                            if mode=='explore':
+                                from m20.motion_response import track
+                                omega=measured.get('OmegaZ',0.)
+                                track(self,self.app,scan,omega if isinstance(omega,(int,float)) else 0.)
                 if now-self.started>=duration:
                     self._drive(run_id,0,0)
                     if mode=='explore':self.finish_save(run_id,'达到本轮时间，正在保存地图')

@@ -39,6 +39,7 @@ from m20.map_learning_runtime import MapLearning
 from m20.people_counting import PeopleCounter
 from m20.patrol_actions import station_spec, station_requires_gos
 from m20.point_navigation import PointNavigator, navigation_observation, stationary_feedback
+from m20.motion_response import MotionResponse
 from m20.task_collectors import collector_catalog, collector_specs, requires_gos_collection
 from m20.desktop_patrol_counts import DesktopPatrolCounts, count_at_station
 from bridge.task_collection import CollectionCancelled
@@ -121,6 +122,13 @@ class Platform:
         from m20.pose_monitor import PoseMonitor
         self.pose_monitor=PoseMonitor()
         self.store = store or Store()
+        try:
+            saved_motion=json.loads((self.store.path.parent/'motion-response.json').read_text(encoding='utf-8'))
+        except (OSError,ValueError):
+            saved_motion={}
+        # Shared measured response: navigation and exploration both read it.
+        self.motion_response=MotionResponse(saved_motion)
+        self._motion_saved=0.
         self.link = None
         self.demo = True
         self.config = {k: os.environ.get('M20_'+k.upper()+'_URL', '') for k in ['sdk', 'train', 'nos','gos']}
@@ -1458,6 +1466,19 @@ class Platform:
             nav.update(execution_state='waiting_progress',
                        warning='任务仍被机器人接受，但暂未检测到位移或有效转向；可能在等待通路或局部规划')
 
+    def _save_motion_response(self):
+        """Persist learned motion in the local data folder; never blocks a task."""
+        if not self.motion_response.dirty:return
+        path=self.store.path.parent/'motion-response.json'
+        try:
+            temp=path.with_suffix('.tmp')
+            temp.write_text(json.dumps(self.motion_response.record(),ensure_ascii=False),encoding='utf-8')
+            temp.replace(path)
+        except (OSError,ValueError):
+            return
+        self.motion_response.dirty=False
+        self._motion_saved=time.monotonic()
+
     def tick(self, dt):
         with self.lock:
             now = time.time()
@@ -1467,6 +1488,8 @@ class Platform:
                 if self.link:self.link.set_velocity(0,0,0)
             self.autonomy.watchdog()
             self.point_navigation.tick()
+            if self.motion_response.dirty and time.monotonic()-self._motion_saved>5:
+                self._save_motion_response()
             if self.sdk.get('armed') and now-self.lease_at > .6:
                 self.stop()
                 self.add_log('warning', '关节控制会话超时，已停止并转阻尼；需要重新开启会话')
