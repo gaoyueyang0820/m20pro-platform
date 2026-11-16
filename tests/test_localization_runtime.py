@@ -28,7 +28,8 @@ class SavedSlamCoordinatorTests(unittest.TestCase):
         self.body=structure();reference=(self.body@matrix[:3,:3].T+matrix[:3,3]).astype('<f4')
         self.reference=dict(map_name='base',frame_id='map',points=base64.b64encode(reference.tobytes()).decode())
         self.clouds=[(dict(points=self.body,frame_id='base_link'),200.),
-                     (dict(points=self.body+.001,frame_id='base_link'),201.)]
+                     (dict(points=self.body+.001,frame_id='base_link'),201.),
+                     (dict(points=self.body+.002,frame_id='base_link'),202.)]
         self.localizer.body_cloud=Mock(side_effect=self.clouds)
     def tearDown(self):self.temp.cleanup()
     def record(self,t,c):
@@ -70,7 +71,8 @@ class SavedSlamCoordinatorTests(unittest.TestCase):
         body=transformed(world-pose[:3],np.array([0,0,0,-heading]))
         self.reference.update(map_name=self.active,points=base64.b64encode(world.astype('<f4').tobytes()).decode())
         self.localizer.body_cloud.side_effect=[(dict(points=body,frame_id='base_link'),200.),
-            (dict(points=body+.001,frame_id='base_link'),201.)]
+            (dict(points=body+.001,frame_id='base_link'),201.),
+            (dict(points=body+.002,frame_id='base_link'),202.)]
         return pose,body
 
     def test_manual_quarter_and_half_turn_recover_against_activated_candidate(self):
@@ -102,8 +104,9 @@ class SavedSlamCoordinatorTests(unittest.TestCase):
     def test_local_search_independent_frame_failure_does_not_initialize(self):
         _,body=self.moved_candidate(math.pi/2)
         self.localizer.body_cloud.side_effect=[(dict(points=body,frame_id='base_link'),200.),
-            (dict(points=body+[1.2,0,0],frame_id='base_link'),201.)]
-        with self.assertRaisesRegex(ValueError,'没有确认'):self.localizer.saved_slam_hint(Mock())
+            (dict(points=body+.001,frame_id='base_link'),201.),
+            (dict(points=np.zeros((8,3)),frame_id='base_link'),202.)]
+        with self.assertRaisesRegex(ValueError,'结构点'):self.localizer.saved_slam_hint(Mock())
         self.assertEqual(self.sent,[]);self.localizer.wait_normal.assert_not_called()
 
     def test_cancel_during_local_search_never_initializes_or_falls_back(self):
@@ -118,16 +121,18 @@ class SavedSlamCoordinatorTests(unittest.TestCase):
 
     def test_candidate_to_base_switch_after_validation_does_not_initialize(self):
         self.moved_candidate(math.pi/2)
-        from m20.localization_recovery import verify_pose as original
+        from m20.localization_recovery import verify_sequence as original
         def switch(*args,**kwargs):
             result=original(*args,**kwargs);self.active='base';return result
-        with patch('m20.localization_recovery.verify_pose',side_effect=switch):
+        with patch('m20.localization_recovery.verify_sequence',side_effect=switch):
             with self.assertRaisesRegex(ValueError,'保存轨迹已变化'):self.localizer.saved_slam_hint(Mock())
         self.assertEqual(self.sent,[])
     def test_changed_map_before_command_is_rejected(self):
+        frames=[(dict(points=self.body,frame_id='base_link'),200.),
+                (dict(points=self.body+.001,frame_id='base_link'),201.)]
         def clouds(after=None,**kwargs):
-            packet=self.clouds.pop(0)
-            if not self.clouds:self.active='different'
+            packet=frames.pop(0)
+            if not frames:self.active='different'
             return packet
         self.localizer.body_cloud.side_effect=clouds
         with self.assertRaises(ValueError):self.localizer.saved_slam_hint(Mock())
@@ -175,6 +180,22 @@ class SavedSlamCoordinatorTests(unittest.TestCase):
         with self.assertRaises(OperationCancelled):self.localizer.recover(Mock())
         self.localizer.local_hint.assert_not_called();self.assertEqual(self.sent,[])
         self.assertFalse(any(c.args[0]=='/maps/localize-auto' for c in self.hub.remote_maps.call_args_list))
+
+
+    def test_slam_pose_reader_and_displacement_envelope(self):
+        from m20.localization_runtime import _slam_pose
+        yaw=.5
+        row=_slam_pose(dict(PosX=1.,PosY=2.,quaternion=[0,0,math.sin(yaw/2),math.cos(yaw/2)]))
+        self.assertAlmostEqual(row['yaw'],.5,places=6)
+        self.assertIsNone(_slam_pose(dict(PosX=1.,PosY=2.,quaternion=[0,0,0,0])))
+        self.assertIsNone(_slam_pose({}))
+        hint=dict(PosX=1.,PosY=1.,Yaw=.2);expected=dict(dx=.3,dy=.1,dyaw=.05)
+        self.assertTrue(AutomaticLocalizer._displacement_consistent(
+            hint,dict(PosX=1.3,PosY=1.1,Yaw=.25),expected))
+        self.assertFalse(AutomaticLocalizer._displacement_consistent(
+            hint,dict(PosX=2.2,PosY=1.1,Yaw=.25),expected))
+        self.assertFalse(AutomaticLocalizer._displacement_consistent(
+            hint,dict(PosX=1.3,PosY=1.1,Yaw=1.4),expected))
 
 
 if __name__=='__main__':unittest.main()

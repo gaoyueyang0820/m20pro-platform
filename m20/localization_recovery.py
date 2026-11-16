@@ -14,6 +14,13 @@ MATCH_DISTANCE = .20
 MIN_OVERLAP = .90
 MAX_RMSE = .08
 MIN_SCORE_GAP = .12
+# A hypothesis in a corridor or a repeated bay can beat every *found* rival and
+# still be wrong. Fixed neighbours decide whether the match is actually local.
+MIN_SHARPNESS_MARGIN = .08
+SHARPNESS_STEPS = (.30, .60)
+SHARPNESS_YAW = math.radians(12)
+MIN_SEQUENCE_SPREAD_M = .12
+MIN_SEQUENCE_SPREAD_YAW = .06
 
 
 def _wrap(angle):
@@ -198,7 +205,11 @@ def match_pose(body_points, reference_points, hint, *, stamp, frame_id='base_lin
     gap = alternatives[1]['quality']['score']-quality['score'] if len(alternatives)>1 else None
     if gap is not None and gap < MIN_SCORE_GAP:
         raise ValueError('有多个相近的地图匹配，请在地图上指定实际位置')
-    return dict(accepted=True, pose=best['pose'], quality=dict(quality, distinct_score_gap=gap),
+    sharpness = perturbation_sharpness(body, reference, index, best['pose'])
+    if not sharpness['distinguishable']:
+        raise ValueError('附近多个位置与当前结构同样吻合，不能唯一确定；请在有墙角或路口的位置重新识别')
+    return dict(accepted=True, pose=best['pose'],
+                quality=dict(quality, distinct_score_gap=gap, sharpness=sharpness),
                 alternatives=alternatives[1:5], source_stamp=stamp, frame_id=frame_id,
                 body_points=len(body), reference_points=len(reference),
                 requires_independent_validation=True, method='local_structure_multi_heading_icp')
@@ -235,6 +246,94 @@ def _rigid_transform(value):
             not .995 < np.linalg.det(rotation) < 1.005):
         raise ValueError('保存轨迹变换不是刚体变换')
     return matrix
+
+
+def _fixed_quality(body, reference, index, position, yaw):
+    return _quality(_transform(body, position, yaw), index)
+
+
+def perturbation_sharpness(body, reference, index, pose, *,
+                           steps=SHARPNESS_STEPS, yaw_step=SHARPNESS_YAW):
+    """Score fixed neighbours of a hypothesis without re-fitting them.
+
+    In a corridor or a repeated bay a position metres further along the axis
+    matches almost as well. That is not a location, and no score threshold can
+    recover it after the fact: the hypothesis has to beat its own neighbours.
+    """
+    xyz = [pose['PosX'], pose['PosY'], pose['PosZ']]
+    yaw = float(pose['Yaw'])
+    if not all(math.isfinite(value) for value in [*xyz, yaw]):
+        raise ValueError('定位假设包含无效数值')
+    base = _fixed_quality(body, reference, index, xyz, yaw)
+    neighbours = []
+    for step in steps:
+        for dx, dy in ((step, 0.), (-step, 0.), (0., step), (0., -step),
+                       (step, step), (-step, step), (step, -step), (-step, -step)):
+            neighbours.append(_fixed_quality(body, reference, index,
+                                             [xyz[0] + dx, xyz[1] + dy, xyz[2]], yaw)['score'])
+    for turn in (yaw_step, -yaw_step, 2 * yaw_step, -2 * yaw_step):
+        neighbours.append(_fixed_quality(body, reference, index, xyz, yaw + turn)['score'])
+    nearest = min(neighbours)
+    margin = nearest - base['score']
+    return dict(base_score=base['score'], nearest_score=nearest, margin=margin,
+                distinguishable=margin >= MIN_SHARPNESS_MARGIN, sampled=len(neighbours))
+
+
+def verify_sequence(match, frames, reference_points, *, stamps=None, frame_id='base_link',
+                    max_spread_m=MIN_SEQUENCE_SPREAD_M, max_spread_yaw=MIN_SEQUENCE_SPREAD_YAW,
+                    max_translation=.45):
+    """Confirm one hypothesis with several independent, stationary frames.
+
+    Each frame is fitted again in a small window around the hypothesis and must
+    land in the same place. A single lucky match in a repeated structure does
+    not survive this check, and a frame that drifted implies the robot moved or
+    the assumption is wrong.
+    """
+    if not match.get('accepted'):
+        raise ValueError('必须先有一个结构匹配假设')
+    frames = list(frames)
+    if len(frames) < 2:
+        raise ValueError('多帧确认至少需要两帧结构点云')
+    if stamps is not None:
+        if len(stamps) != len(frames):
+            raise ValueError('多帧时间戳数量不匹配')
+        values = [_stamp(value) for value in stamps]
+        if any(right <= left for left, right in zip(values, values[1:])):
+            raise ValueError('多帧时间戳必须严格递增')
+    pose = match['pose']
+    center = _hint(pose)
+    yaw = float(pose['Yaw'])
+    if not math.isfinite(yaw):
+        raise ValueError('定位朝向无效')
+    reference = _reference(reference_points, center)
+    index = _Index(reference)
+    rows = []
+    for points in frames:
+        body = _body(points, frame_id)
+        solved = _solve(body, reference, index, center, yaw, center, max_translation)
+        if solved is None:
+            solved = dict(pose=dict(pose), quality=_fixed_quality(body, reference, index, center, yaw))
+        if solved['quality']['overlap'] < MIN_OVERLAP or solved['quality']['rmse_m'] > MAX_RMSE:
+            raise ValueError('多帧结构没有确认定位：吻合 %.1f%%，误差 %.3f m' %
+                             (solved['quality']['overlap'] * 100, solved['quality']['rmse_m']))
+        rows.append(solved['pose'])
+    xs = [row['PosX'] for row in rows]
+    ys = [row['PosY'] for row in rows]
+    zs = [row['PosZ'] for row in rows]
+    yaws = [float(row['Yaw']) for row in rows]
+    mean_x = sum(xs) / len(xs)
+    mean_y = sum(ys) / len(ys)
+    mean_z = sum(zs) / len(zs)
+    mean_yaw = math.atan2(sum(math.sin(v) for v in yaws), sum(math.cos(v) for v in yaws))
+    spread_m = max(math.hypot(x - mean_x, y - mean_y) for x, y in zip(xs, ys))
+    spread_yaw = max(abs(_wrap(value - mean_yaw)) for value in yaws)
+    if spread_m > max_spread_m or spread_yaw > max_spread_yaw:
+        raise ValueError('多帧结构没有收敛到同一个位置（%.2f m / %.1f°），不能确认定位' %
+                         (spread_m, math.degrees(spread_yaw)))
+    return dict(verified=True, pose=dict(PosX=mean_x, PosY=mean_y, PosZ=mean_z, Yaw=mean_yaw),
+                frames=len(frames), spread_m=spread_m, spread_yaw=spread_yaw,
+                quality=match['quality'], source_stamp=match['source_stamp'], frame_id=frame_id,
+                method='multi_frame_structural_consensus')
 
 
 def saved_slam_pose(build, sensors, active_map, project=None):

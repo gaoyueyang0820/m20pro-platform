@@ -3,6 +3,28 @@ import base64,json,math,time,threading
 from pathlib import Path
 
 
+def _slam_pose(value):
+    """Map-session SLAM pose as x/y/yaw, or None when unusable."""
+    try:
+        x = float(value['PosX'])
+        y = float(value['PosY'])
+        quaternion = value['quaternion']
+        if not isinstance(quaternion, (list, tuple)) or len(quaternion) != 4:
+            return None
+        quaternion = [float(v) for v in quaternion]
+        if not all(math.isfinite(v) for v in [x, y, *quaternion]):
+            return None
+        norm = math.sqrt(sum(v * v for v in quaternion))
+        if not .5 < norm < 1.5:
+            return None
+        # ROS stores quaternions as x, y, z, w.
+        qx, qy, qz, w = (v / norm for v in quaternion)
+        yaw = math.atan2(2 * (w * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz))
+        return dict(x=x, y=y, yaw=yaw)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 class OperationCancelled(ValueError):
     """A superseded operation must never fall through to another action."""
 
@@ -31,7 +53,11 @@ class AutomaticLocalizer:
         link=self.app.link;pose=link.record(1007,2)['items']
         name=self.app.hub.remote_maps('/maps/list',timeout=3).get('active')
         if not name or link is not self.app.link or self.app.mapping:return False
-        hint=dict(schema_version=1,robot=link.ip,map_name=name,pose={k:pose[k] for k in ['PosX','PosY','PosZ','Yaw']},saved_at=time.time())
+        hint=dict(schema_version=1,robot=link.ip,map_name=name,
+                  pose={k:pose[k] for k in ['PosX','PosY','PosZ','Yaw']},
+                  # The SLAM pose captures what the robot actually did after
+                  # this record; it is evidence, not an initialization value.
+                  slam=_slam_pose(status.get('slam_odom')),saved_at=time.time())
         with self._hint_lock:
             temp=self.file.with_suffix('.tmp');temp.write_text(json.dumps(hint,ensure_ascii=False,indent=2));temp.replace(self.file);self.hint=hint
         return True
@@ -86,7 +112,7 @@ class AutomaticLocalizer:
     def saved_slam_hint(self,progress,status=None,check=None):
         """Recover from this completed mapping session, not an old pose cache."""
         import numpy as np
-        from m20.localization_recovery import saved_slam_pose,verify_transform,match_pose,verify_pose
+        from m20.localization_recovery import saved_slam_pose,verify_transform,match_pose,verify_pose,verify_sequence
         def hypothesis_for(build,sensors,active):
             context=(build.get('mapping') or {}).get('context') or {}
             fusion=(build.get('stop_mapping') or {}).get('fusion') or {}
@@ -133,9 +159,13 @@ class AutomaticLocalizer:
                 stamp=next_stamp,after_stamp=stamp,frame_id=second['frame_id'])
             pose=verification['initialization_pose']
         else:
-            verification=verify_pose(match,np.asarray(second['points']),points,
-                stamp=next_stamp,frame_id=second['frame_id'])
-            pose=match['pose']
+            # One lucky frame in a repeated structure is not a location. Fit
+            # the hypothesis again on two later independent frames and require
+            # them to agree before any initialization is sent.
+            third,third_stamp=self.body_cloud(after=next_stamp,check=check)
+            verification=verify_sequence(match,[np.asarray(second['points']),np.asarray(third['points'])],
+                points,stamps=[next_stamp,third_stamp],frame_id=second['frame_id'])
+            pose=verification['pose']
         if check:check()
         current=self.app.hub.remote_maps('/maps/list',timeout=3)
         latest=self.app.hub.remote_maps('/maps/build/status',timeout=4)
@@ -160,6 +190,38 @@ class AutomaticLocalizer:
                     first_verification=first_check,verification=verification,
                     message='已根据本轮保存轨迹自动恢复定位')
 
+    def _expected_motion(self):
+        """Measured SLAM displacement since the recorded hint, if comparable."""
+        recorded=(self.hint or {}).get('slam')
+        if not isinstance(recorded,dict):return None
+        try:current=_slam_pose((self.status() or {}).get('slam_odom'))
+        except (ValueError,KeyError):return None
+        if current is None:return None
+        try:
+            dx=current['x']-float(recorded['x']);dy=current['y']-float(recorded['y'])
+            dyaw=math.atan2(math.sin(current['yaw']-float(recorded['yaw'])),
+                            math.cos(current['yaw']-float(recorded['yaw'])))
+        except (KeyError,TypeError,ValueError):return None
+        if math.hypot(dx,dy)>4. or abs(dyaw)>math.pi*.9:
+            # A restarted SLAM session or a long trip makes the increment
+            # meaningless as evidence about the map pose.
+            return None
+        return dict(dx=dx,dy=dy,dyaw=dyaw)
+
+    @staticmethod
+    def _displacement_consistent(hint_pose,pose,expected,*,max_deviation=.6,max_yaw=.5):
+        """Is the fitted pose reachable from the recorded pose by measured motion?"""
+        try:
+            dx=float(pose['PosX'])-float(hint_pose['PosX'])
+            dy=float(pose['PosY'])-float(hint_pose['PosY'])
+            dyaw=math.atan2(math.sin(float(pose['Yaw'])-float(hint_pose['Yaw'])),
+                            math.cos(float(pose['Yaw'])-float(hint_pose['Yaw'])))
+        except (KeyError,TypeError,ValueError):return True
+        if not all(math.isfinite(v) for v in (dx,dy,dyaw)):return False
+        deviation=math.hypot(dx-expected['dx'],dy-expected['dy'])
+        turn=abs(math.atan2(math.sin(dyaw-expected['dyaw']),math.cos(dyaw-expected['dyaw'])))
+        return deviation<=max_deviation and turn<=max_yaw
+
     def local_hint(self,progress,check=None):
         import numpy as np
         from m20.localization_recovery import match_pose,verify_pose
@@ -168,23 +230,28 @@ class AutomaticLocalizer:
         if not link or not hint or hint.get('robot')!=link.ip:raise ValueError('尚无这台机器的可靠位置记录')
         library=self.app.hub.remote_maps('/maps/list',timeout=3)
         if library.get('active')!=hint['map_name']:raise ValueError('当前地图与最近位置记录不同')
-        p=hint['pose'];progress(.15,'正在最近可靠位置附近识别当前位置与朝向')
+        p=hint['pose'];expected=self._expected_motion()
+        progress(.15,'正在最近可靠位置附近识别当前位置与朝向')
         ref=self.app.hub.remote_maps('/maps/localization-reference',dict(name=hint['map_name'],center=[p['PosX'],p['PosY'],p['PosZ']]),timeout=8)
         if ref.get('map_name')!=hint['map_name'] or ref.get('frame_id')!='map':raise ValueError('定位参考地图不一致')
         points=np.frombuffer(base64.b64decode(ref['points'],validate=True),dtype='<f4').reshape(-1,3)
         first,stamp=self.body_cloud(check=check);match=match_pose(np.asarray(first['points']),points,p,stamp=stamp,frame_id=first['frame_id'])
         second,next_stamp=self.body_cloud(after=stamp,check=check)
-        verification=verify_pose(match,np.asarray(second['points']),points,stamp=next_stamp,frame_id=second['frame_id'])
+        third,third_stamp=self.body_cloud(after=next_stamp,check=check)
+        verification=verify_sequence(match,[np.asarray(second['points']),np.asarray(third['points'])],
+            points,stamps=[next_stamp,third_stamp],frame_id=second['frame_id'])
         if check:check()
         current=self.app.hub.remote_maps('/maps/list',timeout=3)
         with self.app.lock:
             if check:check()
             self._stationary(link)
             if current.get('active')!=hint['map_name']:raise ValueError('地图已经切换，停止恢复定位')
-            link.command(2101,1,match['pose'],'自动匹配最近位置并恢复定位')
+            if expected is not None and not self._displacement_consistent(hint['pose'],verification['pose'],expected):
+                raise ValueError('结构匹配位置与这段时间的实际位移不符，未初始化定位')
+            link.command(2101,1,verification['pose'],'自动匹配最近位置并恢复定位')
         progress(.8,'已识别当前位置，等待机器人定位收敛')
-        self.wait_normal(12,match['pose'],check=check)
-        return dict(ok=True,localized=True,method='recent_pose_cloud_match',pose=match['pose'],verification=verification,message='已自动识别位置与朝向，定位恢复正常')
+        self.wait_normal(12,verification['pose'],check=check)
+        return dict(ok=True,localized=True,method='recent_pose_cloud_match',pose=verification['pose'],verification=verification,message='已自动识别位置与朝向，定位恢复正常')
 
     def recover(self,progress,check=None,verify_current=False):
         if check:check()

@@ -6,7 +6,7 @@ import sys
 import unittest
 import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from m20.localization_recovery import match_pose, verify_pose, saved_slam_pose, verify_transform
+from m20.localization_recovery import match_pose, verify_pose, saved_slam_pose, verify_transform, verify_sequence, perturbation_sharpness
 
 
 def structure():
@@ -178,3 +178,53 @@ class SavedSlamRecoveryTests(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+
+
+def corridor():
+    axis=np.linspace(-6,6,241);height=np.linspace(-.2,1.35,19)
+    return np.concatenate([
+        np.array([[x,-1.1,z] for x in axis for z in height]),
+        np.array([[x,1.1,z] for x in axis for z in height]),
+    ])
+
+
+class LocalizationSharpnessTests(unittest.TestCase):
+    def test_a_featureless_corridor_is_not_accepted_as_a_location(self):
+        body=corridor();pose=np.array([.2,.3,.02,.1]);reference=transformed(body,pose)
+        with self.assertRaises(ValueError) as raised:
+            match_pose(body,reference,dict(x=0,y=0,z=0),stamp=100)
+        self.assertIn('多个',str(raised.exception))
+
+    def test_sharpness_beats_fixed_neighbours_not_just_found_rivals(self):
+        body=structure();pose=np.array([.35,-.25,.04,2.21]);reference=transformed(body,pose)
+        result=match_pose(body,reference,dict(x=0,y=0,z=0),stamp=100)
+        sharpness=result['quality']['sharpness']
+        self.assertTrue(sharpness['distinguishable'])
+        self.assertGreaterEqual(sharpness['margin'],.08)
+        self.assertEqual(sharpness['sampled'],20)
+
+    def test_multi_frame_confirmation_needs_monotonic_stamps(self):
+        body=structure();pose=np.array([.2,.1,.03,-.39]);reference=transformed(body,pose)
+        result=match_pose(body,reference,[0,0,0],stamp=123)
+        rng=np.random.default_rng(11)
+        frames=[body+rng.normal(scale=.006,size=body.shape) for _ in range(4)]
+        verified=verify_sequence(result,frames,reference,stamps=[123.1,123.2,123.3,123.4])
+        self.assertTrue(verified['verified'])
+        self.assertEqual(verified['frames'],4)
+        self.assertLess(verified['spread_m'],.08)
+        with self.assertRaisesRegex(ValueError,'严格递增'):
+            verify_sequence(result,frames,reference,stamps=[123.1,123.2,123.2,123.4])
+        with self.assertRaisesRegex(ValueError,'至少需要两帧'):
+            verify_sequence(result,frames[:1],reference)
+        with self.assertRaisesRegex(ValueError,'结构点不足'):
+            verify_sequence(result,[frames[0],np.zeros((5,3))],reference)
+        with self.assertRaisesRegex(ValueError,'数量不匹配'):
+            verify_sequence(result,frames,reference,stamps=[123.1])
+
+    def test_sharpness_rejects_an_invalid_hypothesis(self):
+        body=structure();reference=transformed(body,np.array([0,0,0,0.]))
+        from m20.localization_recovery import _body, _reference, _Index
+        center=np.array([0.,0.,0.]);points=_body(body,'base_link')
+        ref=_reference(reference,center)
+        with self.assertRaisesRegex(ValueError,'无效数值'):
+            perturbation_sharpness(points,ref,_Index(ref),dict(PosX=float('nan'),PosY=0.,PosZ=0.,Yaw=0.))
