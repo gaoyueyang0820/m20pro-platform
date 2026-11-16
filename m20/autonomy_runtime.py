@@ -426,8 +426,11 @@ class Autonomy:
                         status=self.app.proxy(role,'/sensors/status',timeout=2)
                     except (ValueError,KeyError,AttributeError):
                         status={}
-                    refusal=exploration_pose_consistency((status or {}).get('odom'),(status or {}).get('slam_odom'))
-                    if refusal:raise ValueError(refusal)
+                    # Without any localized pose the later preparation checks
+                    # own the failure; this gate only judges poses it can read.
+                    if isinstance(status,dict) and status.get('odom'):
+                        refusal=exploration_pose_consistency(status.get('odom'),status.get('slam_odom'))
+                        if refusal:raise ValueError(refusal)
                 self.target=None;self.explorer=Explorer(radius,forward,yaw,expand=scope=='map')
             self.generation+=1;self._save_token=None;self.context=self.app.hub.context()
             self.capture_id=None
