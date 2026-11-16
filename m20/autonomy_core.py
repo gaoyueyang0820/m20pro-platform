@@ -244,7 +244,8 @@ class Explorer:
         allowed={p for p in self.free if is_allowed(p)}
         prior_kind=(lambda p:self.prior.kind(p[0]*RESOLUTION,p[1]*RESOLUTION)) if self.prior else None
         selected=self.frontiers.select(start,self.last_pose[2],allowed,self.free,self.obstacles,within,
-                    self.last_stamp if self.last_stamp is not None else time.monotonic(),prior_kind,possible,self.visited)
+                    self.last_stamp if self.last_stamp is not None else time.monotonic(),prior_kind,possible,
+                    self.visited,conflicts=self.prior_conflicts())
         self.frontier_metrics=dict(self.frontiers.last)
         if selected is None:
             self.path=[];self.goal=None
@@ -256,6 +257,20 @@ class Explorer:
         self.goal=selected['goal'];self.path=selected['path'];self.target_kind=selected['kind']
         self.plan_state='planned'
         return 'planned'
+
+    def prior_conflicts(self):
+        """Cells where the saved map keeps being contradicted by live structure.
+
+        Moving obstacles are excluded: only the confirmed static layer can
+        claim that a saved wall is wrong.
+        """
+        if self.prior is None or self.prior.first is None:return set()
+        conflicts=set()
+        for p in self._static_obstacles:
+            if self.prior.kind(p[0]*RESOLUTION,p[1]*RESOLUTION)=='known':conflicts.add(p)
+        for p in self.free:
+            if self.prior.kind(p[0]*RESOLUTION,p[1]*RESOLUTION)=='wall':conflicts.add(p)
+        return conflicts
 
     def straight_clearance(self, pose, length, margin):
         """The current scan certifies the sweep; keep its centre in task scope."""

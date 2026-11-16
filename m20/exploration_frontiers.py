@@ -107,9 +107,19 @@ class FrontierSelector:
                 if prior_kind and prior_kind(q)=='unknown':new_old_map.add(q)
         return len(unknown)*self.res**2,len(new_old_map)*self.res**2,visible
 
-    def select(self,start,yaw,allowed,free,obstacles,within,now,prior_kind=None,possible=None,visited=()):
+    def select(self,start,yaw,allowed,free,obstacles,within,now,prior_kind=None,possible=None,visited=(),conflicts=()):
         costs,parent=reachable(start,allowed,self.res)
         visited=set(visited);observed_baselines=set();near_viewpoint=set();near_short_view=set()
+        # Old-map conflict zones: a wall where the live scan keeps seeing floor
+        # (or the reverse) is the one place worth revisiting even inside an
+        # already swept area. Everything else in a swept area is a repeat.
+        zone=set()
+        if conflicts:
+            radius=max(1,round(1.2/self.res))
+            for cx,cy in list(conflicts)[:400]:
+                for dx in range(-radius,radius+1):
+                    for dy in range(-radius,radius+1):
+                        if dx*dx+dy*dy<=radius*radius:zone.add((cx+dx,cy+dy))
         r=1.4/self.res;n=math.ceil(r);near2=(.85/self.res)**2
         for vx,vy in self.viewpoints:
             for x in range(math.floor(vx)-n,math.ceil(vx)+n+1):
@@ -122,7 +132,7 @@ class FrontierSelector:
         def eligible(p,short=False):
             key=(p,short)
             if key not in eligible_cache:
-                usable=p not in visited and p not in (near_short_view if short else near_viewpoint)
+                usable=(p not in visited or p in zone) and p not in (near_short_view if short else near_viewpoint)
                 if usable and self._deferred(p,now,obstacles):deferred.add(p);usable=False
                 eligible_cache[key]=usable
             return eligible_cache[key]
@@ -151,7 +161,7 @@ class FrontierSelector:
         # fully visible room. Do not drive to every 20 cm cell in the room.
         coarse=max(1,round(.8/self.res))
         fallback=[p for p in costs if costs[p]>=.8 and p[0]%coarse==0 and p[1]%coarse==0 and eligible(p)]
-        fallback.sort(key=lambda p:(costs[p],p))
+        fallback.sort(key=lambda p:(0 if p in zone else 1,costs[p],p))
         if not fallback:fallback=sorted((p for p in costs if costs[p]>=.8 and eligible(p)),key=lambda p:(costs[p],p))
         # A coarse lattice must not force a 45-degree turn merely because the
         # forward 0.8 m point was too near and the next axis point was 1.6 m.
@@ -191,7 +201,8 @@ class FrontierSelector:
             kind=('expand' if expansion>.08 else 'refine') if prior_kind else ('expand' if gain>.08 else 'observe')
             # Once an old-map unknown area is reobserved, moving within it has
             # diminishing utility. Frontier gain is the dominant global driver.
-            utility=3.0*gain+1.4*min(expansion,4.)+0.45*min(new_views,8.)
+            conflict=1. if p in zone else 0.
+            utility=3.0*gain+1.4*min(expansion,4.)+0.45*min(new_views,8.)+2.5*conflict
             cost=1.+costs[p]+.85*turn
             score=utility/cost
             ranked.append((score,-turn,-costs[p],p,chain,kind,gain,expansion,new_views))
@@ -201,12 +212,12 @@ class FrontierSelector:
                     else 'local_space' if groups and max(costs.values(),default=0.)<.8 else 'complete')
             reasons=dict(searching='正在选择其他探索方向',maneuver='正在寻找转向或退让通路',deferred='等待暂时受阻通路重新开放',local_space='正在重新观察周边通路',complete='可达区域已完成观察')
             self.last=dict(frontier_clusters=len(groups),reachable_cells=len(costs),candidates=0,
-                candidate_pool=len(ordered),search_remaining=remaining,search_status=status,
+                candidate_pool=len(ordered),conflict_cells=len(conflicts),search_remaining=remaining,search_status=status,
                 maneuver_blocked=self._maneuver_blocked,deferred_regions=len(deferred),reason=reasons[status])
             return None
         best=max(ranked);_,_,_,goal,path,kind,gain,expansion,new_views=best
         self._search_index=0
         if prior_kind and kind=='observe':kind='refine'
         if goal!=self.previous_goal:self.goal_switches+=1;self.previous_goal=goal
-        self.last=dict(frontier_clusters=len(groups),reachable_cells=len(costs),candidates=len(ranked),candidate_pool=len(ordered),search_status='planned',information_gain_m2=round(gain,2),old_unknown_gain_m2=round(expansion,2),revisit_gain_m2=round(new_views,2),path_length_m=round(costs[goal],2),deferred_regions=sum(now<r['until'] for r in self.failed),goal_switches=self.goal_switches,reason='前往信息收益较高的边界观察点' if gain>.08 else '前往具有新观察角度的复查点')
+        self.last=dict(frontier_clusters=len(groups),reachable_cells=len(costs),candidates=len(ranked),candidate_pool=len(ordered),search_status='planned',information_gain_m2=round(gain,2),old_unknown_gain_m2=round(expansion,2),revisit_gain_m2=round(new_views,2),conflict_cells=len(conflicts),path_length_m=round(costs[goal],2),deferred_regions=sum(now<r['until'] for r in self.failed),goal_switches=self.goal_switches,reason='前往有墙线冲突的位置复查旧图' if conflict else ('前往信息收益较高的边界观察点' if gain>.08 else '前往具有新观察角度的复查点'))
         return dict(goal=goal,path=path,kind=kind,metrics=self.last)

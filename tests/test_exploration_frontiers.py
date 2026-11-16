@@ -73,4 +73,29 @@ class FrontierTests(unittest.TestCase):
         self.assertLess(result['goal_changes'],35)
 
 
+    def test_a_saved_map_conflict_outranks_repeating_a_swept_area(self):
+        selector=FrontierSelector(.2)
+        free={(x,y) for x in range(-19,20) for y in range(-19,20)}
+        within=lambda p:-19<=p[0]<=19 and -19<=p[1]<=19
+        visited={p for p in free if abs(p[0])>2 or abs(p[1])>2}
+        selected=selector.select((0,0),0.,free,free,set(),within,1.,None,None,visited,
+                                 conflicts={(12,0)})
+        self.assertIsNotNone(selected)
+        self.assertEqual(selector.last['conflict_cells'],1)
+        self.assertIn('冲突',selector.last['reason'])
+        gx,gy=selected['goal']
+        self.assertLessEqual(math.hypot(gx-12,gy),6)
+
+    def test_without_conflicts_a_swept_area_is_not_revisited(self):
+        selector=FrontierSelector(.2)
+        free={(x,y) for x in range(-19,20) for y in range(-19,20)}
+        within=lambda p:-19<=p[0]<=19 and -19<=p[1]<=19
+        visited={p for p in free if abs(p[0])>2 or abs(p[1])>2}
+        selected=selector.select((0,0),0.,free,free,set(),within,1.,None,None,visited)
+        # Nothing is unknown and nothing conflicts: the swept area is done.
+        self.assertIsNone(selected)
+        self.assertEqual(selector.last['conflict_cells'],0)
+        self.assertEqual(selector.last['search_status'],'complete')
+
+
 if __name__=='__main__':unittest.main()
