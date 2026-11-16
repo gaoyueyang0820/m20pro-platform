@@ -37,3 +37,30 @@ class OnboardExplorationTests(unittest.TestCase):
                 self.task.run({},lambda:dict(phase='collecting',mapping=dict(request_id='c'*32)),lambda _:None,lambda:True)
         self.assertTrue(self.task.stopped.is_set())
         self.assertEqual([args.args[0] for args in rpc.call_args_list],['/missions/exploration/start','/missions/cancel'])
+
+    def test_unavailable_status_never_blocks_the_heartbeat(self):
+        # A NOS read that times out is not evidence the capture ended. The old
+        # ordering raised before pulse and silently stopped renewing the lease.
+        replies=iter([{'mission':{'phase':'running'}},
+                      {'mission':{'phase':'completed','stop_confirmed':True}}])
+        def unavailable():raise ValueError('NOS 地图状态读取超时')
+        with patch.object(self.task,'_call',side_effect=lambda *_args,**_kw:next(replies)) as rpc:
+            result=self.task.run({},unavailable,lambda _:None,lambda:True)
+        self.assertEqual(result['phase'],'completed')
+        self.assertEqual([args.args[0] for args in rpc.call_args_list],['/missions/exploration/start','/missions/pulse'])
+        self.assertEqual(self.task.heartbeat['sent'],1)
+        self.assertEqual(self.task.heartbeat['stale'],1)
+        self.assertEqual(self.task.heartbeat['status_reads'],1)
+        self.assertEqual(result['heartbeat']['sent'],1)
+
+    def test_heartbeat_reports_its_own_cadence(self):
+        replies=iter([{'mission':{'phase':'running'}},
+                      {'mission':{'stop_confirmed':True}}])
+        status=dict(phase='collecting',mapping=dict(request_id='b'*32))
+        with patch.object(self.task,'_call',side_effect=lambda *_args,**_kw:next(replies)):
+            result=self.task.run({},lambda:status,lambda _:None,lambda:True)
+        beat=result['heartbeat']
+        self.assertEqual(beat['sent'],1)
+        self.assertIsNotNone(beat['last_sent'])
+        self.assertEqual(beat['failed'],0)
+        self.assertEqual(beat['status_failures'],0)

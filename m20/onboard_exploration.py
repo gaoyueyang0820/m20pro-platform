@@ -1,9 +1,19 @@
-"""Desktop lease and status transport; all exploration motion runs on GOS."""
+"""Desktop lease and status transport; all exploration motion runs on GOS.
+
+The lease heartbeat is the safety-critical signal: GOS stops itself when the
+lease expires. Reading NOS mapping status is diagnostic bookkeeping by
+comparison, so the two must never share a blocking path. This loop sends the
+pulse first and reads status afterwards on a slower cadence; a slow or failed
+status read never delays or skips a heartbeat.
+"""
 import threading
 import time
 import uuid
 
 from m20.platform_core import rpc
+
+STATUS_INTERVAL = 1.5
+HEARTBEAT_INTERVAL = .6
 
 
 class OnboardExploration:
@@ -15,6 +25,8 @@ class OnboardExploration:
         self.cancelled=threading.Event()
         self.stopped=threading.Event()
         self.lease_end=0.
+        self.heartbeat=dict(sent=0,failed=0,stale=0,status_reads=0,status_failures=0,
+                            last_sent=None,last_gap_s=None)
 
     @classmethod
     def probe(cls, app):
@@ -37,6 +49,36 @@ class OnboardExploration:
         if lease:self.lease_end=time.monotonic()+5.5
         return result
 
+    def _owned(self, status):
+        if not isinstance(status, dict):return False
+        if status.get('phase')!='collecting':return False
+        mapping=status.get('mapping') or {}
+        return mapping.get('request_id')==self.key['capture_id']
+
+    def _beat(self):
+        began=time.monotonic()
+        try:reply=self._call('/missions/pulse',self.key)
+        except ValueError:
+            self.heartbeat['failed']+=1
+            raise
+        self.heartbeat['sent']+=1
+        previous=self.heartbeat['last_sent']
+        if previous is not None:self.heartbeat['last_gap_s']=round(began-previous,2)
+        self.heartbeat['last_sent']=began
+        mission=reply.get('mission') or {}
+        mission['heartbeat']=dict(self.heartbeat)
+        return mission
+
+    def _read_status(self, map_status):
+        self.heartbeat['status_reads']+=1
+        try:status=map_status()
+        except ValueError:
+            # An unavailable read is not evidence that the capture ended.
+            self.heartbeat['stale']+=1
+            self.heartbeat['status_failures']+=1
+            return None
+        return status
+
     def run(self, spec, map_status, report, current):
         """An uncertain start is cancelled on the same endpoint, never replayed."""
         started=False;mission={}
@@ -45,21 +87,31 @@ class OnboardExploration:
             started=True
             mission=self._call('/missions/exploration/start',dict(self.key,**spec),timeout=4)['mission']
             report(mission)
+            # Establish the capture baseline before any renewal. A capture that
+            # already belongs to another request must not receive a new lease.
+            baseline=self._read_status(map_status)
+            if baseline is not None and not self._owned(baseline):
+                raise RuntimeError('建图采集已结束或已变化')
+            last_status_at=time.monotonic()
             while current() and not self.cancelled.is_set():
                 if mission.get('stop_confirmed'):
                     self.stopped.set();return mission
-                self.cancelled.wait(.6)
+                self.cancelled.wait(HEARTBEAT_INTERVAL)
                 if self.cancelled.is_set() or not current():break
-                try:
-                    status=map_status()
-                    if status.get('phase')!='collecting' or status.get('mapping',{}).get('request_id')!=self.key['capture_id']:
-                        raise RuntimeError('建图采集已结束或已变化')
-                    mission=self._call('/missions/pulse',self.key)['mission']
-                    report(mission)
+                # Heartbeat first: the GOS lease expires on its own clock no
+                # matter how slow the NOS status read is.
+                try:mission=self._beat()
                 except ValueError:
                     # Let the onboard lease handle a genuine disconnect. A
                     # delayed read does not stop the control loop on the Mac.
                     continue
+                report(mission)
+                if time.monotonic()-last_status_at<STATUS_INTERVAL:continue
+                last_status_at=time.monotonic()
+                status=self._read_status(map_status)
+                if status is None:continue
+                if not self._owned(status):
+                    raise RuntimeError('建图采集已结束或已变化')
             return mission
         finally:
             if not started:self.stopped.set()

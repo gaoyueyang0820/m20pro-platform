@@ -21,6 +21,11 @@ from m20.latest_observation import LatestObservationPump, ObservationContextChan
 from m20.exploration_view import PausedExplorationView
 
 
+# Mapping phase is diagnostic for the local control loop. A read that is slow
+# or unavailable must not be mistaken for "the capture ended".
+BUILD_STATUS_STALE_SECONDS = 5.
+
+
 class PersonVision:
     def __init__(self, app):
         self.app=app;self.lock=threading.RLock();self.thread=None;self.quit=threading.Event()
@@ -650,13 +655,27 @@ class Autonomy:
                 if mode=='explore':
                     progress.observe_command(self.app.velocity,time.monotonic())
                     health_at,build=map_health.get('result',(0,{}))
-                    if self.capture_id and health_at and build.get('mapping',{}).get('request_id')!=self.capture_id:
+                    readable=bool(health_at) and build.get('phase')!='error'
+                    if self.capture_id and readable and build.get('mapping',{}).get('request_id')!=self.capture_id:
                         raise ValueError('采集归属已变化，已停止自主移动，未结束其他采集')
-                    if build.get('phase')!='collecting' or now-health_at>5:
+                    # A slow or failed status read is not evidence that the
+                    # capture ended. Keep the last known phase, mark it stale
+                    # and let the local control loop keep running. Only an
+                    # explicit non-collecting phase stops the task.
+                    if not readable or now-health_at>BUILD_STATUS_STALE_SECONDS:
+                        self.scan_timing['build_status']='stale'
+                        if not health_at and not self.capture_id:
+                            self._drive(run_id,0,0)
+                            if self.state=='preparing' and now-waiting<30:
+                                time.sleep(.2);continue
+                            raise ValueError('建图状态未就绪：等待建图状态反馈')
+                    elif build.get('phase')!='collecting':
                         self._drive(run_id,0,0)
-                        if self.state=='preparing' and now-waiting<30 and build.get('phase')!='error':
+                        if self.state=='preparing' and now-waiting<30:
                             time.sleep(.2);continue
                         raise ValueError('建图状态未就绪：'+build.get('message','等待建图状态反馈'))
+                    else:
+                        self.scan_timing.pop('build_status',None)
                 if pump is None:
                     with self.app.lock:
                         self._assert_run(run_id)
@@ -936,7 +955,9 @@ class Autonomy:
                     break
                 time.sleep(.06)
             def map_status():
-                return app.hub.remote_maps('/maps/build/status',context=context,timeout=1.8)
+                # Kept short: this read is now off the heartbeat path, and a
+                # slow read only delays a diagnostic refresh.
+                return app.hub.remote_maps('/maps/build/status',context=context,timeout=1.0)
             status=map_status()
             with app.lock:
                 self._assert_run(run_id)
