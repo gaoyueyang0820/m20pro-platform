@@ -116,7 +116,7 @@ int reduce(const T* points,std::size_t count,std::uint8_t* floor,
     if (!(determinant>1e-5*scale))return fallback(result,degenerate);
     const double ax=(xz*yy-yz*xy)/determinant,ay=(yz*xx-xz*xy)/determinant;
     const double az=mz-ax*mx-ay*my;
-    const double slope=std::hypot(ax,ay),limit=std::tan(6.*3.14159265358979323846/180.);
+    const double slope=std::hypot(ax,ay),limit=std::tan(15.*3.14159265358979323846/180.);
     if (!std::isfinite(slope)||slope>=limit-1e-9)return fallback(result,slope_boundary);
     result->floor_height=az;result->coeff[0]=ax;result->coeff[1]=ay;result->coeff[2]=az;
     if (near(std::fabs(az*1000.-std::floor(az*1000.)),.5,1e-7))return fallback(result,output_boundary);
@@ -131,14 +131,14 @@ int reduce(const T* points,std::size_t count,std::uint8_t* floor,
     for(const auto i:valid) {
         const double x=points[3*i],y=points[3*i+1],z=points[3*i+2];
         const double height=z-(x*ax+y*ay+az);
-        if (near(std::fabs(height),.055,margin)||near(std::fabs(height),.12,margin)||near(height,1.5,margin))
+        if (near(height,.25,margin)||near(height,1.5,margin))
             return fallback(result,height_boundary);
         const int gx=static_cast<int>(std::nearbyint(x/resolution));
         const int gy=static_cast<int>(std::nearbyint(y/resolution));
         const int id=(gx+extent)*side+(gy+extent);
         if (id<0||id>=cells)return fallback(result,unsupported);
-        if (std::fabs(height)<.055)floor[id]=1;
-        if ((height>.12&&height<1.5)||height<-.12) {
+        if (height<.25&&height>-.12)floor[id]=1;
+        if ((height>=.25&&height<1.5)||height<-.12) {
             obstacle[id]=1;double* b=bounds+4*id;
             b[0]=std::min(b[0],x);b[1]=std::min(b[1],y);b[2]=std::max(b[2],x);b[3]=std::max(b[3],y);
         }

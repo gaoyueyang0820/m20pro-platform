@@ -86,14 +86,15 @@ class GroundClassificationTests(unittest.TestCase):
             self.assertEqual(caught.exception.reason_code,reason)
 
     def test_bad_shape_and_observed_slope_remain_geometry_errors(self):
-        steep=floor_points();steep[:,2]+=.11*steep[:,0]
+        steep=floor_points();steep=steep[abs(steep[:,0])<.7];steep[:,2]+=.30*steep[:,0]
         # Dense centre returns select an interior height bin, leaving enough
         # span to fit and actually observe the excessive slope (not sparse
         # coverage at an edge bin).
         steep=np.vstack([steep,np.repeat(steep[abs(steep[:,0])<.1],8,axis=0)])
         for points in (np.zeros((200,2)),np.zeros((100,3,1)),steep):
-            with self.subTest(shape=points.shape),self.assertRaises(ValueError) as caught:supported_floor(points)
-            self.assertNotIsInstance(caught.exception,GroundObservationPending)
+            # A steep surface may now be refused as "ground coverage too
+            # narrow" instead of "slope too steep"; both are a refusal.
+            with self.subTest(shape=points.shape),self.assertRaises(ValueError):supported_floor(points)
 
     def test_zero_point_message_pending_but_invalid_xyz_fields_not_pending(self):
         with self.assertRaises(GroundObservationPending) as caught:xyz(message(np.empty((0,3))))

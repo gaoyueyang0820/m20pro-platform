@@ -1,4 +1,6 @@
 """Compact supported-floor observations from a full (not strided) local scan."""
+# Height above the fitted ground that the platform may still walk over.
+LOW_STEP = .25
 import math
 import numpy as np
 from m20.autonomy_core import RESOLUTION
@@ -83,7 +85,9 @@ def _numpy_supported_floor(points):
     if determinant<=1e-8*max(1.,xx*yy):raise GroundObservationPending('地面观测退化为细线，等待更完整地面','floor_plane_degenerate')
     ax=(xz*yy-yz*xy)/determinant;ay=(yz*xx-xz*xy)/determinant
     coeff=np.array([ax,ay,mean[2]-ax*mean[0]-ay*mean[1]])
-    if math.hypot(*coeff[:2])>math.tan(math.radians(6)):
+    # Door thresholds are often built as short ramps. The M20 climbs
+    # stairs; refuse only genuinely steep indoor surfaces.
+    if math.hypot(*coeff[:2])>math.tan(math.radians(15)):
         raise ValueError('当前地面倾斜，自动探索仅支持平整室内地面')
     height = points[:,2]-(points[:,0]*coeff[0]+points[:,1]*coeff[1]+coeff[2])
     grid = np.rint(points[:,:2]/RESOLUTION).astype(int)
@@ -91,9 +95,12 @@ def _numpy_supported_floor(points):
     # tuples took >300 ms on NOS, making a freshly processed scan already stale.
     extent=math.ceil(6/RESOLUTION)+2;side=2*extent+1
     ids=(grid[:,0]+extent)*side+(grid[:,1]+extent)
-    floor=np.flatnonzero(np.bincount(ids[abs(height)<.055],minlength=side*side))
-    # Include low obstacles and deep depressions. Unknown floor stays unknown.
-    obstacle_mask=((height>.12)&(height<1.5))|(height<-.12)
+    # Ramp/step band: anything under LOW_STEP is walkable for this platform.
+    # A 2-3 cm threshold with a short ramp used to land above .12 and was
+    # reported as a wall across the only doorway.
+    floor=np.flatnonzero(np.bincount(ids[(height<LOW_STEP)&(height>-.12)],minlength=side*side))
+    # Include obstacles above LOW_STEP and deep depressions.
+    obstacle_mask=((height>=LOW_STEP)&(height<1.5))|(height<-.12)
     obstacle_ids=ids[obstacle_mask]
     obstacles=np.flatnonzero(np.bincount(obstacle_ids,minlength=side*side))
     bounds=np.column_stack([np.full(side*side,np.inf),np.full(side*side,np.inf),np.full(side*side,-np.inf),np.full(side*side,-np.inf)])

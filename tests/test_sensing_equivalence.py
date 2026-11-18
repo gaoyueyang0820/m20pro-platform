@@ -34,7 +34,7 @@ def legacy_supported_floor(points):
     if determinant<=1e-8*max(1.,xx*yy):raise ValueError('地面观测退化为细线，等待更完整地面')
     ax=(xz*yy-yz*xy)/determinant;ay=(yz*xx-xz*xy)/determinant
     coeff=np.array([ax,ay,mean[2]-ax*mean[0]-ay*mean[1]])
-    if math.hypot(*coeff[:2])>math.tan(math.radians(6)):
+    if math.hypot(*coeff[:2])>math.tan(math.radians(15)):
         raise ValueError('当前地面倾斜，自动探索仅支持平整室内地面')
     height = points[:,2]-(points[:,0]*coeff[0]+points[:,1]*coeff[1]+coeff[2])
     grid = np.rint(points[:,:2]/RESOLUTION).astype(int)
@@ -42,9 +42,9 @@ def legacy_supported_floor(points):
     # tuples took >300 ms on NOS, making a freshly processed scan already stale.
     extent=math.ceil(6/RESOLUTION)+2;side=2*extent+1
     ids=(grid[:,0]+extent)*side+(grid[:,1]+extent)
-    floor=np.flatnonzero(np.bincount(ids[abs(height)<.055],minlength=side*side))
-    # Include low obstacles and deep depressions. Unknown floor stays unknown.
-    obstacle_mask=((height>.12)&(height<1.5))|(height<-.12)
+    floor=np.flatnonzero(np.bincount(ids[(height<.25)&(height>-.12)],minlength=side*side))
+    # Include obstacles above the walkable step band and deep depressions.
+    obstacle_mask=((height>=.25)&(height<1.5))|(height<-.12)
     obstacle_ids=ids[obstacle_mask]
     obstacles=np.flatnonzero(np.bincount(obstacle_ids,minlength=side*side))
     bounds=np.column_stack([np.full(side*side,np.inf),np.full(side*side,np.inf),np.full(side*side,-np.inf),np.full(side*side,-np.inf)])

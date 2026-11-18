@@ -199,7 +199,7 @@ class TrajectoryTests(unittest.TestCase):
     def test_sensor_reduction_retains_all_obstacle_extents(self):
         from m20.autonomy_sensing import supported_floor
         floor=np.array([[x,y,-.55] for x in np.arange(-2,2,.08) for y in np.arange(-2,2,.08)])
-        obstacles=np.array([[1.02,.21,-.3],[1.08,.25,-.3],[1.01,.29,-.3]])
+        obstacles=np.array([[1.02,.21,-.28],[1.08,.25,-.28],[1.01,.29,-.28]])
         s=supported_floor(np.vstack([floor,obstacles]));self.assertEqual(s['geometry_version'],2)
         for x,y,_ in obstacles:
             self.assertTrue(any(a-.0001<=x<=c+.0001 and b-.0001<=y<=d+.0001 for a,b,c,d in s['obstacle_bounds']))
