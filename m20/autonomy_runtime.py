@@ -30,6 +30,17 @@ BUILD_STATUS_STALE_SECONDS = 5.
 MAX_EXPLORATION_POSE_GAP_M = .8
 
 
+def exploration_pose_gate_required(mode, req):
+    """Only extending a saved map needs the localized map frame.
+
+    A brand-new capture defines its own SLAM frame. There is no saved map for
+    that frame to agree with, so a stale or drifted map pose says nothing about
+    whether the new map will be correct; gating it would block the one case
+    where exploration is supposed to run without a map.
+    """
+    return mode=='explore' and isinstance(req,dict) and req.get('extend') is True
+
+
 def exploration_pose_consistency(odom, slam, now=None, *, max_age_s=3., max_gap_m=MAX_EXPLORATION_POSE_GAP_M):
     """Explain why mapping-frame exploration must not start yet.
 
@@ -421,7 +432,8 @@ class Autonomy:
             else:
                 if self.app.mapping and not req.get('use_current'):raise ValueError('当前已有建图采集，请选择继续当前采集，或先结束并保存')
                 if not self.app.mapping and req.get('use_current'):raise ValueError('当前没有建图采集，请选择新建或续建')
-                if not self.app.demo:
+                self.pose_gate=None
+                if not self.app.demo and exploration_pose_gate_required(mode,req):
                     try:
                         role=self.app.hub.connections.value.get('sensor_source','nos')
                         status=self.app.proxy(role,'/sensors/status',timeout=2)
