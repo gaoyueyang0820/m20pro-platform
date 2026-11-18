@@ -221,7 +221,7 @@ class RosSensors:
             if pose and pose['tilt']>.14:raise ValueError('机身倾斜，已停止自主探索')
             if pose and not pose['child_frame_id'] and not proof:
                 self.ensure_topic('/SLAM_CLOUD_REGISTERED_BODY');self.ensure_topic('/SLAM_ALIGNED_POINTS')
-                if not body or not world or max(time.monotonic()-body[1],time.monotonic()-world[1])>.5:
+                if not body or not world or max(time.monotonic()-body[1],time.monotonic()-world[1])>1.0:
                     raise ObservationSyncPending('等待新鲜的 SLAM 坐标对照点云','slam_reference_sync')
                 from m20.slam_pose_check import verify_slam_body_pose
                 proof=verify_slam_body_pose(body[0],world[0],pose)
@@ -258,7 +258,11 @@ class RosSensors:
                 if pose and pose.get('frame_id')!='map':raise ValueError('SLAM 位姿父坐标系尚未核对：'+str(pose.get('frame_id')))
                 if pose and pose['child_frame_id']!='base_link' and not (pose['child_frame_id']=='' and self.slam_pose_proof):raise ValueError('SLAM 位姿子坐标系尚未核对：'+str(pose['child_frame_id']))
                 if pose and pose['tilt']>.14:raise ValueError('机身倾斜，已停止自主探索')
-                if not pose or time.monotonic()-pose['received_monotonic']>.65 or abs(pose['stamp']-data['stamp'])>.05:
+                # SLAM pose and the lidar frame arrive at different rates. A
+                # 50 ms pairing window rejected roughly half of the usable
+                # frames on the real robot, which read as start-stop motion.
+                # The pose is still bounded by both age and stamp distance.
+                if not pose or time.monotonic()-pose['received_monotonic']>1.0 or abs(pose['stamp']-data['stamp'])>.12:
                     raise ObservationSyncPending('等待与雷达同步的 SLAM 位姿','slam_pose_sync')
                 data.update(pose=[pose['PosX'],pose['PosY'],pose['Yaw']],pose_stamp=pose['stamp'],pose_source='/SLAM_ODOM',pose_frame_id=pose['frame_id'])
             else:

@@ -138,6 +138,7 @@ class Explorer:
         self.recovery_measured_distance=0.;self.recovery_last_translation=None
         self.recovery_reset_reason=None;self.recovery_block_reason=None;self.actual_visited=set()
         self.recovery_pending=False;self.recovery_stop_stamp=None;self.recovery_forced=False
+        self.moving_tracks=0
         self.recovery_tried=set();self.recovery_tried_world=[];self.recovery_outcomes=[];self.recovery_request_reason=None
         self.recovery_candidate_failures=0
         self.plan_state='idle'
@@ -200,6 +201,9 @@ class Explorer:
         start=cell(x,y)
         self.free.update((start[0]+dx,start[1]+dy) for dx,dy in SUPPORT)
         observation=self._moving_obstacles.observe(scan,cleared=cleared)
+        # Moving tracks are temporary by definition: a person in the lane is a
+        # reason to hold, not a reason to retreat into the same person.
+        self.moving_tracks=observation.moving_tracks
         self._static_obstacles.difference_update(observation.cleared)
         self._static_obstacles.update(observation.confirmed)
         # Finite per-run exploration bounds keep memory and route search bounded.
