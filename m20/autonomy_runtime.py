@@ -256,6 +256,7 @@ class Autonomy:
         self._discard_capability=None;self._last_discard_result=None;self.discard_details=None
         self._control_generation=0
         self.onboard_task=None;self.onboard_cleanup=None;self.executor='desktop'
+        self.pose_gate=None
 
     def _resumable(self):
         p=self.app.hub.preparation
@@ -429,8 +430,10 @@ class Autonomy:
                     # Without any localized pose the later preparation checks
                     # own the failure; this gate only judges poses it can read.
                     if isinstance(status,dict) and status.get('odom'):
-                        refusal=exploration_pose_consistency(status.get('odom'),status.get('slam_odom'))
-                        if refusal:raise ValueError(refusal)
+                        # A momentary localization gap must not reject the
+                        # operator's request. Keep the reason and wait for the
+                        # pose to become usable in the preparation thread.
+                        self.pose_gate=exploration_pose_consistency(status.get('odom'),status.get('slam_odom'))
                 self.target=None;self.explorer=Explorer(radius,forward,yaw,expand=scope=='map')
             self.generation+=1;self._save_token=None;self.context=self.app.hub.context()
             self.capture_id=None
@@ -555,10 +558,44 @@ class Autonomy:
             with self.app.lock:
                 if self._resume_token is token:self._resume_token=None
 
+    def _pose_gate_refusal(self):
+        try:
+            role=self.app.hub.connections.value.get('sensor_source','nos')
+            status=self.app.proxy(role,'/sensors/status',timeout=2)
+        except (ValueError,KeyError,AttributeError):
+            return None
+        if not isinstance(status,dict) or not status.get('odom'):return None
+        return exploration_pose_consistency(status.get('odom'),status.get('slam_odom'))
+
+    def _wait_pose_gate(self,reason,run_id,check,timeout=30.):
+        """Hold the task while the pose is unusable, then start it normally.
+
+        A person walking past or a short localization gap must not end the
+        operator's task. Only a pose that stays unusable for the whole window
+        pauses it, and the operator can resume once it recovers.
+        """
+        deadline=time.monotonic()+timeout
+        while time.monotonic()<deadline:
+            check()
+            with self.app.lock:
+                if self.run_id!=run_id:raise ValueError('自主任务已取消')
+                self.state='preparing';self.message=reason+'；定位恢复后自动开始'
+            time.sleep(.5)
+            updated=self._pose_gate_refusal()
+            if updated is None:
+                with self.app.lock:
+                    if self.run_id==run_id:self.message='定位已恢复，正在开始探索'
+                return
+            reason=updated
+        raise ValueError(reason+'；等待 30 秒仍未恢复')
+
     def _prepare_and_run(self,run_id,req,duration):
         try:
             check=lambda:self._assert_run(run_id)
             check()
+            if self.pose_gate:
+                gate=self.pose_gate;self.pose_gate=None
+                self._wait_pose_gate(gate,run_id,check)
             if not self.app.demo:
                 role=self.app.hub.connections.value.get('sensor_source','nos')
                 status=self.app.proxy(role,'/sensors/status',timeout=2);check()
@@ -758,7 +795,7 @@ class Autonomy:
                     sensing_lost=sensing_lost or time.monotonic();recovery_frames=0;recovery_stamp=None
                     transient=(mode=='explore' and (cached['state'] in ['waiting','expired']
                                or cached.get('error_kind') in ['transport','sync_pending']))
-                    if transient or self.state=='preparing' and now-waiting<20 or time.monotonic()-sensing_lost<5:
+                    if transient or self.state=='preparing' and now-waiting<20 or time.monotonic()-sensing_lost<(20. if mode=='explore' else 5.):
                         if cached['state']!=last_cache_state:
                             if not self._drive(run_id,0,0):return
                         last_cache_state=cached['state']
@@ -990,7 +1027,8 @@ class Autonomy:
                 if driven is None:
                     completion.reset()
                     sensing_lost=sensing_lost or time.monotonic();recovery_frames=0;recovery_stamp=None
-                    if time.monotonic()-sensing_lost>5:raise ValueError('感知持续无法及时完成，已停车；请查看时序记录')
+                    if time.monotonic()-sensing_lost>(20. if mode=='explore' else 5.):
+                        raise ValueError('感知持续无法及时完成，已停车；请查看时序记录')
                     continue
                 sensing_lost=None;recovery_frames=0
                 time.sleep(.04)
