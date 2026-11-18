@@ -337,7 +337,7 @@ def fuse_frame_estimates(estimates, *, max_deviation_m=.35, max_deviation_yaw=.1
     return matrix, report
 
 
-def multi_frame_registration(session, poses, anchor_T, target, registration, original_error):
+def multi_frame_registration(session, poses, guess, target, registration, original_error):
     """Recover a saved-map join from later overlapping frames.
 
     The first frame is exactly what a person or an open door can occlude. When
@@ -352,7 +352,9 @@ def multi_frame_registration(session, poses, anchor_T, target, registration, ori
     for index in later_frame_indices(len(poses)):
         try:
             body = read_pcd(session/'.sessions/session_0/lidar_cloud'/('%d.pcd' % index))
-            frame = voxel(transform(body, anchor_T @ pose_matrix(poses[index, 1:])), .15, 14000)
+            # Later frames must live in the same frame the first-frame guess
+            # defines: guess = anchor_T @ inv(first), so guess @ pose_i.
+            frame = voxel(transform(body, guess @ pose_matrix(poses[index, 1:])), .15, 14000)
             delta = registration(frame, target)
             validate_alignment(frame, target, delta)
         except (OSError, ValueError):
@@ -396,7 +398,7 @@ def fuse_maps(base,session,destination,anchor,grid_id=0,registration=register_pc
         # The start of a capture is the frame a person or a door most easily
         # occludes. Later frames of the same capture still overlap the saved
         # map, so recover the join from them instead of failing the save.
-        try:delta,quality,source=multi_frame_registration(session,poses,anchor_T,target,registration,exc)
+        try:delta,quality,source=multi_frame_registration(session,poses,guess,target,registration,exc)
         except ValueError as recovered:
             report=dict(stage='registration',decision=dict(allowed=False,status='registration_failed',reason=str(recovered)))
             report.update(capture_continuation(base,session,poses,grid_id))

@@ -188,7 +188,10 @@ class FrontierSelector:
             if p in short_points and ranked:break
             gain,expansion,visible=self.information(p,free,obstacles,within,prior_kind)
             new_views=len(visible-observed_baselines)*self.res**2
-            if gain<.08 and expansion<.08 and new_views<.2:continue
+            # A reachable conflict is worth a revisit even when it adds no
+            # unknown area or new viewpoint; filtering it first reported
+            # complete while a known wall was still contradicted.
+            if gain<.08 and expansion<.08 and new_views<.2 and p not in zone:continue
             if p in short_points and gain<.08 and expansion<.08:continue
             # Check the actual first path direction, not a line through walls.
             chain=[];q=p

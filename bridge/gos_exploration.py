@@ -61,6 +61,9 @@ class _ExplorationContext:
         self.context = spec['id'], spec['capture_id']
         self.anchor = spec.get('anchor')
         self.mapping = True
+        # The exploration tracker learns through the same model the point
+        # navigator uses; without this the GOS run only saw defaults.
+        self.motion_response = getattr(service, 'motion_response', None)
         self.store = SimpleNamespace(value={})
         self.hub = SimpleNamespace(connections=SimpleNamespace(value=dict(sensor_source='gos')),
                                    _operation_context=threading.local(),

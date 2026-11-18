@@ -14,6 +14,10 @@ from m20.platform_core import rpc
 
 STATUS_INTERVAL = 1.5
 HEARTBEAT_INTERVAL = .6
+# A lease renewal must rest on a capture that was confirmed recently. The
+# heartbeat stays off the status-read path, but it cannot be renewed forever
+# on an unconfirmed capture.
+CAPTURE_CONFIRM_TIMEOUT = 8.
 
 
 class OnboardExploration:
@@ -27,6 +31,7 @@ class OnboardExploration:
         self.lease_end=0.
         self.heartbeat=dict(sent=0,failed=0,stale=0,status_reads=0,status_failures=0,
                             last_sent=None,last_gap_s=None)
+        self.last_confirmed=time.monotonic()
 
     @classmethod
     def probe(cls, app):
@@ -56,6 +61,8 @@ class OnboardExploration:
         return mapping.get('request_id')==self.key['capture_id']
 
     def _beat(self):
+        if time.monotonic()-self.last_confirmed>CAPTURE_CONFIRM_TIMEOUT:
+            raise ValueError('建图采集状态长时间无法确认，已停止续租')
         began=time.monotonic()
         try:reply=self._call('/missions/pulse',self.key)
         except ValueError:
@@ -77,6 +84,8 @@ class OnboardExploration:
             self.heartbeat['stale']+=1
             self.heartbeat['status_failures']+=1
             return None
+        if isinstance(status,dict) and self._owned(status):
+            self.last_confirmed=time.monotonic()
         return status
 
     def run(self, spec, map_status, report, current):
@@ -101,9 +110,13 @@ class OnboardExploration:
                 # Heartbeat first: the GOS lease expires on its own clock no
                 # matter how slow the NOS status read is.
                 try:mission=self._beat()
-                except ValueError:
+                except ValueError as exc:
                     # Let the onboard lease handle a genuine disconnect. A
                     # delayed read does not stop the control loop on the Mac.
+                    # Past the confirmation window the capture itself is
+                    # unknown, so stop renewing instead of driving blind.
+                    if time.monotonic()-self.last_confirmed>CAPTURE_CONFIRM_TIMEOUT:
+                        raise RuntimeError(str(exc)) from exc
                     continue
                 report(mission)
                 if time.monotonic()-last_status_at<STATUS_INTERVAL:continue

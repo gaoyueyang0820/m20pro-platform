@@ -14,7 +14,7 @@ import time
 from m20.navigation_detour import plan_local_detour
 
 SNAPSHOT_KEYS = ('pose', 'floor', 'obstacles', 'obstacle_bounds', 'measured_floor',
-                 '_valid_until', 'age', 'stamp', 'resolution', '_velocity_body')
+                 'geometry_version', '_valid_until', 'age', 'stamp', 'resolution', '_velocity_body')
 
 
 def _snapshot(scan):

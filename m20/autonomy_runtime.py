@@ -24,10 +24,11 @@ from m20.exploration_view import PausedExplorationView
 # Mapping phase is diagnostic for the local control loop. A read that is slow
 # or unavailable must not be mistaken for "the capture ended".
 BUILD_STATUS_STALE_SECONDS = 5.
-# Exploration during mapping runs in the SLAM session frame. On the real robot
-# that frame had drifted 1.7 m from the localized map pose, so every live
-# obstacle was compared against the wrong part of the saved map.
-MAX_EXPLORATION_POSE_GAP_M = .8
+# Exploration during mapping runs in the SLAM session frame, which is not
+# guaranteed to share raw coordinates with the localized map pose. Comparing
+# the two positions directly reported a 10 m gap for a correctly anchored
+# session. Judge the localization by its own freshness and match quality.
+
 
 
 def exploration_pose_gate_required(mode, req):
@@ -41,27 +42,28 @@ def exploration_pose_gate_required(mode, req):
     return mode=='explore' and isinstance(req,dict) and req.get('extend') is True
 
 
-def exploration_pose_consistency(odom, slam, now=None, *, max_age_s=3., max_gap_m=MAX_EXPLORATION_POSE_GAP_M):
-    """Explain why mapping-frame exploration must not start yet.
+def exploration_pose_consistency(odom, quality=None, now=None, *, max_age_s=3., max_error=.15, min_inlier=.90):
+    """Explain why extending a saved map must wait for localization.
 
-    Returns a refusal message or None. A missing or stale SLAM pose is not
-    judged here: the capture has not started yet and its frame is unknown.
+    Returns a refusal message or None. Only the localized output is judged:
+    its freshness, match error and inlier ratio are properties of that frame,
+    while comparing its raw coordinates with the mapping SLAM pose would flag
+    a correctly anchored session whose SLAM frame simply starts elsewhere.
     """
     now=time.time() if now is None else float(now)
     if not isinstance(odom,dict) or not odom:return '缺少地图定位输出，请先恢复定位'
+    error=inlier=None
     try:
         age=now-float(odom.get('received_at',0))
         if not math.isfinite(age) or age>max_age_s:
             return '地图定位输出已 %.0f 秒未更新，请先恢复定位'%max(0.,age)
-        if not isinstance(slam,dict) or not slam:return None
-        slam_age=now-float(slam.get('received_at',0))
-        if not math.isfinite(slam_age) or slam_age>max_age_s:return None
-        gap=math.hypot(float(odom.get('PosX',0))-float(slam.get('PosX',0)),
-                       float(odom.get('PosY',0))-float(slam.get('PosY',0)))
+        if isinstance(quality,dict) and quality:
+            error=float(quality.get('error',0.));inlier=float(quality.get('inlier_ratio',1.))
     except (TypeError,ValueError):return '定位输出无法解析'
-    if not math.isfinite(gap):return '定位输出无法解析'
-    if gap>max_gap_m:
-        return '建图坐标系与地图定位相差 %.1f 米，请先重置建图坐标系或恢复定位后再开始' % gap
+    if error is not None and math.isfinite(error) and error>max_error:
+        return '定位匹配误差 %.2f 米，请先恢复定位'%error
+    if inlier is not None and math.isfinite(inlier) and inlier<min_inlier:
+        return '定位匹配率 %.0f%%，请先恢复定位'%(inlier*100)
     return None
 
 
@@ -445,7 +447,7 @@ class Autonomy:
                         # A momentary localization gap must not reject the
                         # operator's request. Keep the reason and wait for the
                         # pose to become usable in the preparation thread.
-                        self.pose_gate=exploration_pose_consistency(status.get('odom'),status.get('slam_odom'))
+                        self.pose_gate=exploration_pose_consistency(status.get('odom'),status.get('matching_quality'))
                 self.target=None;self.explorer=Explorer(radius,forward,yaw,expand=scope=='map')
             self.generation+=1;self._save_token=None;self.context=self.app.hub.context()
             self.capture_id=None
@@ -571,13 +573,15 @@ class Autonomy:
                 if self._resume_token is token:self._resume_token=None
 
     def _pose_gate_refusal(self):
+        """Return (state, reason): unknown is not the same as recovered."""
         try:
             role=self.app.hub.connections.value.get('sensor_source','nos')
             status=self.app.proxy(role,'/sensors/status',timeout=2)
         except (ValueError,KeyError,AttributeError):
-            return None
-        if not isinstance(status,dict) or not status.get('odom'):return None
-        return exploration_pose_consistency(status.get('odom'),status.get('slam_odom'))
+            return ('unknown',None)
+        if not isinstance(status,dict) or not status.get('odom'):return ('unknown',None)
+        reason=exploration_pose_consistency(status.get('odom'),status.get('matching_quality'))
+        return ('ok',None) if reason is None else ('refuse',reason)
 
     def _wait_pose_gate(self,reason,run_id,check,timeout=30.):
         """Hold the task while the pose is unusable, then start it normally.
@@ -593,12 +597,12 @@ class Autonomy:
                 if self.run_id!=run_id:raise ValueError('自主任务已取消')
                 self.state='preparing';self.message=reason+'；定位恢复后自动开始'
             time.sleep(.5)
-            updated=self._pose_gate_refusal()
-            if updated is None:
+            state,updated=self._pose_gate_refusal()
+            if state=='ok':
                 with self.app.lock:
                     if self.run_id==run_id:self.message='定位已恢复，正在开始探索'
                 return
-            reason=updated
+            if state=='refuse':reason=updated
         raise ValueError(reason+'；等待 30 秒仍未恢复')
 
     def _prepare_and_run(self,run_id,req,duration):

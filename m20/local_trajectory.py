@@ -238,8 +238,12 @@ class TrajectoryFollower:
         if travelled>=float(self.path_arc[-1])-.001:remaining_path=max(remaining_path,distance)
         speed=float(np.linalg.norm(feedback[:2]));angular_speed=abs(float(feedback[2]))
         age=float(scan.get('_timing',{}).get('age_ms',float(scan.get('age',0.))*1000))/1000
-        base_reaction=self._learned('latency',.15,.15,.35)
-        deceleration=self._learned('decel',.5,.35,.8)
+        # A measured slow brake or long delay must ENLARGE the stopping
+        # distance, never be clipped toward the optimistic default. Clipping
+        # 0.50 s latency to 0.35 s and 0.20 m/s2 deceleration to 0.35 m/s2
+        # shortened 0.60 m to 0.369 m at 0.40 m/s.
+        base_reaction=max(.15,self._learned('latency',.15,.15,.9))
+        deceleration=min(.5,self._learned('decel',.5,.12,.8))
         reaction=base_reaction+min(.65,max(0.,age))
         stopping=speed*reaction+speed*speed/(2*deceleration)
         at_goal=distance<.18 and remaining_path<.18

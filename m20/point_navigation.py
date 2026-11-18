@@ -645,13 +645,18 @@ class PointNavigator:
                     start_checked=True
                 if local_pending and recovery is None:
                     candidate=bypass_planner.poll(pose=pose)
+                    # MotionState 17 means "ready to walk", not "stopped".
+                    # Synchronous searches below may only replace the worker's
+                    # candidate with the body actually held still.
+                    speed=math.hypot(*(scan.get('_velocity_body') or [0.,0.]))
+                    stopped=standing and speed<.08
                     # Rejoin a proven route if it opened up, then look for a
                     # short local bypass before repeating the full map search.
                     if route_first and route_index<=covered and self._rejoin_live_route(planner,follower,scan,[goal['x'],goal['y']]):
                         local_pending=False;route_first=False
                         self._update(token,phase='tracking',message='已找到通往原路线的安全接续段')
                         continue
-                    try_local_first=standing and route_index<=covered and len(local_tried)<2
+                    try_local_first=stopped and route_index<=covered and len(local_tried)<2
                     if try_local_first:
                         candidate=plan_local_detour(scan,[goal['x'],goal['y']],tried=local_tried,avoid_axes=avoid_axes)
                     if route_first:
@@ -674,7 +679,7 @@ class PointNavigator:
                                 self._update(token,plan=new,phase='tracking',message='已按当前障碍调整通往目标的路线',
                                              replans=self.nav.get('replans',0)+1)
                                 continue
-                    if standing and not try_local_first:
+                    if stopped and not try_local_first:
                         candidate=plan_local_detour(scan,[goal['x'],goal['y']],tried=local_tried,avoid_axes=avoid_axes)
                     self.check(token)
                     if candidate:
@@ -685,7 +690,7 @@ class PointNavigator:
                     else:
                         margin=bypass_margin(scan,follower)
                         moving=math.hypot(*(scan.get('_velocity_body') or [0.,0.]))>.05
-                        if standing or not moving or margin is None or margin<.15:
+                        if stopped or not moving or margin is None or margin<.15:
                             self._drive(token,[0,0,0],scan);progress.observe_command([0.,0.,0.],now)
                             self._update(token,phase='waiting_space',execution_state='waiting_progress',message='正在等待可通行空间，通路恢复后继续',
                                          recovery=dict(state='waiting_for_space',original_goal=dict(goal)))

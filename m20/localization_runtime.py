@@ -224,7 +224,7 @@ class AutomaticLocalizer:
 
     def local_hint(self,progress,check=None):
         import numpy as np
-        from m20.localization_recovery import match_pose,verify_pose
+        from m20.localization_recovery import match_pose,verify_pose,verify_sequence
         if check:check()
         link=self.app.link;hint=self.hint
         if not link or not hint or hint.get('robot')!=link.ip:raise ValueError('尚无这台机器的可靠位置记录')
