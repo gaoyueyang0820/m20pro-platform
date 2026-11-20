@@ -69,6 +69,37 @@ def supported_cells(scan):
     return measured | {p for p in candidates if all(q in measured for q in neighbours(p))}
 
 
+def merge_exploration_floor(scan, free_cells, radius_m=2.2):
+    """Add the already-scanned floor around the robot to a body-frame scan.
+
+    During mapping the follower only saw the current frame, so a turn could
+    lose the floor under the body and report 'support' failure on ground it had
+    already measured. Only floor is merged; remembered obstacles stay advisory
+    because people and furniture move.
+    """
+    pose=scan.get('pose') or []
+    if len(pose)!=3 or not free_cells:
+        return scan
+    x,y,yaw=pose;c,s=math.cos(yaw),math.sin(yaw)
+    reach=int(radius_m/RESOLUTION)+1
+    existing={tuple(p) for p in (scan.get('floor') or [])}
+    extra=[]
+    for ix,iy in free_cells:
+        dx,dy=ix*RESOLUTION-x,iy*RESOLUTION-y
+        if abs(dx)>radius_m or abs(dy)>radius_m:
+            continue
+        cell=(round((c*dx+s*dy)/RESOLUTION),round((-s*dx+c*dy)/RESOLUTION))
+        if cell in existing or abs(cell[0])>reach or abs(cell[1])>reach:
+            continue
+        existing.add(cell);extra.append(cell)
+    if not extra:
+        return scan
+    merged=dict(scan)
+    merged['floor']=list(scan.get('floor') or [])+extra
+    merged['memory_floor_cells']=len(extra)
+    return merged
+
+
 def clearance(scan, forward, yaw, side=0.):
     """Check the swept footprint in a CURRENT body-frame scan, including support."""
     if not forward and not yaw and not side:

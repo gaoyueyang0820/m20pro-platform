@@ -951,7 +951,11 @@ class Autonomy:
                             scan['_speed_mps']=math.hypot(measured.get('LinearX',0),measured.get('LinearY',0))
                     trajectory_verified=False
                     if not scanning and explorer.path and explorer.recovery is None and not explorer.recovery_pending:
-                        trajectory_detail=exploration_step(explorer,follower,scan,yaw_rate,new_scan=new_scan)
+                        follow_scan=scan
+                        if mode=='explore' and getattr(explorer,'free',None):
+                            from m20.autonomy_core import merge_exploration_floor
+                            follow_scan=merge_exploration_floor(scan,explorer.free)
+                        trajectory_detail=exploration_step(explorer,follower,follow_scan,yaw_rate,new_scan=new_scan)
                         if trajectory_detail.get('needs_recovery'):
                             reason=trajectory_detail.get('reason','当前通路受阻')
                             # At start-up the tracker has not produced real
