@@ -338,6 +338,7 @@ class TrajectoryFollower:
                 if getattr(self,'_gap_sign',None)==-sign and time.monotonic()-getattr(self,'_gap_at',0.)<1.5:
                     gap=None
                 else:self._gap_sign=sign;self._gap_at=time.monotonic()
+        self.last['passage_offset']=None if gap is None else round(gap,2)
         side=min(.25,f);reverse=min(.25,f)
         # Give the holonomic body a useful lateral pulse as an alternative
         # to low axes inside its dead zone. It passes the same swept checks.

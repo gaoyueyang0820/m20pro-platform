@@ -531,6 +531,11 @@ class PointNavigator:
                     applied_obstacles=cells
             def request_local(reason,failed=None,prefer_route=False):
                 nonlocal local_follower,local_plan,local_pending,avoid_axes,blocked_at,route_first,bypass_at
+                if len(local_tried)>=3:
+                    # Three failed bypass attempts near the same destination is
+                    # not a detour problem any more: stop and report instead of
+                    # circling the corridor until the timeout.
+                    raise ValueError('同一目标附近连续受阻，已停车；请确认目标点附近可站立')
                 if local_plan:
                     local_tried.append((local_plan['goal']['x'],local_plan['goal']['y']))
                     del local_tried[:-16]
@@ -766,7 +771,11 @@ class PointNavigator:
                 blocked_at=(blocked_at or now) if result['state'] in ['blocked','waiting_feedback'] else None
                 issued=self._drive(token,result['axes'],scan);progress.observe_command(issued,now)
                 moving_any=issued[0]>0 or abs(issued[2])>0
-                if (local_follower is None and not local_pending and moving_any
+                # A doorway or narrow passage with an available gap must be
+                # centred and entered, not bypassed: the look-ahead detour would
+                # otherwise route around the very opening the robot needs.
+                centring=getattr(follower,'last',{}).get('passage_offset') is not None
+                if (local_follower is None and not local_pending and moving_any and not centring
                         and result.get('ahead_obstacle_m') is not None and now-last_lookahead>=1.0):
                     last_lookahead=now
                     bypass=plan_local_detour(scan,[goal['x'],goal['y']],tried=local_tried,avoid_axes=issued)

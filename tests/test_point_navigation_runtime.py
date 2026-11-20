@@ -238,7 +238,10 @@ class PointNavigationRuntimeTests(unittest.TestCase):
                 workers.run()
             self.assertLess(cycles[0],40,'alternating heading without translation must not renew useful progress forever')
             self.assertIn(a.nav['status'],['cancelling','paused'])
-            self.assertIn('进展',a.nav.get('error','')+a.nav.get('message',''))
+            message=a.nav.get('error','')+a.nav.get('message','')
+            # A blocked target may stop on the no-progress guard or on the
+            # consecutive-bypass cap; both are a deliberate stop.
+            self.assertTrue('进展' in message or '连续受阻' in message,message)
 
     def test_connection_switch_during_prepare_never_drives_new_connection(self):
         a=self.setup_live();workers=DeferredWorkers();self.start(workers)
