@@ -1,5 +1,6 @@
 """GOS journal wiring with synthetic maps/links; no real transports or motion."""
 import copy
+import sys
 import threading
 import time
 import unittest
@@ -16,6 +17,11 @@ ROBOT = 'a'*64
 class GOSCollectionSyncTests(unittest.TestCase):
     def setUp(self):
         patrol_fixtures.GOSPatrolTests.setUp(self)
+        # Windows private-file ACLs are applied through a system helper process,
+        # which the portable effect guard forbids. Journal/persist behaviour is
+        # still covered here; ACL hardening has its own Windows tests.
+        if sys.platform == 'win32':
+            self.enterContext(patch('m20.platform_host.private_file', lambda path: None))
         self.request['collection_robot'] = ROBOT
         self.request['points'][0]['station_action'] = dict(camera='front', pan='none')
         self.actions.run.return_value = dict(camera='front', pan='none', people=2, sampled_at=100.)

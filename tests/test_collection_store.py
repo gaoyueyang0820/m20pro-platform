@@ -306,8 +306,12 @@ class CollectionCacheTests(unittest.TestCase):
         for value in (1, 2): self.append(value)
         self.cache.schedule(RUN, robot=ROBOT)
         self.cache.ingest(RUN, self.store.page(RUN, cursor=0, robot=ROBOT), robot=ROBOT)
-        with sqlite3.connect(self.cache.path) as db:
+        db=sqlite3.connect(self.cache.path)
+        try:
             db.execute('DELETE FROM records WHERE seq=1')
+            db.commit()
+        finally:
+            db.close()  # Windows keeps the file locked while the handle is open.
         with self.assertRaisesRegex(CollectionStorageError, '缺页'):
             self.cache.page(RUN, robot=ROBOT)
         backwards = self.store.page(RUN, cursor=2, robot=ROBOT)
