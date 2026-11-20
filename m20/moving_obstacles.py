@@ -163,7 +163,8 @@ class MovingObstacles:
                 if track.moving:
                     track.pending.clear()
                 elif stationary:
-                    confirmed.update(footprint)
+                    # A person standing still is not a wall. Keep it in the
+                    # temporary layer only; it clears as soon as it moves.
                     track.pending.clear()
                 else:
                     track.pending.update(footprint)

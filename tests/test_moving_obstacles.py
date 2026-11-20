@@ -46,10 +46,15 @@ class MovingObstaclesTests(unittest.TestCase):
     def test_robot_motion_does_not_move_a_stationary_world_cluster(self):
         tracker = MovingObstacles()
         points = [(1.8, .0), (1.8, .2)]
+        first = None
         for i in range(5):
             result = tracker.observe(scan(20.+i*.2, points, pose=(i*.07, i*.03, i*.08)))
             self.assertEqual(result.moving_tracks, 0)
-        self.assertEqual(result.confirmed, result.current)
+            if first is None: first = result.current
+        # A stationary cluster stays temporary; its world cells must not drift
+        # with the robot and must not be promoted to long-lived occupancy.
+        self.assertEqual(result.current, first)
+        self.assertFalse(result.confirmed)
 
     def test_pose_epoch_change_cannot_complete_a_track(self):
         tracker = MovingObstacles()

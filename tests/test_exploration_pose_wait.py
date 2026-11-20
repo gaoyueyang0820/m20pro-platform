@@ -43,7 +43,13 @@ class PoseGateWaitTests(unittest.TestCase):
 
     def test_a_pose_that_stays_unusable_pauses_instead_of_pretending(self):
         app, autonomy = self.task(dict(odom=odom(age=54.)))
-        with patch('m20.autonomy_runtime.time.sleep', lambda *_: None):
+        autonomy._pose_gate_key = (0.0, 0.0, None)
+        autonomy._pose_gate_changed = -10.
+        clock = {'t': 0.}
+        def tick(*_):
+            clock['t'] += 1.
+        with patch('m20.autonomy_runtime.time.monotonic', side_effect=lambda: clock['t']), \
+             patch('m20.autonomy_runtime.time.sleep', side_effect=tick):
             with self.assertRaisesRegex(ValueError, '等待 30 秒仍未恢复'):
                 autonomy._wait_pose_gate('地图定位输出已 54 秒未更新，请先恢复定位',
                                          'run-1', lambda: None, timeout=.05)
