@@ -77,3 +77,16 @@ test('show readiness for the selected native policy without blocking its configu
  f.engine.value='gos';f.change('route-navigation-engine');assert.equal(f.policy.value,'stop');
  f.engine.value='native';f.change('route-navigation-engine');assert.equal(f.policy.value,'finish');
 });
+
+test('weak link draft keeps native limits and refuses to drop work',()=>{
+ const f=setup({available:true});
+ const draft=f.context.weakLinkRouteOptions([{type:1}],[],'idle');
+ assert.deepEqual({engine:draft.engine,policy:draft.disconnect_policy,nav_mode:draft.nav_mode,speed:draft.speed,gait:draft.gait,manner:draft.manner},
+  {engine:'native',policy:'finish',nav_mode:1,speed:1,gait:'flat',manner:0});
+ assert.equal(draft.disconnect_timeout_s,5);assert.equal(draft.max_duration_s,1800);
+ assert.equal(draft.pause_at_point,false);assert.equal(draft.explicit_execution,true);
+ assert.throws(()=>f.context.weakLinkRouteOptions([{type:3}],[],'idle'),/充电航点/);
+ assert.throws(()=>f.context.weakLinkRouteOptions([{type:1,station_action:{camera:'front'}}],[],'idle'),/采集或到点作业/);
+ assert.throws(()=>f.context.weakLinkRouteOptions([],[{kind:'people_count'}],'idle'),/采集或到点作业/);
+ assert.throws(()=>f.context.weakLinkRouteOptions([],[],'running'),/先结束当前任务/);
+});

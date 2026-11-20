@@ -309,7 +309,7 @@
  for(const key of ['pause-nav','cancel-nav','resume-nav','nav-takeover','motion-stop','clear-points','nav-goal-mode','nav-route-mode','goal-replan','hub-connect','hub-demo']){
   const previous=ui[key];if(previous)ui[key]=function(...args){cancel();return previous.apply(this,args);};
  }
- const changed=e=>{if(e.target.matches('#map-select,#goal-yaw,#goal-yaw-mode,#route-navigation-engine,#disconnect-policy,#nav-mode,#nav-speed,#nav-gait,#nav-manner,#route-arrival,#route-name,[data-point],[data-station-point],#task-collection-settings input,#task-collection-settings select')){cancel('目标、地图或路线设置已变化，已取消后续自动开始');paintDockingOptions();}};
+ const changed=e=>{if(e.target.matches('#map-select,#goal-yaw,#goal-yaw-mode,#route-navigation-engine,#disconnect-policy,#disconnect-timeout,#resident-max-duration,#nav-mode,#nav-speed,#nav-gait,#nav-manner,#route-arrival,#route-name,[data-point],[data-station-point],#task-collection-settings input,#task-collection-settings select')){cancel('目标、地图或路线设置已变化，已取消后续自动开始');paintDockingOptions();}};
  document.addEventListener('input',changed,true);document.addEventListener('change',changed,true);
  document.addEventListener('click',e=>{if(e.target.closest('[data-action],[data-route-load],[data-route-delete],[data-connection-role],[data-service-role]'))cancel();},true);
  document.addEventListener('pointerdown',e=>{if(e.target.closest('#nav-map,[data-velocity]'))cancel('已手动操作，已取消后续自动开始');},true);

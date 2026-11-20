@@ -27,6 +27,7 @@ class GOSAgent:
         self.navigation=None
         self.patrol_config=self.data/'gos-patrol.local.json'
         self.iot=None
+        self.preview=None
 
     def ros(self):
         with self.lock:
@@ -54,6 +55,12 @@ class GOSAgent:
             return self.navigation_sensors
 
     def dispatch(self,path,req):
+        if path in ('/video/preview/status','/video/preview/frame','/video/preview/release'):
+            with self.lock:
+                if self.preview is None:
+                    from bridge.video_preview import VideoPreviewAgent
+                    self.preview=VideoPreviewAgent(aos=lambda:os.environ.get('M20_GOS_AOS_IP',''))
+            return self.preview.dispatch(path,req)
         if path.startswith('/iot/'):
             return self.iot_request(path,req)
         if path.startswith('/missions/'):
@@ -147,6 +154,7 @@ class GOSAgent:
         return dict(ok=True, configured=True, **listing)
 
     def close(self):
+        if self.preview:self.preview.close()
         if self.navigation:self.navigation.close()
         if self.sensors:self.sensors.close()
 

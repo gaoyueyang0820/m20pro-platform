@@ -46,11 +46,13 @@ GROUPS={
                  'test_autonomy_observation_runtime.AutonomyObservationRuntimeTests.test_ground_occlusion_survives_long_wait_and_resumes_same_task',
                  'test_autonomy_observation_runtime.AutonomyObservationRuntimeTests.test_sparse_valid_surface_recovers_without_a_passive_wait_becoming_actuator_failure'],
     'native':['test_native_sensing'],
-    'connections':['test_navigation_disconnect','test_resident_client','test_portable_pr_review','test_connection_roaming','test_shared_listener.SharedListenerTests','test_robot_discovery','test_connection_pairing','test_connection_relay'],
+    'connections':['test_collection_store','test_collection_sync','test_gos_collection_sync','test_video_preview','test_navigation_disconnect','test_resident_client','test_portable_pr_review','test_connection_roaming','test_shared_listener.SharedListenerTests','test_robot_discovery','test_connection_pairing','test_connection_relay'],
     'ui':[],
 }
 POSIX_GROUPS={'maps','lifecycle','native'}
 EXCLUDE_TESTS={
+    'test_collection_store.CollectionStoreTests.test_atomic_transaction_recovers_after_abrupt_process_exit':
+        'Separately verified crash-recovery test uses a local subprocess (not allowed under the portable effect guard).',
     'test_portable_pr_review.PortableReviewTests.test_windows_proxy_executes_absolute_helper_and_preserves_arguments':
         'Executes installed OpenSSH and a synthetic helper; covered separately by the Windows MSVC/SSH job.',
     'test_portable_pr_review.PortableReviewTests.test_windows_openssh_path_option_round_trip_without_network':
@@ -266,7 +268,7 @@ def run_python(group,stage,env,library,timeout):
 
 
 def run_ui(stage,env,node,guard,timeout):
-    command=[node,'--require',str(guard),'-e','for(const file of process.argv.slice(1))require(file)']+[str(stage/'tests'/name) for name in JS_TESTS]
+    command=[node,'--test-reporter=tap','--require',str(guard),'-e','for(const file of process.argv.slice(1))require(file)']+[str(stage/'tests'/name) for name in JS_TESTS]
     execution=run(command,stage,env,timeout);guard_result=None
     for line in execution['stderr'].splitlines():
         if line.startswith('PORTABLE_NODE_GUARD='):guard_result=json.loads(line.split('=',1)[1])

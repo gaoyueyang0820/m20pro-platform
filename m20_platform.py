@@ -158,6 +158,8 @@ class Platform:
         self.cameras=Cameras(original.cv2,lambda:self.link.ip if self.link and not self.demo else None,original.RTSP_PORT)
         self.add_log('system', '平台已启动，当前为演示模式。运动、遥测和训练曲线为模拟数据。')
         self.hub=Hub(self)
+        from m20.video_preview_client import VideoPreviewClient
+        self.video_preview=VideoPreviewClient(self)
         self.autonomy=Autonomy(self)
         self.point_navigation=PointNavigator(self)
         self.model_checks=ModelChecks(self.store.path.parent)
@@ -190,6 +192,7 @@ class Platform:
             self.people.stop()
             self.people.control(dict(action='reset'))
             self.desktop_patrol_counts.finish()
+            self.video_preview.reset()
             self.cameras.close()
             preserve_resident=self.resident_navigation.preserve()
             stopped=dict(warnings=[]) if preserve_resident else self.stop()
@@ -580,8 +583,10 @@ class Platform:
             if gait not in ['flat','stair']:raise ValueError('路线步态无效')
             value['options']=dict(nav_mode=integer(options.get('nav_mode',1),0,1),speed=integer(options.get('speed',1),0,2),
                                   gait=gait,manner=integer(options.get('manner',0),0,1),pause_at_point=options.get('pause_at_point',False),disconnect_policy=options.get('disconnect_policy','stop'))
-            from m20.navigation_disconnect import POLICIES
+            from m20.navigation_disconnect import POLICIES, mission_limits
             if value['options']['disconnect_policy'] not in POLICIES:raise ValueError('断联策略无效')
+            limits=mission_limits(options)
+            value['options'].update({key:val for key,val in limits.items() if key in options})
             if 'engine' in options:
                 if options['engine'] not in ['platform','native','gos']:raise ValueError('未知寻路方式')
                 value['options']['engine']=options['engine']
@@ -893,7 +898,8 @@ class Platform:
 
     @staticmethod
     def _patrol_execution(route, options):
-        from m20.navigation_disconnect import POLICIES
+        from m20.navigation_disconnect import POLICIES, mission_limits
+        mission_limits(options)
         needs_gos = Platform._patrol_needs_gos(route)
         engine = options.get('engine', 'gos' if needs_gos else 'native')
         policy = options.get('disconnect_policy', 'stop')
@@ -1001,8 +1007,9 @@ class Platform:
             route=copy.deepcopy(goal or next((r for r in self.store.value['routes'] if r['id']==req.get('id')),None))
             if not route:raise ValueError('路线不存在，请先保存路线')
             saved=route.get('options',{});pause=req.get('pause_at_point',saved.get('pause_at_point',False))
-            from m20.navigation_disconnect import POLICIES
+            from m20.navigation_disconnect import POLICIES, mission_limits
             disconnect_policy=req.get('disconnect_policy',saved.get('disconnect_policy','stop'))
+            limits=mission_limits(dict(saved,**req))
             if disconnect_policy not in POLICIES:raise ValueError('未知断联策略')
             if any(p.get('station_action') for p in route['points']) and disconnect_policy!='stop':
                 raise ValueError('原厂到点人数统计需要断联停车')
@@ -1018,7 +1025,7 @@ class Platform:
             link=self.link;demo=self.demo
             nav=dict(status='running',phase='validating',execution_state='preparing',message='正在核对活动地图与建图状态',
                      validation_deadline=time.monotonic()+15,index=0,route=route,progress=0,completed=0,started=time.time(),
-                     options=options,pause_at_point=pause,grid_id=map_.get('grid_id',0),previous_cancelled_value=previous_cancelled,disconnect_policy=disconnect_policy)
+                     options=options,pause_at_point=pause,grid_id=map_.get('grid_id',0),previous_cancelled_value=previous_cancelled,disconnect_policy=disconnect_policy,**limits)
             nav.update(self.navigation_intents.nav_fields(client_intent))
             self.nav=nav;self.velocity=[0.,0.,0.]
             if link:link.set_velocity(0,0,0)
@@ -1768,6 +1775,16 @@ class Handler(original.Handler):
     def _camera_frame(self,query):
         if APP.demo:return self._json(dict(ok=False,err='演示模式没有实机视频'),409)
         cam=query.get('camera',['front'])[0];after=int(query.get('after',['-1'])[0])
+        if 'consumer' in query or 'profile' in query:
+            result=APP.video_preview.frame(cam,query.get('profile',['standard'])[0],query.get('consumer',[''])[0],after)
+            if not result.get('ok'):
+                return self._json(result,429 if result.get('code') in ('rate_limited','busy','stream_limit','viewer_limit') else 503)
+            jpeg=result['jpeg'];self.send_response(200)
+            self.send_header('Content-Type','image/jpeg');self.send_header('Content-Length',str(len(jpeg)))
+            self.send_header('Cache-Control','no-store')
+            for header,key in [('X-Frame-Sequence','sequence'),('X-Frame-Age','age'),('X-Frame-Width','width'),('X-Frame-Height','height'),('X-Video-Profile','profile'),('X-Video-Transport','transport')]:
+                self.send_header(header,str(result[key]))
+            self.end_headers();self.wfile.write(jpeg);return
         feed=APP.cameras.get(cam);feed.subscribe()
         try:
             frame=feed.read_packet(after=after,timeout=4 if after<0 else 1)
@@ -1876,6 +1893,7 @@ class Handler(original.Handler):
             if p.startswith(('/api/','/video/','/maps/','/export/')) and not self._auth():
                 return self._json(dict(ok=False,err='需要登录控制台'),401)
             if p in ['/api/platform','/api/status']: return self._json(APP.snapshot())
+            if p=='/api/camera/preview/status':return self._json(APP.video_preview.status())
             if p=='/api/camera/frame':return self._camera_frame(parse_qs(urlparse(self.path).query))
             if p=='/api/ppe/frame':return self._ppe_frame(parse_qs(urlparse(self.path).query))
             if p=='/api/maps/library/preview':
@@ -1988,6 +2006,7 @@ class Handler(original.Handler):
                     APP.mapping=req.get('action')=='mapping'
                     APP.add_log('mapping','NOS 操作: '+str(req.get('action')))
                 return self._json(result)
+            if p=='/api/camera/release':return self._json(APP.video_preview.release(req.get('consumer')))
             if p=='/api/maps/sync':
                 result=APP.proxy('nos','/active-map',timeout=10)
                 with APP.lock:
@@ -2166,6 +2185,7 @@ def main():
         APP.map_learning.close()
         APP.people.stop()
         APP.desktop_patrol_counts.finish()
+        APP.video_preview.close()
         APP.cameras.close()
         if APP.link: APP.link.close(stop=not (preserve_resident or APP.autonomy.onboard_task is not None))
         if original.PPE: original.PPE.stop()

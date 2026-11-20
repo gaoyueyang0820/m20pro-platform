@@ -37,7 +37,8 @@
    const canConfigure=engine==='native'&&!requiredEngine&&!desktopStations&&nativeOptionsReady;
    for(const option of policyChoice.options)option.disabled=option.value!=='stop'&&!canConfigure;
   }
-  const status=S?.mode==='demo'?'本地演示':docking?'含充电航点 · 自动使用回桩流程':
+  for(const id of ['#disconnect-timeout','#resident-max-duration']){const field=$(id);if(field)field.disabled=active||policyChoice?.value==='stop'||engine!=='native';}
+   const status=S?.mode==='demo'?'本地演示':docking?'含充电航点 · 自动使用回桩流程':
    engine==='native'?(S?.online===false?'等待连接机器人':'原厂导航'):
    S?.online===false?'等待连接机器人':
    gos?.available?'GOS 寻路服务已连接'+(calibrated?' · 运动已适配 '+calibrated+' 项':''):gos?.message||'正在连接 GOS 寻路服务';
@@ -50,7 +51,7 @@
   else if(!nativeOptionsReady)help='续行或返程需要自动接续、低速敏捷平地、自主导航和正向行走。';
   else if(policyChoice?.value&&policyChoice.value!=='stop'){
    help=current?.available===true&&current.policies?.includes(policyChoice.value)?
-    '断联达到 5 秒后，NOS 按所选策略执行。':
+    `断联达到 ${$('#disconnect-timeout')?.value||5} 秒后，NOS 按所选策略执行。`:
     '可先保存路线。执行前请在连接中心启用 NOS 驻机导航。';
   }
   if(engine==='native'&&collectors.length&&!actions)help=(help?help+' ':'')+'人数由电脑采集，电脑断联期间暂停。';

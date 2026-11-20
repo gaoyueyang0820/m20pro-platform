@@ -35,6 +35,16 @@ def identity(value):
     return value
 
 
+def mission_limits(options):
+    """Validated native mission bounds; never changes GOS's control lease."""
+    if not isinstance(options,dict):raise ValueError('断联任务参数格式无效')
+    timeout=finite(options.get('disconnect_timeout_s',5))
+    duration=finite(options.get('max_duration_s',1800))
+    if not 3<=timeout<=30 or not 30<=duration<=3600:
+        raise ValueError('断联等待需为 3–30 秒，任务最长时限需为 30–3600 秒')
+    return dict(disconnect_timeout_s=timeout,max_duration_s=duration)
+
+
 def specification(request):
     if not isinstance(request,dict):raise ValueError('任务请求格式无效')
     policy=request.get('disconnect_policy','stop')
@@ -42,11 +52,9 @@ def specification(request):
     points=request.get('points')
     if not isinstance(points,list) or not 1<=len(points)<=200:raise ValueError('路线需要1到200个点')
     map_=mission_map(request.get('map',{}))
-    timeout=finite(request.get('disconnect_timeout_s',5))
-    duration=finite(request.get('max_duration_s',1800))
-    if not 3<=timeout<=30 or not 30<=duration<=3600:raise ValueError('断联等待或任务时限超出范围')
+    limits=mission_limits(request)
     return dict(id=identity(request.get('id')),owner=identity(request.get('owner')),
-                disconnect_policy=policy,disconnect_timeout_s=timeout,max_duration_s=duration,
+                disconnect_policy=policy,**limits,
                 map=map_,points=[point(p) for p in points])
 
 

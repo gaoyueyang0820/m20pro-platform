@@ -266,3 +266,26 @@ SDK `/status` 增加 environment：ready、stage、message、workspace、input�
 ## 驻机断联任务
 
 导航/路线选项增加 `disconnect_policy: stop|finish|return|finish_return`，默认stop。后三项需机器人端报告驻机执行能力；使用既有准备与停止接口。GET `/api/nav/resident/capabilities` 核对配置，快照 `resident_navigation` 反映远端任务状态。首次下发完整路线；重连仅对账，禁止自动重播启动。详见 [断联任务](disconnected-navigation.md)。
+
+
+## v2.8 弱网巡检与按需视频
+
+### 视频预览
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | /api/camera/frame?camera=front\|rear&consumer=<id>&profile=<档位>&after=<序号> | 带 `consumer` 或 `profile` 时走按需预览；返回 JPEG，附带 `X-Frame-Sequence`、`X-Frame-Age`、`X-Frame-Width`、`X-Frame-Height`、`X-Video-Profile`、`X-Video-Transport`。无首帧或档位不可用时返回 503；限流/上限返回 429，正文含 `code` 与 `retry_after`。不带这两个参数的旧请求保持原多帧流。 |
+| POST | /api/camera/release | `{consumer}` 释放该预览会话，幂等。关闭页面即可停止上游取流。 |
+| GET | /api/camera/preview/status | 纯本地状态：档位定义、按需租约、机载预览可用性。不探测相机。 |
+
+档位：`standard`（机器人原码流，电脑向网页转发）、`economy`（电脑降采样与限帧）、`weak`（机载按需小图，单路低帧）、`snapshot`（单张机载小图）。`economy` 只减少电脑到网页的流量，不改变机器人上游码率；`weak`/`snapshot` 由机载代理在既有鉴权通道内解码，经 `/video/preview/{status,frame,release}` 返回有大小上限的 JPEG，未配置或未更新代理时明确不可用，不静默回落全码率 RTSP。独立识别订阅不受预览租约影响。
+
+### 机载采集缓存
+
+- 采集记录由机载 SQLite 事务日志保存，不再无界追加 JSONL；旧 JSONL 只读兼容（`collection_sync_protocol: 0`），新代理返回 `1`。
+- `GET /api/tasks/collection?run_id=<id>&cursor=<游标>&robot=<哈希>&executor=gos` 增量分页，返回 `rows`（含稳定 `seq`）、`next_cursor`、`high_watermark`、`has_more`、`complete`、`sealed`、`available`、`unavailable`、`truncated`、`error`；`offset` 兼容旧代理。
+- 补传在独立线程内按批进行（每批最多 3 页 × 64 条、2 秒预算），失败指数退避；任务终态仍会补传，普通心跳不反复拉取整段记录。`/api/status` 的任务与历史记录提供 `collection_transfer`：`protocol`、`supported`、`state`（pending/syncing/synced/offline/unsupported/partial/error/unavailable）、`pending`、`cursor`、`high_watermark`、`cached_rows`、`complete`、`last_synced_at`、`stale`、`error`。历史缓存一律 `stale: true`，不当实时读数。
+
+### 断联任务参数
+
+`POST /api/route/save` 的 `options` 可带 `disconnect_timeout_s`（3–30，默认 5）与 `max_duration_s`（30–3600，默认 1800）；`/api/nav/start` 可覆盖。`GET /api/nav/resident/capabilities` 返回 `limits`、`onboard_collection: false`、`station_actions_supported: false`、`restart_policy: stop_and_reconcile`、`return_path: measured_trace`。原厂驻机任务目前不接受采集或到点作业；GOS 心跳固定 5 秒，不受该参数延长。
