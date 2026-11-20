@@ -310,7 +310,7 @@ class TrajectoryFollower:
             ahead=surface.forward_obstacle()
             # Look further ahead so a bypass is prepared while there is still
             # room, not after the nose is already against the obstacle.
-            if ahead<max(1.8,.85+stopping+speed*.5):
+            if ahead<max(2.2,.85+stopping+speed*.5):
                 self.last['ahead_obstacle_m']=round(ahead,2)
         if not terminal and self.straight_clearance is not None and self.last['ahead_obstacle_m'] is None:
             straight=self._straight_corridor(pose,feedback,local,arc,surface,remaining_path,reaction,deceleration)

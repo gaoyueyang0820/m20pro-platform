@@ -765,8 +765,9 @@ class PointNavigator:
                     result=dict(state='blocked',axes=[0.,0.,0.],reason='已绕过局部障碍，正在接续原目标')
                 blocked_at=(blocked_at or now) if result['state'] in ['blocked','waiting_feedback'] else None
                 issued=self._drive(token,result['axes'],scan);progress.observe_command(issued,now)
-                if (local_follower is None and not local_pending and standing and issued[0]>0
-                        and result.get('ahead_obstacle_m') is not None and now-last_lookahead>=1.5):
+                moving_any=issued[0]>0 or abs(issued[2])>0
+                if (local_follower is None and not local_pending and moving_any
+                        and result.get('ahead_obstacle_m') is not None and now-last_lookahead>=1.0):
                     last_lookahead=now
                     bypass=plan_local_detour(scan,[goal['x'],goal['y']],tried=local_tried,avoid_axes=issued)
                     self.check(token)
