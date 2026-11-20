@@ -308,7 +308,9 @@ class TrajectoryFollower:
         terminal=remaining_path<.9
         if not terminal and abs(desired)<.30:
             ahead=surface.forward_obstacle()
-            if ahead<min(1.5,max(1.0,.85+stopping+speed*.5)):
+            # Look further ahead so a bypass is prepared while there is still
+            # room, not after the nose is already against the obstacle.
+            if ahead<max(1.8,.85+stopping+speed*.5):
                 self.last['ahead_obstacle_m']=round(ahead,2)
         if not terminal and self.straight_clearance is not None and self.last['ahead_obstacle_m'] is None:
             straight=self._straight_corridor(pose,feedback,local,arc,surface,remaining_path,reaction,deceleration)
@@ -328,7 +330,14 @@ class TrajectoryFollower:
             minimum=min(self.forward_limit,floor)
             f=min(self.forward_limit,max(minimum,allowed_speed/response))
             self.last['terminal_speed_limit_mps']=round(allowed_speed,3)
-        gap=self._passage_offset(surface) if not terminal and not at_goal and not fixed_heading else None
+        gap=None
+        if not terminal and not at_goal and not fixed_heading:
+            gap=self._passage_offset(surface)
+            if gap is not None:
+                sign=1. if gap>0 else -1.
+                if getattr(self,'_gap_sign',None)==-sign and time.monotonic()-getattr(self,'_gap_at',0.)<.8:
+                    gap=None
+                else:self._gap_sign=sign;self._gap_at=time.monotonic()
         side=min(.25,f);reverse=min(.25,f)
         # Give the holonomic body a useful lateral pulse as an alternative
         # to low axes inside its dead zone. It passes the same swept checks.
