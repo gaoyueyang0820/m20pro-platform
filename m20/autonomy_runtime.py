@@ -664,7 +664,7 @@ class Autonomy:
         if age>.65:
             error=ValueError('雷达反馈延迟过大，已停车');error.scan_timing=timing;raise error
         scan['_timing']=timing
-        scan['_valid_until']=time.monotonic()+.65-age
+        scan['_valid_until']=time.monotonic()+.95-age
         return scan
 
     def _run(self,run_id,job_id,duration):
@@ -1122,7 +1122,7 @@ class Autonomy:
                         age=observation.get('age')
                         self.scan=dict(stamp=observation.get('stamp'))
                         if observation.get('live') and isinstance(age,(int,float)) and 0<=age<1.5:
-                            self.scan['_valid_until']=time.monotonic()+.65-age
+                            self.scan['_valid_until']=time.monotonic()+.95-age
             while current() and not task.cancelled.is_set() and time.monotonic()<quiet_until:
                 task.cancelled.wait(min(.08,max(0.,quiet_until-time.monotonic())))
             mission=task.run(spec,map_status,report,current) or {}

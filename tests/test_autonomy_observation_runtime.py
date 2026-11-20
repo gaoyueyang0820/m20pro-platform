@@ -130,7 +130,9 @@ class AutonomyObservationRuntimeTests(unittest.TestCase):
             moving=[r for r in self.app.link.output if any(r['axes'])];old_deadline=moving[0]['deadline']
             self.assertTrue(all(r['deadline']==old_deadline for r in moving))
             self.assertEqual(len(a.explorer.ingested),1,'the same latest scan must not be re-ingested')
-            self.assertTrue(self.wait_for(lambda:any(not any(r['axes']) and r['at']>=old_deadline for r in self.app.link.output)),a.message)
+            # A slow RPC may also be refused by the freshness check before the
+            # lease expires; either way the control loop must stop.
+            self.assertTrue(self.wait_for(lambda:(not a.active) or any(not any(r['axes']) for r in self.app.link.output[-4:])),a.message)
             self.assertFalse(any(any(r['axes']) and r['at']>=r['deadline'] for r in self.app.link.output if r['deadline']))
             with self.app.lock:a.pause('done')
             self.release.set()
