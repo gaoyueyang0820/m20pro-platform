@@ -691,7 +691,7 @@ class Autonomy:
                   if explorer else None)
         trajectory_key=None;trajectory_detail={}
         last_plan=0;last_vision=None;blocked_attempts=0;waiting=time.monotonic();completion=ExplorationCompletion();progress=MotionProgress()
-        last_yaw=None;scan_sweep=0.;scan_started=None;people_wait_since=None
+        last_yaw=None;scan_sweep=0.;scan_started=None;people_wait_since=None;exploring_since=None
         sensing_lost=None;recovery_frames=0;recovery_stamp=None;ground_waiting=False;environment_waiting=False
         no_passage_since=None
         pump=None;pump_generation=None;pump_capture_id=None;consumed_sequence=None;last_cache_state=None;scanning=False
@@ -942,6 +942,17 @@ class Autonomy:
                         trajectory_detail=exploration_step(explorer,follower,scan,yaw_rate,new_scan=new_scan)
                         if trajectory_detail.get('needs_recovery'):
                             reason=trajectory_detail.get('reason','当前通路受阻')
+                            # At start-up the tracker has not produced real
+                            # motion yet; braking and reversing immediately
+                            # reads as stomping in place. Hold briefly first.
+                            if exploring_since is None:exploring_since=now
+                            if now-exploring_since<2.5 and getattr(explorer,'distance',0.)<.05:
+                                self._drive(run_id,0,0)
+                                with self.app.lock:
+                                    if self.run_id==run_id:
+                                        self.message='起步观察：等待一帧有效运动再决定是否脱困'
+                                        self.map_view=dict(explorer.view(),controller=trajectory_detail)
+                                time.sleep(.05);continue
                             # A person or another mover in the lane is a
                             # temporary block. Hold with a bounded renewal
                             # instead of retreating into the same obstacle.
@@ -1029,6 +1040,10 @@ class Autonomy:
                 with self.app.lock:
                     if not self.active or self.run_id!=run_id:return
                     if mode=='explore':self.map_view=dict(explorer.view(),controller=trajectory_detail)
+                    if mode=='explore' and self.state=='preparing' and self.started:
+                        # Map capture and SLAM warm-up are preparation; they
+                        # consumed 25 s of a 30 s run on the real robot.
+                        self.deadline+=(time.monotonic()-self.started)
                     self.state='exploring' if mode=='explore' else 'following'
                     self.message=('转向补充侧向地面观测' if scanning else (getattr(explorer,'motion_hint','') or {'expand':'正在扩展原地图未扫描区域','refine':'正在复查已扫描区域，积累地图更新','observe':'正在前往新的观察位置补扫'}[explorer.target_kind])) if mode=='explore' else follow_detail['reason']
                 driven=self._drive(run_id,forward,yaw,valid_until,side=side)
