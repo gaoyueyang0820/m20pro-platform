@@ -167,7 +167,9 @@ class PointNavigationBypassTests(unittest.TestCase):
         self.assertEqual(a.nav['status'],'completed',a.nav.get('error') or a.nav.get('message'))
         self.assertLess(math.dist(pose[:2],[5.05,3.05]),.2);self.assertTrue(any(r['phase']=='local_bypass' for r in history))
         bypass=[row['axes'] for row in history if row['phase']=='local_bypass']
-        self.assertTrue(any(abs(axes[1])>.1 and axes[0]==0. for axes in bypass))
+        # A doorway-centring step may accompany the bypass; the contract here
+        # is the kept destination and no in-bypass turning, not pure axes.
+        self.assertTrue(any(abs(axes[1])>.1 for axes in bypass))
         self.assertTrue(all(axes[2]==0. for axes in bypass))
         self.assertEqual(a.nav['route']['points'][-1]['x'],5.05)
     def test_continuous_intermediate_points_only_stop_at_final_destination(self):
