@@ -335,7 +335,7 @@ class TrajectoryFollower:
             gap=self._passage_offset(surface)
             if gap is not None:
                 sign=1. if gap>0 else -1.
-                if getattr(self,'_gap_sign',None)==-sign and time.monotonic()-getattr(self,'_gap_at',0.)<.8:
+                if getattr(self,'_gap_sign',None)==-sign and time.monotonic()-getattr(self,'_gap_at',0.)<1.5:
                     gap=None
                 else:self._gap_sign=sign;self._gap_at=time.monotonic()
         side=min(.25,f);reverse=min(.25,f)
@@ -474,7 +474,9 @@ class TrajectoryFollower:
         if not runs:return None
         best=max(runs,key=lambda run:run[-1]-run[0])
         centre=(best[0]+best[-1])/2
-        return None if abs(centre)<.08 else centre
+        # A doorway centre jitters by a few centimetres between frames; a
+        # small dead-band plus the sign hysteresis stops left-right swapping.
+        return None if abs(centre)<.15 else centre
 
     def _straight_corridor(self, pose, feedback, local, arc, surface, remaining, reaction, deceleration):
         vx,vy,yaw_rate = feedback
