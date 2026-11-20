@@ -455,7 +455,7 @@ class TrajectoryFollower:
         elif axes[2]:reason='沿弧线转向' if axes[0] else '转向下一段通路'
         return self._result(axes,state,reason,trajectories[best].tolist(),started)
 
-    def _passage_offset(self,surface,half_range=.6,probe=(.4,.7,1.0)):
+    def _passage_offset(self,surface,half_range=.6,probe=(.4,.7,1.0,1.8)):
         """Lateral offset to the centre of the widest straight-through gap.
 
         Returns None when the current heading already passes the probe or no
