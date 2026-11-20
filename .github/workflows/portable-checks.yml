@@ -39,7 +39,8 @@ jobs:
           npm ci
           npm run build
       - name: Explicit temporary C++ build and guarded portable checks
-        run: python tools/check_portable.py --report .artifacts/portable/report.json
+        # The macOS lifecycle worker runs close to the 300 s default cap; allow slower runners.
+        run: python tools/check_portable.py --report .artifacts/portable/report.json --timeout 600
       - name: Publish scope and skip report
         if: always()
         uses: actions/upload-artifact@v4
