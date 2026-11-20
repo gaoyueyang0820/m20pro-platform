@@ -13,7 +13,9 @@ import threading
 import time
 import uuid
 from bridge.resident_mission import atomic
-from m20.navigation_disconnect import POLICIES,TERMINAL,identity as mission_identity,specification
+from m20.collection_store import SYNC_PROTOCOL, robot_digest, robot_key
+from m20.collection_sync import CollectionSynchronizer
+from m20.navigation_disconnect import POLICIES,TERMINAL,finite,identity as mission_identity,specification
 from m20.platform_core import age_of,rpc
 
 
@@ -26,8 +28,84 @@ class ResidentNavigationClient:
             self.ref=json.loads(self.path.read_text(encoding='utf-8'))
             # Startup is reconciliation only, including an uncertain old upload.
             self.ref['submitted']=True
-            self.nav=dict(self.ref['nav'],status='running',phase='resident_unknown',message='正在核对机器人端原任务，不会重发启动')
+            self.nav=(copy.deepcopy(self.ref['nav']) if self.ref.get('terminal') else
+                      dict(self.ref['nav'],status='running',phase='resident_unknown',message='正在核对机器人端原任务，不会重发启动'))
+        self.collection_sync=CollectionSynchronizer(app.store.path.parent,self._collection_robot,
+                                                    self._collection_request,on_update=self._collection_updated)
+        self._collection_restored=False
+        self._collection_link_lost=False
     def robot_identity(self):return self.app.hub.connections.value.get('aos_identity_alias')
+    def _collection_robot(self):
+        value=self.robot_identity()
+        return robot_digest(value) if value and not self.app.demo else None
+    def _collection_rows(self):
+        history=getattr(self.app.store,'value',{}).get('history',[])
+        return [self.app.nav,self.nav or {},*history]
+    def _collection_tick(self):
+        # This path also runs for terminal missions. It only queues work; disk
+        # reads, negotiation and page transport belong to the sync worker.
+        if self.done.is_set():return
+        self.collection_sync.start()
+        if not self._collection_restored:
+            self._collection_restored=True
+            with self.app.lock:
+                candidates=[(copy.deepcopy(row.get('collection_run')),row.get('status')) for row in self._collection_rows()]
+            seen=set()
+            for run,status in candidates:
+                if not run or run.get('local') or not run.get('robot'):continue
+                key=(run['robot'],run.get('executor','gos'),run.get('id'))
+                if key in seen:continue
+                seen.add(key)
+                try:self.collection_sync.notify(run,final=status in ('completed','cancelled','failed','paused'))
+                except ValueError:pass  # A malformed old reference cannot authorize a network request.
+    def _collection_request(self,run,path,body,timeout):
+        with self.app.lock:
+            if self._collection_robot()!=run['robot']:raise ValueError('当前连接不是采集任务所属机器人')
+            role=run.get('executor','gos')
+            if role not in ('gos','nos'):raise ValueError('采集执行器无效')
+            base,token=self._endpoint(role)
+        result=rpc(base,path,body,timeout,token)
+        with self.app.lock:
+            if self._collection_robot()!=run['robot']:raise ValueError('采集响应返回时机器人身份已变化')
+        return result
+    def _collection_updated(self,run,state,records):
+        # Cache rows are history even if received just now. Never refresh a
+        # sensor timestamp or publish them as live control observations.
+        with self.app.lock:
+            if self._collection_robot()!=run['robot']:return
+            seen=set()
+            for target in self._collection_rows():
+                ref=target.get('collection_run',{})
+                if (id(target) in seen or ref.get('id')!=run['id'] or ref.get('robot')!=run['robot']
+                        or ref.get('executor','gos')!=run.get('executor','gos')):continue
+                seen.add(id(target));target['collection_transfer']=copy.deepcopy(state)
+                for record in records:
+                    sample=dict(copy.deepcopy(record),stale=True,fresh=False,source='local_cache')
+                    if record.get('kind')=='station_result':
+                        rows=target.setdefault('station_results',[])
+                        if not any(r.get('collection_run_id')==run['id'] and r.get('collection_seq')==record['seq'] for r in rows):
+                            sample.update(collection_run_id=run['id'],collection_seq=record['seq'])
+                            rows.append(sample)
+                        continue
+                    rows=target.setdefault('collection',[])
+                    item=next((r for r in rows if r.get('spec',{}).get('kind')==record.get('kind')),None)
+                    if item is None:
+                        item=dict(spec=dict(kind=record.get('kind')),samples=0,failures=0,state='cached')
+                        rows.append(item)
+                    if record['seq']>item.get('cached_seq',0):
+                        item.update(latest=sample,cached_seq=record['seq'],stale=True,fresh=False)
+                        values=record.get('values')
+                        people=values.get('people') if isinstance(values,dict) else None
+                        if record.get('kind')=='people_count' and type(people) is int:
+                            item['peak_people']=max(item.get('peak_people',0),people)
+    @staticmethod
+    def _resident_limits(nav):
+        options=nav.get('route',{}).get('options',{})
+        result={key:finite(nav.get(key,options.get(key,default))) for key,default in
+                (('disconnect_timeout_s',5),('max_duration_s',1800))}
+        if not 3<=result['disconnect_timeout_s']<=30 or not 30<=result['max_duration_s']<=3600:
+            raise ValueError('断联等待或任务时限超出范围')
+        return result
     def busy(self):return bool(self.ref and not self.ref.get('terminal'))
     def owns(self):return self.busy() and self.app.nav is self.nav
     def gos_busy(self):return self.busy() and self.ref.get('executor')=='gos'
@@ -53,7 +131,10 @@ class ResidentNavigationClient:
         self.caps=dict(nos,gos=gos)
         return self.caps
     def snapshot(self):
-        return dict(protocol=1,active=self.busy(),mission=copy.deepcopy(self.ref.get('last',{})) if self.ref else None)
+        run=(self.nav or {}).get('collection_run')
+        transfer=self.collection_sync.snapshot(run) if run and not run.get('local') and run.get('robot') else None
+        return dict(protocol=1,active=self.busy(),mission=copy.deepcopy(self.ref.get('last',{})) if self.ref else None,
+                    collection_transfer=transfer,collection_transfers=self.collection_sync.snapshots())
     def prepared(self,nav,executor='nos',axis_quiet_until=0.):
         """Called once by the existing navigation preparation, before dispatch."""
         app=self.app
@@ -64,6 +145,10 @@ class ResidentNavigationClient:
         elif policy not in POLICIES or policy=='stop':raise ValueError('驻机任务策略无效')
         if app.demo:raise ValueError('驻机断联任务需要实机执行服务')
         route=nav['route'];map_=copy.deepcopy(next((m for m in app.maps() if m['id']==route['map_id']),{}))
+        if executor!='gos':
+            if route.get('options',{}).get('collectors') or any(p.get('station_action') for p in route['points']):
+                raise ValueError('原厂驻机断联任务暂不支持到点或沿途采集')
+            limits=self._resident_limits(nav)
         if not map_.get('robot_map_name'):raise ValueError('需要已同步的机器人地图')
         expected=dict(NavMode=1,Gait=0x3002,Speed=1,ObsMode=0,Manner=0)
         if nav.get('options')!=expected:raise ValueError('断联任务仅支持低速敏捷平地、机器人自主导航与正向行走')
@@ -80,8 +165,12 @@ class ResidentNavigationClient:
                       submitted=False,cancel=False,terminal=False,last={},executor=executor,
                       axis_quiet_until=axis_quiet_until,start_index=nav.get('index',0),
                       prior_station_results=copy.deepcopy(nav.get('station_results',[])))
-        if executor=='gos' and route.get('options', {}).get('collectors'):
-            nav['collection_run']=dict(id=self.ref['id'], robot=hashlib.sha256(identity.encode()).hexdigest())
+        if executor=='gos' and (route.get('options',{}).get('collectors') or any(p.get('station_action') for p in route['points'])):
+            self.ref['collection_robot']=robot_digest(identity)
+            nav['collection_run']=dict(id=self.ref['id'],robot=self.ref['collection_robot'],executor='gos')
+        elif executor!='gos':
+            self.ref.update(limits)
+        self._collection_link_lost=False
         try:self._save()
         except Exception:
             self.ref=None;nav.update(status='failed',phase='failed',error='任务引用无法保存，未提交驻机任务');raise
@@ -92,6 +181,7 @@ class ResidentNavigationClient:
         self.nav.update(status='cancelling',phase='resident_stopping',message='正在请求机器人结束驻机任务，停车尚待确认')
         self._save();self.wake.set();self.tick()
     def tick(self):
+        self._collection_tick()
         if not self.busy() or self.done.is_set():return
         if self.app.demo or self.robot_identity()!=self.ref['robot_identity']:return
         if self.app.nav.get('engine')!='resident' and self.app.nav.get('status') not in ('idle','completed','failed','cancelled'):return
@@ -142,8 +232,16 @@ class ResidentNavigationClient:
                   points=copy.deepcopy(nav['route']['points']),
                   map=dict(name=map_['robot_map_name'],grid_id=map_.get('grid_id',0),sha256=ref['fingerprint'],
                            yaml_sha256=grid.get('yaml_sha256'),resolution=map_['resolution'],origin=map_['origin']))
+        if ref.get('executor')!='gos':
+            body.update(self._resident_limits(nav))
         spec=specification(body)
         if ref.get('executor')=='gos':
+            if nav.get('collection_run'):
+                ref['collection_robot']=robot_digest(ref['robot_identity'])
+                body['collection_robot']=ref['collection_robot']
+                protocol=SYNC_PROTOCOL if caps.get('collection_sync_protocol')==SYNC_PROTOCOL else 0
+                ref['collection_sync_protocol']=protocol
+                nav['collection_run'].update(sync_protocol=protocol,executor='gos')
             from bridge.gos_navigation import pack_grid
             if caps.get('executor')!='gos' or grid.get('active') is not True:
                 raise ValueError('GOS 未就绪或航点地图已变化')
@@ -189,6 +287,8 @@ class ResidentNavigationClient:
         terminal=phase in (('completed','cancelled','failed','paused') if gos else
                            ('completed','cancelled','failed')) and row.get('stop_confirmed') is True
         if gos and terminal:self._release_map()
+        previous=self.ref.get('last',{})
+        notify=False;collection_run=None;collection_target=None
         with self.app.lock:
             self.ref['last']=copy.deepcopy(row)
             status=phase if terminal else 'cancelling' if self.ref['cancel'] else 'running'
@@ -201,35 +301,91 @@ class ResidentNavigationClient:
                                 plan=row.get('plan') or self.nav.get('plan'),
                                 cancel_confirmed=terminal)
                 prior=self.ref.get('prior_station_results',[])
-                self.nav['station_results']=prior+row.get('station_results',[])
+                if 'station_results' in row:
+                    self.nav['station_results']=prior+[dict(copy.deepcopy(r),stale=True,fresh=False) for r in row['station_results']]
                 if self.nav.get('collection_run'):
-                    self.nav['collection']=copy.deepcopy(row.get('collection', []))
+                    old={r.get('spec',{}).get('kind'):r for r in self.nav.get('collection',[])}
+                    collected=copy.deepcopy(row.get('collection',[]))
+                    for item in collected:
+                        cached=old.get(item.get('spec',{}).get('kind'),{})
+                        if 'latest' not in item:
+                            for key in ('latest','cached_seq','peak_people'):
+                                if key in cached:item[key]=copy.deepcopy(cached[key])
+                        if item.get('latest'):
+                            item['latest'].update(stale=True,fresh=False)
+                        item.update(stale=True,fresh=False)
+                    self.nav['collection']=collected
+                    collection_run=copy.deepcopy(self.nav['collection_run'])
+                    journal=row.get('collection_journal') or {}
+                    if (journal.get('collection_sync_protocol')==SYNC_PROTOCOL
+                            and journal.get('robot')==collection_run.get('robot')):
+                        self.ref['collection_sync_protocol']=SYNC_PROTOCOL
+                        self.nav['collection_run']['sync_protocol']=SYNC_PROTOCOL
+                        collection_target=journal.get('high_watermark')
+                    notify=(not previous or self._collection_link_lost or
+                            row.get('completed',0)>previous.get('completed',0) or
+                            terminal and not self.ref.get('terminal'))
+                    self.nav['collection_transfer']=self.collection_sync.snapshot(collection_run)
             if phase=='interrupted':
                 self.nav.update(status='cancelling',error='驻机服务曾中断，停车状态待核对')
                 if gos:self.ref['cancel']=True
             if terminal:
-                if gos and (phase=='completed' or self.nav.get('station_results') or self.nav.get('collection')):
+                if gos and (phase=='completed' or self.nav.get('station_results') or self.nav.get('collection')
+                            or self.nav.get('collection_run')):
                     self.app._record_route_completion(self.nav)
                 elif phase=='completed':
                     self.app._record_route_completion()
             self.ref['terminal']=terminal;self._save()
+        self._collection_link_lost=False
+        if notify and collection_run:
+            self.collection_sync.notify(collection_run,final=terminal,target=collection_target)
 
     def collection_page(self, run_id, offset):
         run_id=mission_identity(run_id)
+        if type(offset) is not int or offset<0:raise ValueError('采集记录页码无效')
         with self.app.lock:
-            rows=[self.app.nav, *self.app.store.value['history']]
-            run=next((r['collection_run'] for r in rows
-                      if r.get('collection_run', {}).get('id')==run_id), None)
-            identity=self.robot_identity()
-            if run is None:
-                raise ValueError('采集任务记录不存在')
-            if run.get('local') is True:
-                from bridge.task_collection import collection_page
-                return collection_page(self.app.store.path.parent,run_id,offset)
-            if self.app.demo or not identity or run['robot']!=hashlib.sha256(identity.encode()).hexdigest():
-                raise ValueError('请连接执行该任务的机器人以读取采集记录')
-            base,token=self._endpoint('gos')
-        return rpc(base,'/missions/collection',dict(id=run_id,offset=offset),6,token)
+            candidates=[r['collection_run'] for r in self._collection_rows()
+                        if r.get('collection_run',{}).get('id')==run_id]
+            if not candidates:raise ValueError('采集任务记录不存在')
+            keys={(r.get('robot'),r.get('executor','gos'),bool(r.get('local'))) for r in candidates}
+            if len(keys)!=1:raise ValueError('采集任务编号对应多个机器人，不能混用记录')
+            run=copy.deepcopy(candidates[0])
+            final=any(r.get('status') in ('completed','cancelled','failed','paused') for r in self._collection_rows()
+                      if r.get('collection_run',{}).get('id')==run_id)
+        if run.get('local') is True:
+            from bridge.task_collection import collection_page
+            return collection_page(self.app.store.path.parent,run_id,offset)
+        robot_key(run.get('robot'))
+        role=run.get('executor','gos')
+        page=self.collection_sync.cache.page(run_id,offset,robot=run['robot'],executor=role)
+        if page.get('available') and page.get('rows'):
+            return page  # Cached history works offline, even after switching robots.
+        state=self.collection_sync.snapshot(run)
+        if page.get('available') and not state.get('pending'):
+            return page
+        self.collection_sync.notify(run,final=final)
+        if self._collection_robot()!=run['robot']:
+            page.update(stale=True,live=False)
+            return page
+        # Explicit legacy downloads retain the old endpoint behavior, but are
+        # never labelled durable incremental synchronization or realtime data.
+        supported=state.get('supported')
+        if supported is None and run.get('sync_protocol') in (0,SYNC_PROTOCOL):
+            supported=run['sync_protocol']==SYNC_PROTOCOL
+        if supported is None:
+            try:
+                caps=self._collection_request(run,'/missions/capabilities',None,1.)
+                supported=caps.get('collection_sync_protocol')==SYNC_PROTOCOL
+            except ValueError:
+                return page  # A transport failure is not proof of old protocol.
+        if supported is False:
+            legacy=self._collection_request(run,'/missions/collection',dict(id=run_id,offset=offset),2.)
+            if legacy.get('run_id')!=run_id or not isinstance(legacy.get('rows'),list):
+                raise ValueError('旧采集页任务身份不匹配')
+            legacy.update(sync_supported=False,collection_sync_protocol=0,source='legacy_remote',
+                          cached=False,stale=True,live=False,complete=False)
+            return legacy
+        return page
     def _run(self):
         reference=self.ref
         while not self.done.is_set() and self.ref is reference and self.busy():
@@ -237,6 +393,8 @@ class ResidentNavigationClient:
                 if self.app.demo or self.robot_identity()!=self.ref['robot_identity']:return
                 identity={k:self.ref[k] for k in ('id','owner')}
                 gos=self.ref.get('executor')=='gos'
+                if gos and self.nav.get('collection_run'):
+                    identity['collection_sync_protocol']=SYNC_PROTOCOL
                 if self.ref['cancel']:
                     cancel=dict(identity,after=self.ref.get('after_cancel')) if gos else identity
                     result=self._request('/missions/cancel',cancel)
@@ -273,7 +431,8 @@ class ResidentNavigationClient:
                         self._observe(self._request('/missions/pulse',identity))
                         self.wake.wait(1);self.wake.clear()
                         continue
-                result=self._request('/missions/status')
+                result=(self._request('/missions/status',dict(collection_sync_protocol=SYNC_PROTOCOL))
+                        if gos and self.nav.get('collection_run') else self._request('/missions/status'))
                 if self.ref is not reference:return
                 self._observe(result)
                 link=self.app.link
@@ -282,6 +441,7 @@ class ResidentNavigationClient:
                 if not gos and self.busy() and not self.ref['cancel'] and link and age_of(link.record(1002,6))<2:
                     self._request('/missions/pulse',identity)
             except Exception as error:
+                self._collection_link_lost=True
                 with self.app.lock:
                     if self.ref is not reference:return
                     if self.busy():self.nav.update(phase='resident_unknown',message='电脑未确认机器人状态；按已选断联策略执行，结果待同步',connection_error=str(error))
@@ -290,4 +450,5 @@ class ResidentNavigationClient:
     def close(self):
         # Closing the PC is loss of its heartbeat, not an operator Stop command.
         self.done.set();self.wake.set()
+        self.collection_sync.close()
         if self.worker:self.worker.join(timeout=.2)

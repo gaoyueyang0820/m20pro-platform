@@ -337,7 +337,7 @@ class Connections:
         names+=['native/sensing.cpp','tools/build_native_sensing.py',
                 'bridge/http_agent.py','bridge/sensor_agent.py','bridge/sensor_client.py',
                 'bridge/map_service.py','bridge/mapping_job.py','bridge/ros_sensors.py','bridge/gos_navigation.py','bridge/gos_exploration.py',
-                'bridge/task_collection.py',
+                'bridge/task_collection.py','bridge/video_preview.py',
                 'bridge/nos_agent.py','bridge/gos_agent.py','bridge/resident_mission.py',
                 'bridge/map_refinement_agent.py','bridge/sdk_bridge.py','bridge/sdk_agent.py',
                 'bridge/training_agent.py','bridge/root_actions.py',

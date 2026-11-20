@@ -294,6 +294,13 @@ function patrolNeedsGos(rows,collectors=[]){
  return rows.some(({station_action:a})=>a&&(!['front','rear'].includes(a.camera)||a.pan&&a.pan!=='none'||a.iot_device_id||a.iot_device_ids?.length))||
   collectors.some(spec=>spec.kind!=='people_count'||!['front','rear'].includes(spec.camera));
 }
+function weakLinkRouteOptions(rows,collectors=[],status='idle'){
+ if(['running','cancelling','preparing'].includes(status))throw Error('请先结束当前任务，再调整断联策略');
+ if(rows.some(point=>point.type===3))throw Error('充电航点使用断联停车，不能套用弱网续行设置');
+ if(rows.some(point=>point.station_action)||collectors.length)throw Error('此路线包含采集或到点作业，请单独配置机载采集任务；不会自动删除作业');
+ return {engine:'native',disconnect_policy:'finish',nav_mode:1,speed:1,gait:'flat',manner:0,
+  pause_at_point:false,disconnect_timeout_s:5,max_duration_s:1800,explicit_execution:true};
+}
 function navigationIntent(){
  return points.length>1||points.some(point=>point.type===3||point.station_action)||
         points.length===1&&(taskCollectorOptions().length||($('#disconnect-policy')?.value||'stop')!=='stop')?'route':'goal';
@@ -330,6 +337,12 @@ function routeEditorPage(){
      ${select('电脑断联后','disconnect-policy',[['stop','停车'],['finish','完成任务后停车'],['return','立即沿原路返回'],['finish_return','完成任务后沿原路返回']])}
     </div>
     <p id="disconnect-policy-help" class="help" role="status"></p>
+     <div class="form-grid">
+      <label class="field">原厂断联等待（秒）<input id="disconnect-timeout" type="number" min="3" max="30" step="1" value="5"></label>
+      <label class="field">驻机任务最长时限（秒）<input id="resident-max-duration" type="number" min="30" max="3600" step="1" value="1800"></label>
+     </div>
+     ${btn('应用弱网续行设置','weak-link-route','small')}
+     <p class="help">仅设置当前草稿，不保存或启动。原厂续行与返程由机载服务执行；定位、避障或控制异常仍停车，返程路径受阻不继续。断联时远程停止无法保证送达，请保留现场接管手段。</p>
     <label class="field">到点后<select id="route-arrival"><option value="continue">自动前往下一点，终点结束</option><option value="pause">每个任务点暂停，点击继续</option></select></label>
     <div class="range-label"><strong>行进顺序</strong><b id="point-count">${points.length} 个点</b></div>
     <div id="waypoints" class="waypoints"></div>
@@ -357,11 +370,18 @@ navPage=function(){
 };
 ui['nav-takeover']=async()=>{await job('/api/nav/manual',{},'暂停路线并切换手动');await fetchState();toast('已切换手动，按住方向键移动');};
 ui['undo-waypoint']=()=>{points.pop();renderPoints();};
+ui['weak-link-route']=()=>{
+ const o=weakLinkRouteOptions(points,taskCollectorOptions(),S?.nav?.status);
+ for(const [id,value] of Object.entries({'route-navigation-engine':o.engine,'disconnect-policy':o.disconnect_policy,'route-arrival':'continue','nav-mode':o.nav_mode,'nav-speed':o.speed,'nav-gait':o.gait,'nav-manner':o.manner,'disconnect-timeout':o.disconnect_timeout_s,'resident-max-duration':o.max_duration_s}))$('#'+id).value=String(value);
+ $('#disconnect-policy').dispatchEvent(new Event('change',{bubbles:true}));
+ toast('已设置原厂断联续行草稿，尚未保存或启动');
+};
 function routeOptions(){
  return {nav_mode:+($('#nav-mode')?.value??1),speed:+($('#nav-speed')?.value??1),gait:$('#nav-gait')?.value||'flat',manner:+($('#nav-manner')?.value??0),
   pause_at_point:$('#route-arrival')?.value==='pause',collectors:taskCollectorOptions(),
   engine:points.some(point=>point.type===3)?'native':$('#route-navigation-engine')?.value||'native',
-  disconnect_policy:$('#disconnect-policy')?.value||'stop',explicit_execution:true};
+  disconnect_policy:$('#disconnect-policy')?.value||'stop',explicit_execution:true,
+   ...($('#disconnect-policy')?.value&&$('#disconnect-policy').value!=='stop'?{disconnect_timeout_s:+($('#disconnect-timeout')?.value??5),max_duration_s:+($('#resident-max-duration')?.value??1800)}:{})};
 }
 saveRoute=async function(){
  const r=await api('/api/route/save',{id:routeId,name:$('#route-name')?.value||'新巡检路线',map_id:mapId,points,options:routeOptions()});routeId=r.route.id;await fetchState();return r.route;
@@ -422,12 +442,14 @@ const dayRender=render,dayUpdate=update;
 const detailedTaskSummary=taskSummary;
 function collectionDownloadButton(task) {
  const id=task?.collection_run?.id;
- return id&&task.collection?.some(row=>row.samples||row.failures)
+ return id&&(task.collection_transfer||task.collection?.some(row=>row.samples||row.failures))
   ? `<button type="button" class="btn small" data-collection-download="${esc(id)}">下载采集记录</button>` : '';
 }
 function collectionResults(task) {
  const rows=task?.collection||[];
- if(!rows.length)return '';
+ const t=task?.collection_transfer;
+ if(!rows.length&&!t)return '';
+ const transfer=t?`<p class="help">机载采集 · 本机已缓存 ${esc(t.cached_rows??0)} 条 · ${esc(({pending:'待补传',syncing:'正在补传',synced:t.complete?'已完整同步':'已同步至当前批次',offline:'离线待补传',unsupported:'旧代理不支持自动补传',partial:'仅有部分记录',error:'补传失败',unavailable:'记录不可用'})[t.state]||'等待核对')} ${esc(t.error||'')}</p>`:'';
  const types=S.task_collectors||[];
  const content=rows.map(row=>{
   const label=types.find(type=>type.kind===row.spec?.kind)?.title||'采集项';
@@ -441,7 +463,7 @@ function collectionResults(task) {
    <small>${summary||'等待首条读数'} · ${esc(row.samples)} 条记录</small>
    ${iotReadings(devices)}${row.error?`<small>${esc(row.error)}</small>`:''}</div></div>`;
  }).join('');
- return card('沿途采集',`<div class="card-pad">${content}${collectionDownloadButton(task)}</div>`,'vision');
+ return card('沿途采集',`<div class="card-pad">${transfer}${content}${collectionDownloadButton(task)}</div>`,'vision');
 }
 
 function patrolResults(nav) {
@@ -475,6 +497,8 @@ render=function(){
   const options=S.routes.find(r=>r.id===routeId)?.options||{nav_mode:1,speed:1,gait:'flat',manner:0,pause_at_point:false};
   for(const [id,key,fallback] of [['nav-mode','nav_mode',1],['nav-speed','speed',1],['nav-gait','gait','flat'],['nav-manner','manner',0]])if($('#'+id))$('#'+id).value=String(options[key]??fallback);
   if($('#route-arrival'))$('#route-arrival').value=options.pause_at_point?'pause':'continue';
+  if($('#disconnect-timeout'))$('#disconnect-timeout').value=options.disconnect_timeout_s??5;
+  if($('#resident-max-duration'))$('#resident-max-duration').value=options.max_duration_s??1800;
   const gos=options.explicit_execution&&options.engine==='gos';
   if($('#route-navigation-engine'))$('#route-navigation-engine').value=gos?'gos':'native';
   if($('#disconnect-policy'))$('#disconnect-policy').value=options.explicit_execution&&options.engine==='native'?options.disconnect_policy||'stop':'stop';
@@ -525,14 +549,15 @@ document.addEventListener('click',async event=>{
  button.disabled=true;
  const run_id=button.dataset.collectionDownload,rows=[];
  try{
-  let offset=0;
+  let offset=0,complete=null,source=null;
   while(offset!==null){
    const page=await api('/api/tasks/collection?run_id='+encodeURIComponent(run_id)+'&offset='+offset,undefined,true);
-   rows.push(...page.rows);
+   if(page.available===false)throw Error(page.error||'暂无可下载的采集记录');
+   complete=page.complete??null;source=page.source??null;rows.push(...page.rows);
    if(page.next_offset!==null&&(!Number.isInteger(page.next_offset)||page.next_offset<=offset))throw Error('采集记录页码无效');
    offset=page.next_offset;
   }
-  const url=URL.createObjectURL(new Blob([JSON.stringify({run_id,rows},null,2)],{type:'application/json'}));
+  const url=URL.createObjectURL(new Blob([JSON.stringify({run_id,complete,source,rows},null,2)],{type:'application/json'}));
   const link=document.createElement('a');
   link.href=url;link.download='巡检采集-'+run_id.slice(0,8)+'.json';link.click();
   setTimeout(()=>URL.revokeObjectURL(url),1000);

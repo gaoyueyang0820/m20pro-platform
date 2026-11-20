@@ -15,6 +15,7 @@ import zlib
 from bridge.resident_mission import atomic
 from bridge.gos_exploration import GOSExploration, exploration_spec
 from bridge.task_collection import RouteCollection, collection_page
+from m20.collection_store import CollectionJournal, SYNC_PROTOCOL, robot_key
 from m20.map_catalog import read_json
 from m20.local_trajectory import TrajectoryFollower
 from m20.motion_response import MotionResponse
@@ -159,6 +160,22 @@ class GOSNavigation:
             if self.nav['status'] not in STOPPED:
                 self.nav.update(status='interrupted', phase='interrupted', cancel_confirmed=False,
                                 message='GOS 服务曾中断，正在等待停车核对')
+            self._restore_collection()
+
+    def _restore_collection(self):
+        """Recover measurements only. Restart never resumes sampling or motion."""
+        if not self.job.get('has_collection') and not self.nav.get('collection_journal'):
+            return
+        try:
+            journal = CollectionJournal(self.data)
+            meta = journal.metadata(self.job['id'], robot=self.job.get('collection_robot'))
+            if meta.get('available') and not meta['sealed']:
+                meta = journal.finish(self.job['id'], robot=self.job.get('collection_robot'),
+                                      error='采集进程曾中断，已有记录可补传；末尾完整性未确认')
+            self.nav['collection_journal'] = meta
+        except (OSError, ValueError) as error:
+            self.nav['collection_journal'] = dict(collection_sync_protocol=SYNC_PROTOCOL,
+                available=False, complete=False, sealed=False, error=str(error))
 
     def capabilities(self):
         available = bool(self.enabled and importlib.util.find_spec('numpy') is not None)
@@ -166,6 +183,7 @@ class GOSNavigation:
             motion_learning = self.motion_response.status()
         return dict(ok=True, protocol=1, available=available, executor='gos',
                     policies=['stop'], station_actions=self.actions.capabilities(), collection_protocol=1, iot_task_protocol=1,
+                    collection_sync_protocol=SYNC_PROTOCOL,
                     motion_learning=motion_learning, exploration_protocol=1,
                     message='GOS 自主寻路已配置' if available else '请在连接中心更新并配置 GOS 导航服务')
 
@@ -193,13 +211,14 @@ class GOSNavigation:
 
     def _persist(self):
         saved = {key: copy.deepcopy(self.nav[key]) for key in
-                 ('status', 'phase', 'index', 'completed', 'message', 'station_results', 'cancel_confirmed', 'collection')
+                 ('status', 'phase', 'index', 'completed', 'message', 'station_results', 'cancel_confirmed', 'collection', 'collection_journal')
                  if key in self.nav}
         if self.collection is not None:
             saved['collection'] = self.collection.snapshot()
+            saved['collection_journal'] = self.collection.metadata()
         atomic(self.path, dict(job=self.job, nav=saved, revoked=sorted(self.revoked)))
 
-    def status(self):
+    def status(self, compact=False):
         with self.lock:
             if not self.job:
                 return dict(protocol=1, phase='idle', active=False, executor='gos')
@@ -213,8 +232,11 @@ class GOSNavigation:
             result = dict(protocol=1, id=self.job['id'], executor='gos', phase=nav['status'],
                         stage=nav['phase'], completed=nav['completed'], active=nav['status'] not in STOPPED,
                         stop_confirmed=bool(nav.get('cancel_confirmed')), message=nav.get('message', ''),
-                        station_results=copy.deepcopy(nav.get('station_results', [])),
                         plan=dict(path=visible, goal=copy.deepcopy(plan.get('goal'))) if visible else None)
+            if compact:
+                result['station_results_count'] = len(nav.get('station_results', []))
+            else:
+                result['station_results'] = copy.deepcopy(nav.get('station_results', []))
             if self.job.get('kind') == 'exploration':
                 capture_id = self.job['capture_id']
                 detail = (self.navigator.report() if self.navigator is not None else
@@ -223,12 +245,21 @@ class GOSNavigation:
                 result.update(kind='exploration', capture_id=capture_id, exploration=detail)
                 if nav['status'] == 'running':
                     result.update(stage=detail['state'], message=detail['message'])
-            collected = self.collection.snapshot() if self.collection is not None else copy.deepcopy(nav.get('collection', []))
+            collected = (self.collection.snapshot(compact=compact) if self.collection is not None else
+                         copy.deepcopy(nav.get('collection', [])))
+            if compact:
+                for row in collected:
+                    row.pop('latest', None)
+                    row.pop('peak_people', None)
             if collected:
                 if nav['status'] in STOPPED or nav['status'] == 'interrupted':
                     for row in collected:
-                        row['state'] = 'ended'
+                        if row.get('state') != 'error':
+                            row['state'] = 'ended'
                 result['collection'] = collected
+            journal = self.collection.metadata() if self.collection is not None else nav.get('collection_journal')
+            if journal is not None:
+                result['collection_journal'] = copy.deepcopy(journal)
             return result
 
     def _collection_context(self, nav):
@@ -269,6 +300,16 @@ class GOSNavigation:
         row = dict(index=index, pose=list(pose), **self.actions.run(action, guard))
         with self.lock:
             guard()
+            collection, nav = self.collection, self.nav
+        if collection is None:
+            raise ValueError('到点采集日志尚未准备，不能将未保存读数报告为完成')
+        # Local persistence is outside the navigation lock. A disk wait cannot
+        # block pulse/watchdog handling; the guard is rechecked before progress.
+        collection.record_station(row)
+        with self.lock:
+            guard()
+            if self.nav is not nav:
+                raise ValueError('采集任务身份已变化')
             self.nav.setdefault('station_results', []).append(row)
             self.nav.update(index=index+1,completed=index+1)
             self._persist()
@@ -331,6 +372,11 @@ class GOSNavigation:
         spec = specification(request)
         if spec['disconnect_policy'] != 'stop':
             raise ValueError('GOS 自主寻路目前支持断联停车')
+        if spec['disconnect_timeout_s'] != GOS_LEASE_SECONDS:
+            raise ValueError('GOS 自主寻路心跳期限固定为 5 秒')
+        collection_robot = robot_key(request['collection_robot']) if 'collection_robot' in request else None
+        if collection_robot is not None:
+            spec['collection_robot'] = collection_robot
         start_index = request.get('start_index', 0)
         pause = request.get('pause_at_point', False)
         if type(start_index) is not int or not 0 <= start_index < len(spec['points']) or type(pause) is not bool:
@@ -356,7 +402,9 @@ class GOSNavigation:
             if collectors:
                 check_collectors(collectors, self.actions.capabilities())
             previous = self.job, self.nav, self.navigator, self.collection
-            self.job = dict(id=spec['id'], owner=spec['owner'], digest=digest)
+            has_collection = bool(collectors or any(p.get('station_action') for p in spec['points']))
+            self.job = dict(id=spec['id'], owner=spec['owner'], digest=digest,
+                            has_collection=has_collection, collection_robot=collection_robot)
             self.lease_until = time.monotonic() + GOS_LEASE_SECONDS
             self.navigator = GOSPointNavigator(self)
             route = dict(points=spec['points'], options=dict(pause_at_point=pause))
@@ -365,7 +413,8 @@ class GOSNavigation:
             self.navigator.deadline = time.monotonic() + spec['max_duration_s']
             nav = self.nav
             self.collection = (RouteCollection(self.data, spec['id'], self.aos, collectors,
-                                               lambda: self._collection_context(nav)) if collectors else None)
+                                               lambda: self._collection_context(nav),
+                                               robot=collection_robot, executor='gos') if has_collection else None)
             try:
                 self._persist()
             except (OSError, ValueError):
@@ -375,12 +424,12 @@ class GOSNavigation:
             if self.collection is not None:
                 try:
                     self.collection.start()
-                except RuntimeError:
-                    self.collection.stop()
+                except (RuntimeError, OSError, ValueError) as error:
+                    self.collection.stop(error=str(error))
                     self.nav.update(status='failed', phase='failed', cancel_confirmed=True,
-                                    message='沿途采集无法启动')
+                                    message='采集日志或采集进程无法启动：'+str(error)[:160])
                     self._persist()
-                    raise ValueError('沿途采集无法启动') from None
+                    raise ValueError(self.nav['message']) from None
             self._start_watchdog()
             self.navigator._launch(token, dict(grid, id=spec['map']['name']), plan)
             return self.status()
@@ -426,7 +475,8 @@ class GOSNavigation:
                     raise ValueError('任务或控制端身份不匹配')
                 self.revoked.add(key)
                 self._persist()
-                return dict(ok=True, matched=False, revoked=True, mission=self.status())
+                return dict(ok=True, matched=False, revoked=True,
+                            mission=self.status(compact=request.get('collection_sync_protocol') == SYNC_PROTOCOL))
             if self.nav['status'] == 'interrupted' and not (self.watchdog and self.watchdog.is_alive()):
                 self.watchdog = threading.Thread(target=self._reconcile, daemon=True)
                 self.watchdog.start()
@@ -435,16 +485,23 @@ class GOSNavigation:
                 after = 'paused' if request.get('after') == 'paused' and not inspecting else 'cancelled'
                 message = '到点作业已中止，等待停车确认' if inspecting else '操作者已请求停车'
                 self.navigator.stop(after, message)
-            return dict(ok=True, matched=True, mission=self.status())
+            return dict(ok=True, matched=True,
+                        mission=self.status(compact=request.get('collection_sync_protocol') == SYNC_PROTOCOL))
 
     def dispatch(self, path, request):
         request = request or {}
         if path == '/missions/capabilities':
             return self.capabilities()
         if path == '/missions/status':
-            return dict(ok=True, mission=self.status())
+            return dict(ok=True, mission=self.status(compact=request.get('collection_sync_protocol') == SYNC_PROTOCOL))
         if path == '/missions/collection':
-            return collection_page(self.data, request.get('id'), request.get('offset', 0))
+            page = collection_page(self.data, request.get('id'), request.get('offset', 0),
+                                   page_size=request.get('limit', 100), cursor=request.get('cursor'),
+                                   robot=request.get('robot'), journal_id=request.get('journal_id'))
+            # Generic RPC raises on top-level ok:false and discards extra fields.
+            # The opt-in envelope preserves the page's strict unavailable/legacy
+            # result without mistaking a delivered RPC for available data.
+            return dict(ok=True, page=page) if request.get('response_envelope') is True else page
         if path == '/missions/preview':
             return self.preview(request)
         if path == '/missions/start':
@@ -463,7 +520,7 @@ class GOSNavigation:
                     raise ValueError('建图采集会话不匹配')
                 if self.nav['status'] == 'running' and time.monotonic() < self.lease_until:
                     self.lease_until = time.monotonic() + GOS_LEASE_SECONDS
-                return dict(ok=True, mission=self.status())
+                return dict(ok=True, mission=self.status(compact=request.get('collection_sync_protocol') == SYNC_PROTOCOL))
         raise ValueError('GOS 任务接口不存在')
 
     def _watch(self):
@@ -523,3 +580,6 @@ class GOSNavigation:
             if self.link is not None:
                 self.link.close()
                 self.link = None
+            finisher = self.collection.finisher if self.collection is not None else None
+        if finisher is not None and finisher is not threading.current_thread():
+            finisher.join(timeout=.5)
