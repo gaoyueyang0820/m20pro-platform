@@ -328,6 +328,7 @@ class TrajectoryFollower:
             minimum=min(self.forward_limit,floor)
             f=min(self.forward_limit,max(minimum,allowed_speed/response))
             self.last['terminal_speed_limit_mps']=round(allowed_speed,3)
+        gap=self._passage_offset(surface) if not terminal and not at_goal and not fixed_heading else None
         side=min(.25,f);reverse=min(.25,f)
         # Give the holonomic body a useful lateral pulse as an alternative
         # to low axes inside its dead zone. It passes the same swept checks.
@@ -421,6 +422,10 @@ class TrajectoryFollower:
             cost[i]=(3.2*float(np.linalg.norm(target-last[:2]))+1.4*distances[closest]-.8*progress
                      +(.95 if at_goal else .45)*align+clearance+.10*np.linalg.norm(candidates[i]-self.previous)
                      +(.12 if candidates[i,0]<0 else 0)+.08*abs(candidates[i,1]))
+            if gap is not None and abs(candidates[i,0])<1e-9 and candidates[i,1]*gap>0:
+                # A doorway offset from the heading is opened by centring the
+                # body on the gap, not by turning and creeping forward.
+                cost[i]-=2.0
             if direction is not None:
                 cost[i]-=self._response_preference(candidates[i],direction,desired)
         cost[~valid]=np.inf
@@ -440,6 +445,27 @@ class TrajectoryFollower:
         elif abs(axes[1])>.05:reason='侧移绕开障碍'
         elif axes[2]:reason='沿弧线转向' if axes[0] else '转向下一段通路'
         return self._result(axes,state,reason,trajectories[best].tolist(),started)
+
+    def _passage_offset(self,surface,half_range=.6,probe=(.4,.7,1.0)):
+        """Lateral offset to the centre of the widest straight-through gap.
+
+        Returns None when the current heading already passes the probe or no
+        straight corridor exists. Used to centre on a doorway instead of
+        turning in place in front of its frame.
+        """
+        if all(surface.valid(d,0.,0.) for d in probe):return None
+        runs=[];current=[]
+        steps=int(round(2*half_range/.05))
+        for i in range(steps+1):
+            y=-half_range+i*.05
+            if all(surface.valid(d,y,0.) for d in probe):current.append(y)
+            else:
+                if current:runs.append(current);current=[]
+        if current:runs.append(current)
+        if not runs:return None
+        best=max(runs,key=lambda run:run[-1]-run[0])
+        centre=(best[0]+best[-1])/2
+        return None if abs(centre)<.08 else centre
 
     def _straight_corridor(self, pose, feedback, local, arc, surface, remaining, reaction, deceleration):
         vx,vy,yaw_rate = feedback
