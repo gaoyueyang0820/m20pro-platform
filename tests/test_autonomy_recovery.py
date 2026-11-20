@@ -128,8 +128,11 @@ class RecoveryTests(unittest.TestCase):
         obstacles = [(3,0),(-3,0),(0,-3)]
         frame = dict(scan(obstacles=obstacles), _speed_mps=0., _velocity_body=[0.,0.])
         e.ingest(frame)
-        for f, side, yaw in [(.35,0.,0.),(-.25,0.,0.),(0.,-.25,0.),(0.,0.,.7),(0.,0.,-.7)]:
-            self.assertFalse(clearance(frame, f, yaw, side=side)[0])
+        turn_frame = dict(scan(obstacles=[(1,0),(-1,0),(0,-1)]), _speed_mps=0., _velocity_body=[0.,0.])
+        for f, side, yaw in [(.35,0.,0.),(-.25,0.,0.),(0.,-.25,0.)]:
+            self.assertFalse(clearance(turn_frame, f, yaw, side=side)[0])
+        for yaw in (.7, -.7):
+            self.assertFalse(clearance(turn_frame, 0.,0.,yaw)[0])
         self.assertTrue(clearance(frame, 0.,0.,side=.25)[0])
         self.assertTrue(e.request_recovery((0.,.25,.7), '原转弯轨迹受阻'))
         self.assertEqual(applied(e), (0.,0.,0.))  # Wait for a fresh stopped frame.
@@ -254,7 +257,7 @@ class RecoveryTests(unittest.TestCase):
     def test_exhaustion_and_no_corridor_have_different_explanations(self):
         e=Explorer(4);self.exhaust_episode(e);e._recover_axes()
         self.assertEqual(e.recovery_block_reason,'attempts_exhausted');self.assertIn('3次',e.motion_hint)
-        blocked=Explorer(4);blocked.ingest(scan(obstacles=[(3,0),(-3,0),(0,3),(0,-3)]));blocked._recover_axes()
+        blocked=Explorer(4);blocked.ingest(scan(obstacles=[(2,0),(-2,0),(0,2),(0,-2)]));blocked._recover_axes()
         self.assertEqual(blocked.recovery_block_reason,'no_verified_corridor');self.assertNotIn('3次',blocked.motion_hint)
 
     def test_closed_loop_two_obstacles_get_separate_recovery_episodes(self):

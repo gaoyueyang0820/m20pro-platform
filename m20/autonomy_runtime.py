@@ -50,13 +50,13 @@ def exploration_pose_consistency(odom, quality=None, now=None, *, max_age_s=3., 
     while comparing its raw coordinates with the mapping SLAM pose would flag
     a correctly anchored session whose SLAM frame simply starts elsewhere.
     """
-    now=time.time() if now is None else float(now)
     if not isinstance(odom,dict) or not odom:return '缺少地图定位输出，请先恢复定位'
     error=inlier=None
     try:
-        age=now-float(odom.get('received_at',0))
-        if not math.isfinite(age) or age>max_age_s:
-            return '地图定位输出已 %.0f 秒未更新，请先恢复定位'%max(0.,age)
+        # Do NOT subtract odom['received_at'] from the local clock: it is
+        # stamped on the NOS, whose clock ran 213 s ahead, so the age was
+        # negative and a frozen pose always looked fresh. Freezing is judged
+        # by the caller from repeated local reads.
         if isinstance(quality,dict) and quality:
             error=float(quality.get('error',0.));inlier=float(quality.get('inlier_ratio',1.))
     except (TypeError,ValueError):return '定位输出无法解析'
@@ -573,14 +573,26 @@ class Autonomy:
                 if self._resume_token is token:self._resume_token=None
 
     def _pose_gate_refusal(self):
-        """Return (state, reason): unknown is not the same as recovered."""
+        """Return (state, reason): unknown is not the same as recovered.
+
+        Freshness is measured locally: the same pose value repeated for three
+        seconds means the localized output stopped advancing, regardless of
+        what clock the source stamps on it.
+        """
         try:
             role=self.app.hub.connections.value.get('sensor_source','nos')
             status=self.app.proxy(role,'/sensors/status',timeout=2)
         except (ValueError,KeyError,AttributeError):
             return ('unknown',None)
         if not isinstance(status,dict) or not status.get('odom'):return ('unknown',None)
-        reason=exploration_pose_consistency(status.get('odom'),status.get('matching_quality'))
+        odom=status.get('odom')
+        key=(round(float(odom.get('PosX',0)),4),round(float(odom.get('PosY',0)),4),odom.get('stamp'))
+        now=time.monotonic()
+        if key!=getattr(self,'_pose_gate_key',None):
+            self._pose_gate_key=key;self._pose_gate_changed=now
+        elif now-getattr(self,'_pose_gate_changed',now)>3.:
+            return ('refuse','地图定位输出已 %.0f 秒未更新，请先恢复定位'%(now-self._pose_gate_changed))
+        reason=exploration_pose_consistency(odom,status.get('matching_quality'))
         return ('ok',None) if reason is None else ('refuse',reason)
 
     def _wait_pose_gate(self,reason,run_id,check,timeout=30.):

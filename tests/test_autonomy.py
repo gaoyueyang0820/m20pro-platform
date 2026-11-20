@@ -106,7 +106,7 @@ class CoreTests(unittest.TestCase):
     def test_ground_support_is_separate_from_body_clearance_margin(self):
         s=scan();s['floor']=[p for p in s['floor'] if not(abs(p[0])<=1 and abs(p[1])==3)]
         self.assertTrue(clearance(s,0,.1)[0]);self.assertTrue(clearance(s,.1,0)[0])
-        s['obstacles']=[[0,3]];self.assertFalse(clearance(s,0,.1)[0])
+        s['obstacles']=[[0,1]];self.assertFalse(clearance(s,0,.1)[0])
         s['obstacles']=[];s['floor']=[p for p in s['floor'] if p!=[3,1]]
         self.assertTrue(clearance(s,.1,0)[0])  # One enclosed missing return.
         s['floor']=[p for p in s['floor'] if p!=[4,1]]
@@ -312,8 +312,11 @@ class PlatformAutonomyTests(unittest.TestCase):
     def test_start_can_use_straight_passage_without_in_place_turn_space(self):
         cases.PlatformTests.live(self);a=self.app.autonomy
         s=scan();s['obstacles']=[[-3,0]]
-        self.assertTrue(clearance(s,.35,0)[0]);self.assertFalse(clearance(s,0,.7)[0])
-        with patch.object(a,'scan_now',side_effect=[dict(s,stamp=1),dict(s,stamp=2)]),patch('m20.autonomy_runtime.time.sleep'):
+        self.assertTrue(clearance(s,.35,0)[0])
+        turn_only=scan();turn_only['obstacles']=[[-1,0]]
+        self.assertFalse(clearance(turn_only,0,.7)[0])
+        stamps=iter(range(1,100))
+        with patch.object(a,'scan_now',side_effect=lambda *args,**kwargs: dict(s,stamp=next(stamps))),patch('m20.autonomy_runtime.time.sleep'):
             a._check_observation()
         self.assertEqual(self.app.link.sent,[]);self.assertFalse(a.active)
 

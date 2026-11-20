@@ -17,9 +17,10 @@ class ExplorationPoseConsistencyTests(unittest.TestCase):
         message = exploration_pose_consistency(None, odom())
         self.assertIn('定位输出', message)
 
-    def test_a_frozen_map_pose_is_refused(self):
-        message = exploration_pose_consistency(odom(age=54.), odom())
-        self.assertIn('未更新', message)
+    def test_freeze_detection_belongs_to_the_caller(self):
+        # The source stamps a clock that can differ by minutes, so an absolute
+        # age here would be meaningless; the gate watches repeated local reads.
+        self.assertIsNone(exploration_pose_consistency(odom(age=54.), dict(error=.05, inlier_ratio=.99)))
 
     def test_a_poor_match_is_refused_with_its_measured_error(self):
         message = exploration_pose_consistency(odom(), dict(error=.42, inlier_ratio=.6))
@@ -31,8 +32,8 @@ class ExplorationPoseConsistencyTests(unittest.TestCase):
         self.assertIsNone(exploration_pose_consistency(odom(), {}))
 
     def test_unusable_values_are_refused_not_crashed(self):
-        message = exploration_pose_consistency(dict(received_at='bad'), dict(error=.1))
-        self.assertIn('无法解析', message)
+        message = exploration_pose_consistency({}, dict(error=.1))
+        self.assertIn('缺少地图定位输出', message)
 
     def test_a_judged_pose_is_not_compared_by_raw_coordinates(self):
         # A correctly anchored session can start its SLAM frame anywhere.

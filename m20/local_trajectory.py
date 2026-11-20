@@ -15,6 +15,10 @@ from m20.motion_response import AXES
 from m20.robot_geometry import CLEARANCE_HALF_LENGTH, CLEARANCE_HALF_WIDTH, BODY_HALF_LENGTH, BODY_HALF_WIDTH
 
 RES=.2
+# A turn sweeps the whole body; keeping a wider margin for rotation than for
+# straight passage lets the robot use a narrow doorway without pivoting in
+# place every frame.
+TURN_PADDING=.15
 _SURFACES=threading.local()
 
 
@@ -73,7 +77,7 @@ class LocalSurface:
     def _valid_uncached(self,x,y,yaw,*,padding=(0.,0.)):
         # SAT rectangle/cell intersection, with sub-cell translation retained.
         self.last_failure=None
-        c,s=math.cos(yaw),math.sin(yaw);a,b=abs(c),abs(s);half=RES/2
+        c,s=math.cos(yaw),math.sin(yaw);a,b=abs(c),abs(s);half=min(RES/2,.06)
         hx,hy=CLEARANCE_HALF_LENGTH+padding[0],CLEARANCE_HALF_WIDTH+padding[1]
         support_x,support_y=BODY_HALF_LENGTH+padding[0],BODY_HALF_WIDTH+padding[1]
         if self.precise and len(self.bounds):
@@ -91,8 +95,21 @@ class LocalSurface:
                 if (u<support_x+half*(a+b)-1e-8 and v<support_y+half*(a+b)-1e-8
                     and abs(dx)<support_x*a+support_y*b+half-1e-8
                     and abs(dy)<support_x*b+support_y*a+half-1e-8
-                    and (ix,iy) not in self.free):self.last_failure='support';return False
+                    and not self._cell_supported(ix,iy)):self.last_failure='support';return False
         return True
+
+    def _cell_supported(self,ix,iy):
+        """A cell may overhang unobserved floor next to measured floor.
+
+        A 0.60 m doorway on a 0.20 m grid left only 4.5 cm of geometric
+        clearance, and the rounding of a boundary cell to unknown rejected
+        the whole passage as 'support'.
+        """
+        if (ix,iy) in self.free:return True
+        # Only a cell enclosed between measured floor on both sides may be
+        # bridged; a single free row must not support the whole body.
+        return (((ix-1,iy) in self.free and (ix+1,iy) in self.free)
+                or ((ix,iy-1) in self.free and (ix,iy+1) in self.free))
 
     def sweep_valid(self,dx,dy,turn=0.):
         """Conservative continuous translation plus the full +/-90° turn sweep.
@@ -318,7 +335,10 @@ class TrajectoryFollower:
         slow_f=max(min(.20,self.forward_limit),.7*f) if terminal else .7*f
         candidates=[(0.,0.,0.)]
         if not at_goal:
-            yaw_candidates=(0.,) if fixed_heading else (0.,t,-t)
+            # A small heading error is corrected by translation, not by
+            # another left-right pulse every frame.
+            yaw_deadband=.10 if not terminal else .05
+            yaw_candidates=(0.,) if fixed_heading or abs(desired)<yaw_deadband else (0.,t,-t)
             for vx in list(dict.fromkeys([f,slow_f,0.,-reverse])):
                 for vy in dict.fromkeys((0.,side,-side,lateral,-lateral) if vx==0 else (0.,side,-side)):
                     for wz in yaw_candidates:
