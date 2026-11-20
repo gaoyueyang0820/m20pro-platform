@@ -58,6 +58,10 @@ GOS 从实际发令记录、运动反馈和定位位移学习直行、侧移和�
 
 `ball_rtsp` 可填写已有球机 RTSP。仅配置国标通道时，服务通过 `/sip/player/play` 取得实时流。云台控制适配 FastBee 开源 v2 的 `/sip/ptz/ptz` 方向和停止接口，核对现场版本后可启用 `fastbee_ptz`。图形验证码开启时，使用平台返回的结构化验证码或已有的短期 `iot_token`。当前 API 适配读数查询，人数结果保存在本平台任务记录。 [FastBee v2 云台控制源码](https://github.com/beecue/FastBee/blob/fc285f09fef16eb2a931618e566547e23c6434ea/springboot/fastbee-open-api/src/main/java/com/fastbee/data/controller/media/PtzController.java)
 
+## 机载缓存与补传
+
+沿途采集与到点读数写入机载 SQLite 事务日志，任务结束或电脑重连后按游标增量补传；任务中心的「沿途采集」显示本机已缓存条数与补传状态。补传在独立线程内分批执行，不阻塞导航心跳。历史缓存标注为过期，不冒充实时读数；旧代理只支持 `offset` 手动读取。
+
 ## 接口
 
 - `POST /api/nav/plan`、`/api/nav/goal`、`/api/nav/start` 默认使用原厂导航；需要机载采集的既有路线默认使用 GOS。单点可指定 `engine: "gos"`。巡检可用 `explicit_execution: true` 随路线保存或在执行时提交 `engine` 和 `disconnect_policy`。演示模式使用本地模拟，充电航点交给专用回桩流程。

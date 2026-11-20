@@ -263,8 +263,8 @@ class GOSPatrolTests(unittest.TestCase):
                 walking.append((self.link.pose[0], tuple(self.link.axes)))
                 return dict(sampled_at=time.time(),values={'people':3})
             return SimpleNamespace(sample=sample,close=lambda:None)
-        def collection(*args):
-            return RouteCollection(*args,worker_factory=worker_factory)
+        def collection(*args, **kwargs):
+            return RouteCollection(*args,worker_factory=worker_factory,**kwargs)
         with patch('bridge.gos_navigation.RouteCollection',side_effect=collection):
             self.service.dispatch('/missions/start',self.request)
         result=self.wait_for(lambda s:s.get('stop_confirmed'),pulse=True)
@@ -330,6 +330,11 @@ class GOSPatrolTests(unittest.TestCase):
             while client.busy() and time.monotonic()<deadline:
                 time.sleep(.03)
             self.assertFalse(client.busy(), nav)
+            # Data transfer is independent of the safety observer and can finish
+            # after navigation. Keep the synthetic RPC alive until it is mirrored.
+            transfer_deadline=time.monotonic()+3
+            while not nav.get('station_results') and time.monotonic()<transfer_deadline:
+                time.sleep(.01)
         self.assertEqual(nav['status'],'completed')
         self.assertEqual(nav['station_results'][0]['people'],2)
         self.assertLess(seen.index(('nos','/maps/navigation-lease','claim')),

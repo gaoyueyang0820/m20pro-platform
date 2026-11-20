@@ -1,7 +1,9 @@
 """Bounded, latest-frame-only capture using an existing FFmpeg 6+ binary.
 
-Strict decoding rejects missing-reference HEVC packets instead of constructing
-concealed gray frames. PPM carries raw RGB, avoiding a second JPEG codec pass.
+Decoder error checks remain strict; truncated PPM frames are never published.
+PPM carries raw RGB, not I/P/B metadata or proof of an intact reference chain.
+These checks reduce corrupt output but cannot guarantee that every decoded image
+is free of codec concealment. No option here changes the source RTSP bitrate.
 """
 from functools import lru_cache
 import os
@@ -39,7 +41,9 @@ def find_ffmpeg(minimum=6):
     return None
 
 
-def capture_command(binary,source,legacy_version=None):
+def capture_command(binary,source,legacy_version=None,*,max_width=800):
+    if type(max_width) is not int or not 16<=max_width<=800:
+        raise ValueError('Invalid preview width')
     if source.startswith('rtsp://'):
         timeout = '-stimeout' if legacy_version==4 else '-timeout'
         inputs = ['-rtsp_transport', 'tcp', timeout, '3500000']
@@ -49,8 +53,8 @@ def capture_command(binary,source,legacy_version=None):
         inputs = ['-re', '-stream_loop', '-1']
     timing = ['-vsync','0'] if legacy_version else ['-fps_mode','passthrough']
     return [binary,'-hide_banner','-loglevel','error','-nostdin','-filter_threads','1',
-            *inputs,'-err_detect','explode','-threads','1','-i',source,
-            '-an','-sn','-dn','-vf',"scale=w='min(800,iw)':h=-2",'-pix_fmt','rgb24',
+            *inputs,'-fflags','+discardcorrupt','-err_detect','explode','-threads','1','-i',source,
+            '-an','-sn','-dn','-vf',"scale=w='min(%d,iw)':h=-2"%max_width,'-pix_fmt','rgb24',
             '-c:v','ppm','-threads','1',*timing,
             '-f','image2pipe','-flush_packets','1','pipe:1']
 
@@ -65,11 +69,13 @@ def read_exact(stream,size):
 
 
 class FFmpegCapture:
-    def __init__(self,cv,source,binary,open_timeout=5.,read_timeout=1.2,legacy_version=None):
+    def __init__(self,cv,source,binary,open_timeout=5.,read_timeout=1.2,legacy_version=None,*,max_width=800,cancelled=None):
         self.cv=cv;self.closed=False;self.frames=queue.Queue(maxsize=1)
         self.done=threading.Event();self.error='';self.read_timeout=read_timeout
+        self.cancelled=cancelled or (lambda:False);self.max_width=max_width
         self.first=None;self.last_frame_mono=0.
-        command=capture_command(binary,source,legacy_version) if legacy_version else capture_command(binary,source)
+        options=dict(max_width=max_width) if max_width!=800 else {}
+        command=capture_command(binary,source,legacy_version,**options) if legacy_version else capture_command(binary,source,**options)
         self.process=subprocess.Popen(command,stdin=subprocess.DEVNULL,
                                       stdout=subprocess.PIPE,stderr=subprocess.PIPE,bufsize=0,
                                       creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0) if os.name=='nt' else 0)
@@ -95,7 +101,7 @@ class FFmpegCapture:
                 if magic.strip()!=b'P6':raise ValueError('Unexpected FFmpeg image header')
                 width,height=map(int,self.process.stdout.readline(64).split())
                 peak=int(self.process.stdout.readline(64))
-                if not (0<width<=800 and 0<height and width*height<=4_000_000 and peak==255):
+                if not (0<width<=self.max_width and 0<height and width*height<=4_000_000 and peak==255):
                     raise ValueError('Invalid FFmpeg image dimensions')
                 packet=(read_exact(self.process.stdout,width*height*3),width,height,time.monotonic())
                 try:self.frames.put_nowait(packet)
@@ -109,7 +115,7 @@ class FFmpegCapture:
 
     def _next(self,timeout):
         deadline=time.monotonic()+timeout
-        while not self.closed:
+        while not self.closed and not self.cancelled():
             try:return self.frames.get(timeout=min(.05,max(0.,deadline-time.monotonic())))
             except queue.Empty:
                 if self.done.is_set() or time.monotonic()>=deadline:return None
@@ -119,7 +125,7 @@ class FFmpegCapture:
 
     def read(self):
         import numpy as np
-        if self.closed:return False,None
+        if self.closed or self.cancelled():return False,None
         packet=self.first;self.first=None
         try:packet=self.frames.get_nowait()
         except queue.Empty:pass

@@ -3,20 +3,25 @@ const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const vm=require('node:vm');
 const fs=require('node:fs');
-const source=fs.readFileSync('platform_web/workspace.js','utf8');
-const code=source.slice(source.indexOf('const cameraSessions='),source.indexOf('\nfunction cachedMapFor'));
+const code=fs.readFileSync('platform_web/camera_player.js','utf8');
 function fixture(){
- const items=new Map(),revoked=[],calls=[],listeners={};
+ const items=new Map(),revoked=[],calls=[],listeners={},requests=[],releases=[];
  const element=()=>({dataset:{},hidden:true,isConnected:true,naturalWidth:800,classList:{toggle(){},remove(){}},setAttribute(n){if(n==='hidden')this.hidden=true;},removeAttribute(n){if(n==='hidden')this.hidden=false;},querySelector(){return this.label||={textContent:''};},remove(){items.delete('#'+this.id);}});
  const img=element();img.parentElement={shown:true,getClientRects(){return this.shown?[{}]:[];},append(x){items.set('#'+x.id,x);}};items.set('#camera-front',img);items.set('#placeholder-front',element());
  let blobId=0,failDecode=false;
  const context=vm.createContext({console,performance:{now:()=>performance.now()+10000},AbortController,setTimeout,clearTimeout,setInterval,clearInterval,Image:class{decode(){return failDecode?Promise.reject(Error('bad jpeg')):Promise.resolve();}},
   URL:{createObjectURL(){return 'blob:'+(++blobId);},revokeObjectURL(u){revoked.push(u);}},document:{hidden:false,createElement:element,addEventListener(type,fn){(listeners[type]||=[]).push(fn);}},
+  window:{addEventListener(type,fn){(listeners[type]||=[]).push(fn);}},
   S:{mode:'live',online:true,ppe:{},cameras:{front:{fresh:false,width:800,height:600}}},page:'motion',driveView:'front',ui:{},
   $:key=>items.get(key),text:(key,value)=>{calls.push([key,value]);},api:async(...args)=>calls.push(args),
   fetch:async()=>{throw Error('network interrupted');}});
+ let fetchFrame=context.fetch;
+ Object.defineProperty(context,'fetch',{get(){return async(url,options)=>{
+  if(url==='/api/camera/release'){releases.push(JSON.parse(options.body));return {ok:true};}
+  requests.push({url,options});return fetchFrame(url,options);
+ };},set(fn){fetchFrame=fn;}});
  vm.runInContext(code,context);
- return {context,img,items,revoked,calls,listeners,element,failDecode:v=>{failDecode=v;},sessions:()=>vm.runInContext('cameraSessions',context)};
+ return {context,img,items,revoked,calls,listeners,element,requests,releases,failDecode:v=>{failDecode=v;},sessions:()=>vm.runInContext('cameraSessions',context)};
 }
 const turn=()=>new Promise(r=>setImmediate(r));
 function response(n){return {ok:true,headers:{get(k){return k==='X-Frame-Sequence'?String(n):'0.01';}},blob:async()=>({})};}
@@ -37,7 +42,7 @@ test('a complete new frame remains visible despite a stale 500ms status snapshot
 test('bad JPEG never replaces last complete image',async t=>{
  const f=fixture();t.after(()=>f.context.cameraClose('front'));let count=0;
  f.context.fetch=async()=>{if(++count===2)f.failDecode(true);return response(count);};
- f.context.cameraOpen('front');await turn();await turn();
+ f.context.cameraOpen('front');await new Promise(r=>setTimeout(r,120));
  assert.equal(f.img.src,'blob:1');assert.ok(f.revoked.includes('blob:2'));
  assert.equal(f.sessions().get('front').sequence,1);
  f.context.cameraClose('front');

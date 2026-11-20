@@ -283,6 +283,10 @@ class ResidentMissionService:
         if path=='/missions/capabilities':return dict(ok=True,protocol=1,available=self.enabled,
             map_lease_protocol=1,
             policies=['stop','finish','return','finish_return'],execution='onboard_native',
+            limits=dict(disconnect_timeout_s=dict(min=3,max=30,default=5),
+                        max_duration_s=dict(min=30,max=3600,default=1800)),
+            onboard_collection=False,station_actions_supported=False,
+            restart_policy='stop_and_reconcile',return_path='measured_trace',
             message='驻机导航已配置' if self.enabled else '需要统一加载驻机导航并核对机内AOS连接')
         if path=='/missions/status':return dict(ok=True,mission=self.engine.public())
         req=request or {}
@@ -299,6 +303,8 @@ class ResidentMissionService:
         if not self.enabled:raise ValueError('驻机执行服务尚未配置，不能启用断联继续或返回')
         with self.start_lock:
             spec=specification(req)
+            if req.get('collectors') or any(p.get('station_action') for p in req['points']):
+                raise ValueError('原厂驻机导航尚不支持机载采集或到点作业，请分开配置任务')
             with self.engine.lock:
                 if self.engine.job and self.engine.job['id']==spec['id']:
                     # Idempotent retries neither create a link nor reissue a goal.
