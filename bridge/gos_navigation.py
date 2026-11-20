@@ -115,7 +115,7 @@ class GOSPointNavigator(PointNavigator):
         age = number(scan.get('age'), 0, 100) + max(0., elapsed-processing)
         if age >= .65:
             raise ValueError('机内雷达观测已过期')
-        return dict(scan, _valid_until=received+.65-age)
+        return dict(scan, _valid_until=received+.95-age)
 
 
 class GOSNavigation:

@@ -42,7 +42,7 @@ def navigation_observation(link, scan, epoch):
     record = link.record(1007, 2)
     pose = record.get('items', {})
     if '_valid_until' in scan:
-        scan['age'] = max(0., .65 + time.monotonic() - scan['_valid_until'])
+        scan['age'] = max(0., .95 + time.monotonic() - scan['_valid_until'])
     motion = link.record(1002, 4)
     values = motion.get('items', {}).get('MotionStatus', {})
     return scan, dict(normal=pose.get('Location') == 0, confidence=pose.get('Confidence', 0),
@@ -406,7 +406,7 @@ class PointNavigator:
         if app.demo:
             pose=[app.pose[k] for k in ['PosX','PosY','Yaw']]
             result=simulated_scan(self.planner,pose);result['_velocity_body']=app.velocity[:2];result['_speed_mps']=math.hypot(*app.velocity[:2])
-            result.update(protocol=1,frame_id='base_link',pose_frame_id='map',pose_stamp=result['stamp'],resolution=.2,_valid_until=time.monotonic()+.65)
+            result.update(protocol=1,frame_id='base_link',pose_frame_id='map',pose_stamp=result['stamp'],resolution=.2,_valid_until=time.monotonic()+.95)
             return result,app.velocity[2]
         if self.observations is None:
             result=self._fetch_scan(self.last_sensor_stamp)
@@ -431,7 +431,7 @@ class PointNavigator:
         vx,vy,omega=[v.get(k) for k in ['LinearX','LinearY','OmegaZ']]
         if not all(isinstance(value,(int,float)) and math.isfinite(value) for value in [vx,vy,omega]):raise ValueError('等待有效运动反馈')
         pp=loc['items'];sp=result.get('pose',[])
-        age=max(0.,.65+time.monotonic()-result['_valid_until']) if '_valid_until' in result else float(result.get('age',0.))
+        age=max(0.,.95+time.monotonic()-result['_valid_until']) if '_valid_until' in result else float(result.get('age',0.))
         # Compare at a common time using measured motion. This is only a
         # residual check: never move the paired scan pose/cloud or its expiry.
         if len(sp)!=3:raise NavigationObservationPending(result.get('pose_error') or '等待与雷达匹配的地图位姿')

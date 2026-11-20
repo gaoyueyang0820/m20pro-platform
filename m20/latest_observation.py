@@ -71,7 +71,7 @@ class LatestObservationPump:
             stamp=packet.get('stamp');deadline=packet.get('_valid_until')
             if not all(isinstance(v,(int,float)) and not isinstance(v,bool) and math.isfinite(v) for v in [stamp,deadline]):
                 return self._reject('observation lacks finite source stamp or original deadline')
-            if deadline>received+.65+1e-6:return self._reject('observation deadline exceeds the 650 ms source budget')
+            if deadline>received+.95+1e-6:return self._reject('observation deadline exceeds the 950 ms source budget')
             if deadline<=received:
                 self.counts['expired']+=1;self.last_error='received observation already expired';self.error_kind='temporal';self.reason_code=None;return False
             if self.last_stamp is not None and stamp<self.last_stamp:
