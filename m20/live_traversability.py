@@ -16,7 +16,9 @@ from m20.navigation_validation import poses_consistent
 
 class LiveTraversability:
     NEAR_RADIUS=2.0
-    MAX_SCAN_AGE=.65
+    # Scans arrive every 0.4-0.6 s on the robot; 0.65 s rejected normal
+    # jitter, expired the temporary surface, and produced stop-and-go motion.
+    MAX_SCAN_AGE=1.0
     MAX_POSE_AGE=1.0
     MIN_CONFIDENCE=.85
     MIN_FRAMES=3

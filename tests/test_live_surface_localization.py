@@ -97,7 +97,7 @@ class LiveSurfaceLocalizationTests(unittest.TestCase):
                 for i in range(4):
                     stamp=100+i*.2;scan,loc=packet(truth,stamp=stamp)
                     if failure=='quality':loc['confidence']=.4
-                    elif failure=='scan_age':scan['age']=.8
+                    elif failure=='scan_age':scan['age']=1.2
                     elif failure=='loc_age':loc['age']=1.5
                     elif failure=='pair_time':scan['pose_stamp']=stamp-.25
                     else:loc['pose']=[2.8,4.6,0.]
