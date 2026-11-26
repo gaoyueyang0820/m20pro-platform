@@ -78,6 +78,24 @@ class _Geometry:
                     working[iy,ix]=True
         self.map_boxes=self._boxes(working,left,right,top,bottom)
         self.base_boxes=self._boxes(planner.base_free,left,right,top,bottom)
+        # Cells whose saved-map wall may be ignored because the lidar cannot
+        # observe them (body blind patch) and does not vote against them.
+        self.ignored_cells=set();self._effective=None
+
+    def set_ignored_cells(self,cells):
+        self.ignored_cells=set(cells);self._effective=None
+
+    def _effective_boxes(self):
+        if self._effective is not None:return self._effective
+        if not self.ignored_cells:
+            self._effective=self.map_boxes;return self._effective
+        p=self.planner;keep=[]
+        for b in self.map_boxes:
+            cx,cy=(b[0]+b[2])/2,(b[1]+b[3])/2
+            ix,iy=p.cell(cx,cy)
+            if (ix,iy) not in self.ignored_cells:keep.append(b)
+        self._effective=np.asarray(keep,float).reshape(-1,4) if keep else np.zeros((0,4))
+        return self._effective
 
     def _boxes(self,free,left,right,top,bottom):
         p=self.planner;left=max(0,left);right=min(p.w-1,right);top=max(0,top);bottom=min(p.h-1,bottom)
@@ -92,7 +110,8 @@ class _Geometry:
     def map_gap(self,pose,hx=BODY_HALF_LENGTH,hy=BODY_HALF_WIDTH,base=False):
         x,y,yaw=pose;c,s=abs(math.cos(yaw)),abs(math.sin(yaw));ex=hx*c+hy*s;ey=hx*s+hy*c
         lo_x,lo_y,hi_x,hi_y=self.bounds
-        return min(_rect_gap(x,y,yaw,hx,hy,self.base_boxes if base else self.map_boxes),x-ex-lo_x,hi_x-x-ex,y-ey-lo_y,hi_y-y-ey)
+        boxes=self.base_boxes if base else self._effective_boxes()
+        return min(_rect_gap(x,y,yaw,hx,hy,boxes),x-ex-lo_x,hi_x-x-ex,y-ey-lo_y,hi_y-y-ey)
 
     def local_gap(self,pose,hx=BODY_HALF_LENGTH,hy=BODY_HALF_WIDTH):
         x,y,yaw=self.local(pose);return _rect_gap(x,y,yaw,hx,hy,self.local_boxes)
@@ -243,6 +262,10 @@ def _recover_snapshot(planner,start,goal,yaw,scan,standing,max_distance,max_turn
         # not vote against is therefore stale map residue, not a wall.
         stale_but_enclosed=(not diagnostics.get('live_blocked_cells',0))
         if stale_but_enclosed:
+            geometry.set_ignored_cells({tuple(r['cell']) for r in diagnostics['cells']
+                                        if r['in_body_blind_patch'] and not r['live_obstacle']})
+            map_gap=geometry.map_gap(start)
+            result['initial_clearance_lower_bound_m']=round(min(map_gap,live_gap),4)
             result['map_conflict_overridden']='blind_cells_enclosed_by_measured_floor'
             result['overlap_diagnostics']=diagnostics
         else:
