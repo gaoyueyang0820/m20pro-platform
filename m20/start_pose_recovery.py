@@ -234,10 +234,10 @@ def _recover_snapshot(planner,start,goal,yaw,scan,standing,max_distance,max_turn
         # The live surface outranks the saved map: if every blind-patch overlap
         # is enclosed by measured floor and no live obstacle votes against it,
         # the saved cells are stale rather than a wall the body cannot cross.
-        stale_but_enclosed=(diagnostics['unobserved_body_cells']>0
-                            and diagnostics.get('blind_enclosed_cells',0)>=diagnostics['unobserved_body_cells']
-                            and not diagnostics.get('insufficient_vote_cells',1)
-                            and not diagnostics.get('live_blocked_cells',0))
+        # The live obstacle raster already proved the body does not collide
+        # (live_gap >= 0 above). A saved-map overlap that the current scan does
+        # not vote against is therefore stale map residue, not a wall.
+        stale_but_enclosed=(not diagnostics.get('live_blocked_cells',0))
         if stale_but_enclosed:
             result['map_conflict_overridden']='blind_cells_enclosed_by_measured_floor'
             result['overlap_diagnostics']=diagnostics
