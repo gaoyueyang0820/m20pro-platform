@@ -145,7 +145,7 @@ class _Geometry:
                     enclosed+=1
         return dict(overlap_cells=len(rows),blind_enclosed_cells=enclosed,
                     unobserved_body_cells=sum(r['in_body_blind_patch'] and not r['observed_frames'] for r in rows),
-                    insufficient_vote_cells=sum(r['observed_frames']<3 or r['source_span_s']<.4-1e-6 for r in rows),
+                    insufficient_vote_cells=sum(0<r['observed_frames']<3 or (r['observed_frames']>0 and r['source_span_s']<.4-1e-6) for r in rows),
                     live_blocked_cells=sum(r['live_obstacle'] for r in rows),surface_state=status.get('state','disabled'),
                     structure=status.get('structure',{}),cells=rows,body_projection_cells=status.get('body_projection_cells',0),
                     body_projection_policy='current_physical_body_only')
