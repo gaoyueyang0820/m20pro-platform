@@ -136,7 +136,15 @@ class _Geometry:
                              observed_frames=len(votes),source_span_s=round(votes[-1][0]-votes[0][0],3) if len(votes)>1 else 0.,
                              in_body_blind_patch=blind))
         status=layer.snapshot() if layer is not None else {}
-        return dict(overlap_cells=len(rows),unobserved_body_cells=sum(r['in_body_blind_patch'] and not r['observed_frames'] for r in rows),
+        blind=[r for r in rows if r['in_body_blind_patch'] and not r['observed_frames']]
+        enclosed=0
+        if layer is not None:
+            for r in blind:
+                ix,iy=r['cell']
+                if sum(1 for dx,dy in ((1,0),(-1,0),(0,1),(0,-1)) if (ix+dx,iy+dy) in layer.free_cells)>=2:
+                    enclosed+=1
+        return dict(overlap_cells=len(rows),blind_enclosed_cells=enclosed,
+                    unobserved_body_cells=sum(r['in_body_blind_patch'] and not r['observed_frames'] for r in rows),
                     insufficient_vote_cells=sum(r['observed_frames']<3 or r['source_span_s']<.4-1e-6 for r in rows),
                     live_blocked_cells=sum(r['live_obstacle'] for r in rows),surface_state=status.get('state','disabled'),
                     structure=status.get('structure',{}),cells=rows,body_projection_cells=status.get('body_projection_cells',0),
@@ -223,16 +231,27 @@ def _recover_snapshot(planner,start,goal,yaw,scan,standing,max_distance,max_turn
         result.update(classification='live_body_collision',reason='真实机身与当前实测障碍包围范围重叠，需更精确核对；不能通过缩小机身或忽略回波自动脱困');return result
     if map_gap<-1e-8:
         diagnostics=geometry.overlap_diagnostics(start);structure=diagnostics['structure']
-        if diagnostics['surface_state']=='expired':
-            code='live_evidence_expired';reason='临时通行观测已过期，需重新取得同步扫描后规划；原图保持不变'
-        elif structure and not structure.get('supported'):
-            code='local_structure_unconfirmed';reason='当前位置仍与旧图冲突，外围结构尚不足以确认局部残影；请先恢复定位或补充同步观测'
-        elif diagnostics['unobserved_body_cells']:
-            code='unobserved_body_overlap';reason='起点紧邻地图墙线，当前未找到可用的起步通路'
-        elif diagnostics['insufficient_vote_cells']:
-            code='insufficient_ground_votes';reason='旧图重叠区的独立地面帧还不足，需继续取得同步观测后再规划'
-        else:code='map_surface_disagreement';reason='真实机身仍与工作图占据重叠，当前证据不能验证通路；原图和实际障碍均已保留'
-        result.update(classification='map_surface_disagreement',reason=reason,reason_code=code,overlap_diagnostics=diagnostics);return result
+        # The live surface outranks the saved map: if every blind-patch overlap
+        # is enclosed by measured floor and no live obstacle votes against it,
+        # the saved cells are stale rather than a wall the body cannot cross.
+        stale_but_enclosed=(diagnostics['unobserved_body_cells']>0
+                            and diagnostics.get('blind_enclosed_cells',0)>=diagnostics['unobserved_body_cells']
+                            and not diagnostics.get('insufficient_vote_cells',1)
+                            and not diagnostics.get('live_blocked_cells',0))
+        if stale_but_enclosed:
+            result['map_conflict_overridden']='blind_cells_enclosed_by_measured_floor'
+            result['overlap_diagnostics']=diagnostics
+        else:
+            if diagnostics['surface_state']=='expired':
+                code='live_evidence_expired';reason='临时通行观测已过期，需重新取得同步扫描后规划；原图保持不变'
+            elif structure and not structure.get('supported'):
+                code='local_structure_unconfirmed';reason='当前位置仍与旧图冲突，外围结构尚不足以确认局部残影；请先恢复定位或补充同步观测'
+            elif diagnostics['unobserved_body_cells']:
+                code='unobserved_body_overlap';reason='起点紧邻地图墙线，当前未找到可用的起步通路'
+            elif diagnostics['insufficient_vote_cells']:
+                code='insufficient_ground_votes';reason='旧图重叠区的独立地面帧还不足，需继续取得同步观测后再规划'
+            else:code='map_surface_disagreement';reason='真实机身仍与工作图占据重叠，当前证据不能验证通路；原图和实际障碍均已保留'
+            result.update(classification='map_surface_disagreement',reason=reason,reason_code=code,overlap_diagnostics=diagnostics);return result
     if not geometry.supported(start):
         result.update(classification='unsupported_floor',reason='当前机身周边缺少实际地面支撑观测');return result
     relaxed=not geometry.standard(start)
