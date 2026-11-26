@@ -531,7 +531,7 @@ class PointNavigator:
                     applied_obstacles=cells
             def request_local(reason,failed=None,prefer_route=False):
                 nonlocal local_follower,local_plan,local_pending,avoid_axes,blocked_at,route_first,bypass_at
-                if len(local_tried)>=3:
+                if len(local_tried)>=8:
                     # Three failed bypass attempts near the same destination is
                     # not a detour problem any more: stop and report instead of
                     # circling the corridor until the timeout.
@@ -836,6 +836,7 @@ class PointNavigator:
                     raise
                 time.sleep(.04)
                 continue
+            recovery_error=None
             with planner.planning_snapshot():
                 try:
                     return planner.plan(scan['pose'], [goal['x'], goal['y']], goal['yaw'], goal_tolerance=.65)
@@ -844,8 +845,12 @@ class PointNavigator:
                             and len(seen)<3 and time.monotonic()<deadline):
                         time.sleep(.04)
                         continue
-                    return plan_with_recovery(planner, scan['pose'], [goal['x'], goal['y']], goal['yaw'],
-                                              projected, localization, True, standard_error=error)
+                    # Recovery admits its own fresh scan, which a nested
+                    # snapshot forbids; run it after the pin is released.
+                    recovery_error=error
+            if recovery_error is not None:
+                return plan_with_recovery(planner, scan['pose'], [goal['x'], goal['y']], goal['yaw'],
+                                          projected, localization, True, standard_error=recovery_error)
 
     def _map_pose_valid(self,x,y,yaw):
         # Independent static footprint test; a clear live scan does not erase
